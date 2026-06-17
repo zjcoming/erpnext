@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ERPNext 下单到补料生产演示</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+      background: #0d1726;
+      color: #fff;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; overflow: hidden; }
+    .slide {
+      position: fixed;
+      inset: 0;
+      display: grid;
+      grid-template-rows: 88px 1fr 86px;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 500ms ease;
+      background: radial-gradient(circle at top right, #18324e, #0d1726 55%);
+    }
+    .slide.active { opacity: 1; pointer-events: auto; }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 38px;
+      border-bottom: 1px solid #2a3d55;
+    }
+    h1 { margin: 0; font-size: 28px; }
+    .step { color: #76c7ff; font-size: 18px; font-weight: 700; }
+    .frame {
+      display: grid;
+      place-items: center;
+      padding: 18px 28px;
+      min-height: 0;
+    }
+    img {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+      border-radius: 10px;
+      box-shadow: 0 18px 55px #0009;
+      background: #fff;
+    }
+    footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+      padding: 0 38px;
+      border-top: 1px solid #2a3d55;
+      color: #d4e2ef;
+      font-size: 18px;
+    }
+    .metrics { color: #88e3b2; font-weight: 700; white-space: nowrap; }
+    .controls {
+      position: fixed;
+      right: 22px;
+      bottom: 100px;
+      z-index: 20;
+      display: flex;
+      gap: 8px;
+    }
+    button {
+      border: 1px solid #4b6480;
+      border-radius: 8px;
+      background: #172b42dd;
+      color: #fff;
+      padding: 9px 14px;
+      cursor: pointer;
+    }
+    .progress {
+      position: fixed;
+      left: 0;
+      bottom: 0;
+      z-index: 30;
+      height: 5px;
+      width: 0;
+      background: #35b8ff;
+    }
+  </style>
+</head>
+<body>
+  <main id="slides"></main>
+  <div class="controls">
+    <button id="prev">上一步</button>
+    <button id="toggle">暂停</button>
+    <button id="next">下一步</button>
+  </div>
+  <div class="progress" id="progress"></div>
+  <script>
+    const data = [
+      ["功能总览", "01-功能模块总览.png", "系统覆盖销售、采购、库存、生产、质量、委外、会计、资产和项目等核心模块。", "全业务一体化"],
+      ["客户下单", "02-销售订单.png", "客户订购 5 台智能水泵，单价 CNY 8,800，订单总额 CNY 44,000。", "订单 5 台"],
+      ["下达生产工单", "03-生产工单.png", "工单关联销售订单和 BOM，自动计算电机 5、外壳 5、紧固件 20。", "工单数量 5"],
+      ["识别缺料并申请", "04-缺料申请.png", "电机需求 5 台、初始库存 2 台，系统对缺口 3 台发起采购型物料申请。", "缺料 3 台"],
+      ["生成补料采购订单", "05-补料采购订单.png", "采购订单关联缺料申请和销售订单，向演示供应商采购 3 台电机。", "采购 CNY 3,750"],
+      ["补料到货入库", "06-补料采购收货.png", "3 台电机采购收货后，物料申请自动更新为已收货 100%。", "库存补足 5 台"],
+      ["生产领料", "07-生产领料.png", "按工单将完整 BOM 原料从仓库转入在制品仓，形成清晰的在制追踪。", "领料 5 套"],
+      ["完工入库", "08-生产完工入库.png", "消耗在制原料并将 5 台水泵入成品仓，制造总成本 CNY 9,050。", "单台成本 CNY 1,810"],
+      ["工单完成", "09-工单完成.png", "工单状态自动变为已完成，发料数量和完工数量均为 5。", "完成率 100%"],
+      ["库存结果", "10-成品库存.png", "库存余额报表显示成品仓结余 5 台，结余金额 CNY 9,050。", "成品库存 5 台"]
+    ];
+    const host = document.getElementById("slides");
+    data.forEach((item, index) => {
+      const section = document.createElement("section");
+      section.className = "slide";
+      section.innerHTML = `
+        <header><h1>${item[0]}</h1><span class="step">${index + 1} / ${data.length}</span></header>
+        <div class="frame"><img src="${item[1]}" alt="${item[0]}"></div>
+        <footer><span>${item[2]}</span><span class="metrics">${item[3]}</span></footer>`;
+      host.appendChild(section);
+    });
+    const slides = [...document.querySelectorAll(".slide")];
+    const progress = document.getElementById("progress");
+    const toggle = document.getElementById("toggle");
+    let index = 0;
+    let playing = true;
+    let timer;
+    function show(next) {
+      index = (next + slides.length) % slides.length;
+      slides.forEach((slide, i) => slide.classList.toggle("active", i === index));
+      progress.style.transition = "none";
+      progress.style.width = "0";
+      requestAnimationFrame(() => {
+        progress.style.transition = playing ? "width 6s linear" : "none";
+        progress.style.width = playing ? "100%" : "0";
+      });
+      clearTimeout(timer);
+      if (playing) timer = setTimeout(() => show(index + 1), 6000);
+    }
+    document.getElementById("prev").onclick = () => show(index - 1);
+    document.getElementById("next").onclick = () => show(index + 1);
+    toggle.onclick = () => {
+      playing = !playing;
+      toggle.textContent = playing ? "暂停" : "播放";
+      show(index);
+    };
+    addEventListener("keydown", event => {
+      if (event.key === "ArrowLeft") show(index - 1);
+      if (event.key === "ArrowRight") show(index + 1);
+      if (event.key === " ") toggle.click();
+    });
+    show(0);
+  </script>
+</body>
+</html>
