@@ -23,3 +23,11 @@ node_modules/
 # Banking SPA
 erpnext/public/banking
 erpnext/www/banking.html
+
+# Local ERPNext development harness
+.env
+development/frappe-bench/
+development/sites/
+development/logs/
+custom_apps/*
+!custom_apps/.gitkeep

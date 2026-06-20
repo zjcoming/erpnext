@@ -1,0 +1,128 @@
+name: erpnext-development
+
+services:
+  mariadb:
+    image: docker.io/mariadb:11.8
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --skip-character-set-client-handshake
+    environment:
+      MYSQL_ROOT_PASSWORD: "123"
+      MARIADB_AUTO_UPGRADE: "1"
+    volumes:
+      - mariadb-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      start_period: 10s
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis-cache:
+    image: docker.io/redis:alpine
+
+  redis-queue:
+    image: docker.io/redis:alpine
+
+  frappe:
+    image: docker.io/frappe/bench:latest
+    working_dir: /workspace/erpnext
+    environment:
+      SHELL: /bin/bash
+      BENCH_NAME: frappe-bench
+      SITE_NAME: development.localhost
+      ADMIN_PASSWORD: admin
+      DB_ROOT_PASSWORD: "123"
+      FRAPPE_BRANCH: develop
+    volumes:
+      - .:/workspace/erpnext:cached
+      - ./development/sites:/sites:cached
+      - ./development/logs:/logs:cached
+      - ${HOME}/.ssh:/home/frappe/.ssh:ro,cached
+    ports:
+      - "8000:8000"
+      - "9000:9000"
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      redis-cache:
+        condition: service_started
+      redis-queue:
+        condition: service_started
+    command:
+      - bash
+      - -lc
+      - |
+        set -euo pipefail
+
+        mkdir -p /workspace/erpnext/development
+        cd /workspace/erpnext/development
+
+        if [ ! -d "$$BENCH_NAME/apps/frappe" ]; then
+          bench init \
+            --skip-redis-config-generation \
+            --frappe-path=https://github.com/frappe/frappe \
+            --frappe-branch="$$FRAPPE_BRANCH" \
+            --dev \
+            "$$BENCH_NAME"
+        fi
+
+        cd "$$BENCH_NAME"
+
+        if [ ! -L sites ]; then
+          if [ -d sites ] && [ -z "$$(find /sites -mindepth 1 -maxdepth 1 2>/dev/null)" ]; then
+            cp -a sites/. /sites/
+          fi
+          rm -rf sites
+          ln -s /sites sites
+        fi
+
+        if [ ! -L logs ]; then
+          if [ -d logs ] && [ -z "$$(find /logs -mindepth 1 -maxdepth 1 2>/dev/null)" ]; then
+            cp -a logs/. /logs/
+          fi
+          rm -rf logs
+          ln -s /logs logs
+        fi
+
+        bench set-config -g db_host mariadb
+        bench set-config -g redis_cache redis://redis-cache:6379
+        bench set-config -g redis_queue redis://redis-queue:6379
+        bench set-config -g redis_socketio redis://redis-queue:6379
+
+        if [ ! -e apps/erpnext ]; then
+          ln -s /workspace/erpnext apps/erpnext
+        fi
+
+        if [ "$$(readlink apps/erpnext || true)" != "/workspace/erpnext" ] && [ ! -d apps/erpnext/.git ]; then
+          echo "apps/erpnext exists but is not the expected local source mount." >&2
+          exit 1
+        fi
+
+        ./env/bin/pip install -e apps/erpnext
+        bench setup requirements erpnext
+
+        if [ ! -d "sites/$$SITE_NAME" ]; then
+          bench new-site \
+            --mariadb-user-host-login-scope=% \
+            --db-root-username=root \
+            --db-root-password="$$DB_ROOT_PASSWORD" \
+            --admin-password="$$ADMIN_PASSWORD" \
+            --install-app erpnext \
+            "$$SITE_NAME"
+        fi
+
+        if [ ! -e sites/assets/erpnext ]; then
+          bench build --app erpnext --force || true
+        fi
+
+        bench compile-po-to-mo --app erpnext --locale zh --force || true
+        bench --site "$$SITE_NAME" set-config developer_mode 1
+        bench --site "$$SITE_NAME" enable-scheduler || true
+        bench --site "$$SITE_NAME" clear-cache
+
+        exec bench start
+
+volumes:
+  mariadb-data:
