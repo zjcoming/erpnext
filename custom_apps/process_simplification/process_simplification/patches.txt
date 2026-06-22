@@ -1,0 +1,4 @@
+process_simplification.patches.v0_0.set_chinese_defaults
+process_simplification.patches.v0_0.use_slugged_workspace_route
+process_simplification.patches.v0_0.configure_manufacturing_defaults
+process_simplification.patches.v0_0.set_workspace_type

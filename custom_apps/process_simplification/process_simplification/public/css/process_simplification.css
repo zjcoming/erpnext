@@ -1,0 +1,65 @@
+.process-simplification-page {
+	padding: 12px 0;
+}
+
+.process-simplification-page .form-section {
+	margin-bottom: 16px;
+}
+
+.process-simplification-page table th,
+.process-simplification-page table td {
+	vertical-align: middle;
+	white-space: nowrap;
+}
+
+.process-simplification-page table td small {
+	white-space: normal;
+}
+
+.process-simplification-page .row-action {
+	margin: 2px;
+}
+
+.process-simplification-page .badge {
+	display: inline-block;
+	margin-bottom: 6px;
+}
+
+.quick-sales-order .quick-items .frappe-control {
+	margin-bottom: 0;
+}
+
+.quick-sales-order .quick-items .control-input-wrapper,
+.quick-sales-order .quick-items .control-value {
+	margin-bottom: 0;
+}
+
+.quick-sales-order .quick-items .control-label,
+.quick-sales-order .quick-items .control-description {
+	display: none;
+}
+
+.quick-sales-order .quick-items .quick-row-help {
+	margin-top: 4px;
+	font-size: 12px;
+	line-height: 1.4;
+	white-space: normal;
+}
+
+.quick-sales-order .quick-items td {
+	min-width: 120px;
+}
+
+.quick-sales-order .quick-items td:first-child {
+	min-width: 280px;
+}
+
+@media (max-width: 991px) {
+	.process-simplification-page .table-responsive {
+		border: 1px solid var(--border-color);
+	}
+
+	.process-simplification-page table {
+		min-width: 920px;
+	}
+}

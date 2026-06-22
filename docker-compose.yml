@@ -103,6 +103,19 @@ services:
         ./env/bin/pip install -e apps/erpnext
         bench setup requirements erpnext
 
+        for custom_app in /workspace/erpnext/custom_apps/*; do
+          if [ -f "$$custom_app/pyproject.toml" ]; then
+            custom_app_name="$$(basename "$$custom_app")"
+            if [ ! -e "apps/$$custom_app_name" ]; then
+              ln -s "$$custom_app" "apps/$$custom_app_name"
+            fi
+            if ! grep -qx "$$custom_app_name" sites/apps.txt; then
+              printf '\n%s\n' "$$custom_app_name" >> sites/apps.txt
+            fi
+            ./env/bin/pip install -e "apps/$$custom_app_name"
+          fi
+        done
+
         if [ ! -d "sites/$$SITE_NAME" ]; then
           bench new-site \
             --mariadb-user-host-login-scope=% \
@@ -113,12 +126,25 @@ services:
             "$$SITE_NAME"
         fi
 
+        for custom_app in /workspace/erpnext/custom_apps/*; do
+          if [ -f "$$custom_app/pyproject.toml" ]; then
+            custom_app_name="$$(basename "$$custom_app")"
+            if ! bench --site "$$SITE_NAME" list-apps | grep -q "^$$custom_app_name"; then
+              bench --site "$$SITE_NAME" install-app "$$custom_app_name"
+            fi
+            bench build --app "$$custom_app_name" --force || true
+            bench compile-po-to-mo --app "$$custom_app_name" --locale zh --force || true
+          fi
+        done
+
         if [ ! -e sites/assets/erpnext ]; then
           bench build --app erpnext --force || true
         fi
 
+        bench compile-po-to-mo --app frappe --locale zh --force || true
         bench compile-po-to-mo --app erpnext --locale zh --force || true
-        bench --site "$$SITE_NAME" set-config developer_mode 1
+        bench --site "$$SITE_NAME" set-config developer_mode 0
+        bench --site "$$SITE_NAME" execute process_simplification.install.set_default_language || true
         bench --site "$$SITE_NAME" enable-scheduler || true
         bench --site "$$SITE_NAME" clear-cache
 

@@ -1,0 +1,243 @@
+from __future__ import annotations
+
+import frappe
+from frappe import _
+from frappe.utils import now_datetime, parse_json
+
+from erpnext.manufacturing.doctype.work_order.mapper import make_work_order
+from erpnext.selling.doctype.sales_order.mapper import make_delivery_note
+from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
+	get_available_qty_to_reserve,
+)
+
+from process_simplification.api.setup import get_company_defaults, get_default_bom
+from process_simplification.api.utils import (
+	delivered_stock_qty,
+	get_item_uom_details,
+	get_sales_order_item,
+	item_stock_qty,
+	normalize_qty,
+	pending_delivery_qty,
+	remaining_qty,
+	throw_chinese,
+)
+from process_simplification.api.workbench import (
+	get_completed_reserved_qty,
+	get_effective_reserved_qty,
+	get_manufacture_stock_entries,
+	get_order_workbench,
+	get_work_orders,
+)
+
+
+def _payload(data):
+	if isinstance(data, str):
+		return frappe._dict(parse_json(data))
+	return frappe._dict(data or {})
+
+
+def _row_from_workbench(sales_order: str, sales_order_item: str):
+	workbench = get_order_workbench(sales_order)
+	for row in workbench["rows"]:
+		if row["sales_order_item"] == sales_order_item:
+			if row.get("unsupported"):
+				throw_chinese(row.get("unsupported_reason") or "该订单行暂不支持简化操作。")
+			return frappe._dict(row)
+	throw_chinese("销售订单明细不属于该销售订单。")
+
+
+def _new_sre(
+	*,
+	sales_order: str,
+	sales_order_item: str,
+	item_code: str,
+	warehouse: str,
+	qty: float,
+	company: str,
+	voucher_qty: float,
+	from_voucher_type: str | None = None,
+	from_voucher_no: str | None = None,
+	from_voucher_detail_no: str | None = None,
+):
+	item_details = get_item_uom_details(item_code)
+	sre = frappe.new_doc("Stock Reservation Entry")
+	sre.voucher_type = "Sales Order"
+	sre.voucher_no = sales_order
+	sre.voucher_detail_no = sales_order_item
+	sre.item_code = item_code
+	sre.warehouse = warehouse
+	sre.available_qty = get_available_qty_to_reserve(item_code, warehouse)
+	sre.voucher_qty = voucher_qty
+	sre.reserved_qty = qty
+	sre.company = company
+	sre.stock_uom = item_details.stock_uom
+	sre.has_serial_no = item_details.has_serial_no
+	sre.has_batch_no = item_details.has_batch_no
+	sre.reservation_based_on = "Serial and Batch" if item_details.has_serial_no or item_details.has_batch_no else "Qty"
+	sre.from_voucher_type = from_voucher_type
+	sre.from_voucher_no = from_voucher_no
+	sre.from_voucher_detail_no = from_voucher_detail_no
+	sre.insert()
+	sre.submit()
+	return sre
+
+
+@frappe.whitelist()
+def reserve_stock(sales_order: str, sales_order_item: str, qty: float | None = None, warehouse: str | None = None):
+	frappe.has_permission("Stock Reservation Entry", "create", throw=True)
+	row = _row_from_workbench(sales_order, sales_order_item)
+	so = frappe.get_doc("Sales Order", sales_order)
+	item = get_sales_order_item(sales_order_item)
+	warehouse = warehouse or item.warehouse
+	if not warehouse:
+		throw_chinese("请先为销售订单明细设置成品仓库。")
+
+	available_qty = get_available_qty_to_reserve(item.item_code, warehouse)
+	max_qty = min(row.pending_qty - row.reserved_qty, available_qty)
+	reserve_qty = normalize_qty(qty) if qty else max_qty
+	if reserve_qty <= 0:
+		throw_chinese("当前没有可预留库存。")
+	if reserve_qty > max_qty:
+		throw_chinese("预留数量不能超过当前可预留库存和订单待交数量。")
+
+	sre = _new_sre(
+		sales_order=sales_order,
+		sales_order_item=sales_order_item,
+		item_code=item.item_code,
+		warehouse=warehouse,
+		qty=reserve_qty,
+		company=so.company,
+		voucher_qty=item_stock_qty(item),
+	)
+	return {"stock_reservation_entry": sre.name, "reserved_qty": reserve_qty}
+
+
+@frappe.whitelist()
+def create_work_order(sales_order: str, sales_order_item: str, qty: float | None = None):
+	frappe.has_permission("Work Order", "create", throw=True)
+	row = _row_from_workbench(sales_order, sales_order_item)
+	if row.uncovered_qty <= 0:
+		throw_chinese("该订单行已经被库存预留或生产任务覆盖，不能重复创建生产任务。")
+
+	item = get_sales_order_item(sales_order_item)
+	so = frappe.get_doc("Sales Order", sales_order)
+	bom_no = get_default_bom(item.item_code)
+	if not bom_no:
+		throw_chinese("产品 {0} 没有已提交、启用的默认 BOM。".format(item.item_code))
+
+	defaults = get_company_defaults(so.company)
+	work_order_qty = normalize_qty(qty) if qty else row.uncovered_qty
+	if work_order_qty <= 0 or work_order_qty > row.uncovered_qty:
+		throw_chinese("本次生产数量不能超过当前尚未覆盖数量。")
+
+	wo = make_work_order(
+		bom_no=bom_no,
+		item=item.item_code,
+		qty=work_order_qty,
+		company=so.company,
+		use_multi_level_bom=True,
+	)
+	wo.sales_order = sales_order
+	wo.sales_order_item = sales_order_item
+	wo.source_warehouse = defaults.source_warehouse or item.warehouse
+	wo.wip_warehouse = defaults.wip_warehouse
+	wo.fg_warehouse = item.warehouse or defaults.fg_warehouse
+	wo.expected_delivery_date = item.delivery_date
+	wo.planned_start_date = now_datetime()
+	if not wo.source_warehouse:
+		throw_chinese("缺少原料仓，请在 Stock Settings 或订单行中设置仓库。")
+	if not wo.wip_warehouse:
+		throw_chinese("缺少 WIP 仓，请在 Company 中设置 Default WIP Warehouse。")
+	if not wo.fg_warehouse:
+		throw_chinese("缺少成品仓，请在 Company 或订单行中设置仓库。")
+	wo.get_items_and_operations_from_bom()
+	wo.insert()
+	wo.submit()
+	return {"work_order": wo.name, "qty": work_order_qty}
+
+
+def _manufactured_finished_rows(sales_order: str, sales_order_item: str):
+	item = get_sales_order_item(sales_order_item)
+	work_orders = get_work_orders(sales_order, sales_order_item, item.item_code)
+	manufacture_entries = get_manufacture_stock_entries(work_orders)
+	if not manufacture_entries:
+		return []
+
+	return frappe.get_all(
+		"Stock Entry Detail",
+		filters={
+			"parent": ["in", [entry.name for entry in manufacture_entries]],
+			"item_code": item.item_code,
+			"is_finished_item": 1,
+		},
+		fields=["name", "parent", "item_code", "t_warehouse", "transfer_qty"],
+		order_by="creation asc",
+	)
+
+
+@frappe.whitelist()
+def reserve_completed_stock(sales_order: str, sales_order_item: str, qty: float | None = None):
+	frappe.has_permission("Stock Reservation Entry", "create", throw=True)
+	row = _row_from_workbench(sales_order, sales_order_item)
+	if row.completed_unreserved_qty <= 0:
+		throw_chinese("当前没有完工待预留数量。")
+
+	so = frappe.get_doc("Sales Order", sales_order)
+	item = get_sales_order_item(sales_order_item)
+	qty_to_reserve = normalize_qty(qty) if qty else row.completed_unreserved_qty
+	if qty_to_reserve <= 0 or qty_to_reserve > row.completed_unreserved_qty:
+		throw_chinese("预留完工成品数量不能超过完工待预留数量。")
+
+	created = []
+	for finished_row in _manufactured_finished_rows(sales_order, sales_order_item):
+		if qty_to_reserve <= 0:
+			break
+		if not finished_row.t_warehouse:
+			continue
+		available_qty = get_available_qty_to_reserve(item.item_code, finished_row.t_warehouse)
+		line_qty = min(qty_to_reserve, normalize_qty(finished_row.transfer_qty), available_qty)
+		if line_qty <= 0:
+			continue
+		sre = _new_sre(
+			sales_order=sales_order,
+			sales_order_item=sales_order_item,
+			item_code=item.item_code,
+			warehouse=finished_row.t_warehouse,
+			qty=line_qty,
+			company=so.company,
+			voucher_qty=item_stock_qty(item),
+			from_voucher_type="Stock Entry",
+			from_voucher_no=finished_row.parent,
+			from_voucher_detail_no=finished_row.name,
+		)
+		created.append(sre.name)
+		qty_to_reserve -= line_qty
+
+	if qty_to_reserve > 0:
+		throw_chinese("完工成品库存不足，无法完成本次预留。")
+
+	return {"stock_reservation_entries": created}
+
+
+@frappe.whitelist()
+def create_delivery_note(sales_order: str, sales_order_item: str):
+	frappe.has_permission("Delivery Note", "create", throw=True)
+	row = _row_from_workbench(sales_order, sales_order_item)
+	if row.reserved_qty <= 0:
+		throw_chinese("当前订单行没有有效预留，不能创建发货单。")
+
+	delivery_note = make_delivery_note(
+		sales_order,
+		kwargs={"for_reserved_stock": True, "filtered_children": [sales_order_item]},
+	)
+	delivery_note.items = [item for item in delivery_note.items if item.so_detail == sales_order_item]
+	if not delivery_note.items:
+		throw_chinese("未能根据有效预留生成发货单明细。")
+
+	item_row = get_sales_order_item(sales_order_item)
+	max_qty = row.reserved_qty / normalize_qty(item_row.conversion_factor or 1)
+	for item in delivery_note.items:
+		if normalize_qty(item.qty) > max_qty:
+			item.qty = max_qty
+	delivery_note.insert()
+	return {"delivery_note": delivery_note.name, "docstatus": delivery_note.docstatus}

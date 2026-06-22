@@ -29,5 +29,4 @@ erpnext/www/banking.html
 development/frappe-bench/
 development/sites/
 development/logs/
-custom_apps/*
-!custom_apps/.gitkeep
+
