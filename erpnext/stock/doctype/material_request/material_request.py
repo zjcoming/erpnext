@@ -12,12 +12,13 @@ import frappe.defaults
 from frappe import _, msgprint
 from frappe.model.document import Document
 from frappe.query_builder import Order
-from frappe.query_builder.functions import Sum
-from frappe.utils import cint, cstr, flt, get_link_to_form, getdate, new_line_sep, nowdate
+from frappe.query_builder.functions import Min, Sum
+from frappe.utils import cint, flt, get_datetime, get_link_to_form, getdate, new_line_sep, nowdate
 
 from erpnext.buying.utils import check_on_hold_or_closed_status, validate_for_items
 from erpnext.controllers.buying_controller import BuyingController
 from erpnext.manufacturing.doctype.work_order.work_order import get_item_details
+from erpnext.stock.get_item_details import get_price_list_rate_for
 from erpnext.stock.stock_balance import get_indented_qty, update_bin_qty
 
 from .mapper import (
@@ -125,21 +126,24 @@ class MaterialRequest(BuyingController):
 
 		for so_no in so_items.keys():
 			for item in so_items[so_no].keys():
-				already_indented = frappe.db.sql(
-					"""select sum(qty)
-					from `tabMaterial Request Item`
-					where item_code = %s and sales_order = %s and
-					docstatus = 1 and parent != %s""",
-					(item, so_no, self.name),
+				already_indented = frappe.get_all(
+					"Material Request Item",
+					filters={
+						"item_code": item,
+						"sales_order": so_no,
+						"docstatus": 1,
+						"parent": ["!=", self.name],
+					},
+					fields=[{"SUM": "qty", "as": "qty"}],
 				)
-				already_indented = already_indented and flt(already_indented[0][0]) or 0
+				already_indented = flt(already_indented[0].qty) if already_indented else 0
 
-				actual_so_qty = frappe.db.sql(
-					"""select sum(stock_qty) from `tabSales Order Item`
-					where parent = %s and item_code = %s and docstatus = 1""",
-					(so_no, item),
+				actual_so_qty = frappe.get_all(
+					"Sales Order Item",
+					filters={"parent": so_no, "item_code": item, "docstatus": 1},
+					fields=[{"SUM": "stock_qty", "as": "stock_qty"}],
 				)
-				actual_so_qty = actual_so_qty and flt(actual_so_qty[0][0]) or 0
+				actual_so_qty = flt(actual_so_qty[0].stock_qty) if actual_so_qty else 0
 
 				if actual_so_qty and (flt(so_items[so_no][item]) + already_indented > actual_so_qty):
 					frappe.throw(
@@ -189,8 +193,46 @@ class MaterialRequest(BuyingController):
 
 		self.validate_pp_qty()
 
+		if self.buying_price_list and not frappe.get_value("Price List", self.buying_price_list, "buying"):
+			self.buying_price_list = None
+
 		if not self.buying_price_list:
-			self.buying_price_list = frappe.defaults.get_defaults().buying_price_list
+			buying_price_list = frappe.defaults.get_defaults().buying_price_list
+			if frappe.has_permission("Price List", "read", buying_price_list):
+				self.buying_price_list = buying_price_list
+
+	def on_update(self):
+		if not self.is_new() and self.buying_price_list and self.has_value_changed("buying_price_list"):
+			self.update_item_rates()
+
+	def update_item_rates(self):
+		price_not_uom_dependent = frappe.get_value(
+			"Price List", self.buying_price_list, "price_not_uom_dependent"
+		)
+		for item in self.items:
+			rate = get_price_list_rate_for(
+				frappe._dict(
+					{
+						"price_list": self.buying_price_list,
+						"uom": item.uom,
+						"transaction_date": self.transaction_date,
+						"qty": item.qty,
+						"stock_uom": item.stock_uom,
+						"conversion_factor": item.conversion_factor,
+						"price_list_uom_dependant": price_not_uom_dependent,
+					}
+				),
+				item.item_code,
+			)
+			if rate is not None:
+				item.db_set({"rate": rate, "amount": flt(rate * item.qty, item.precision("amount"))})
+
+		frappe.msgprint(
+			_("Item rates have been updated based on the selected Buying Price List {0}").format(
+				self.buying_price_list
+			),
+			alert=True,
+		)
 
 	def validate_pp_qty(self):
 		items_from_pp = [item for item in self.items if item.material_request_plan_item]
@@ -249,10 +291,9 @@ class MaterialRequest(BuyingController):
 		self.set_status(update=True, status="Cancelled")
 
 	def check_modified_date(self):
-		mod_db = frappe.db.sql("""select modified from `tabMaterial Request` where name = %s""", self.name)
-		date_diff = frappe.db.sql("""select TIMEDIFF(%s, %s)""", (mod_db[0][0], cstr(self.modified)))
+		mod_db = frappe.db.get_value("Material Request", self.name, "modified")
 
-		if date_diff and date_diff[0][0]:
+		if mod_db and get_datetime(mod_db) != get_datetime(self.modified):
 			frappe.throw(_("{0} {1} has been modified. Please refresh.").format(_(self.doctype), self.name))
 
 	def update_status(self, status):
@@ -348,7 +389,7 @@ class MaterialRequest(BuyingController):
 						if d.ordered_qty and flt(d.ordered_qty, precision) > flt(allowed_qty, precision):
 							frappe.throw(
 								_(
-									"The total Issue / Transfer quantity {0} in Material Request {1}  cannot be greater than allowed requested quantity {2} for Item {3}"
+									"The total Issue / Transfer quantity {0} in Material Request {1} cannot be greater than allowed requested quantity {2} for Item {3}"
 								).format(d.ordered_qty, d.parent, allowed_qty, d.item_code)
 							)
 
@@ -481,9 +522,7 @@ def get_material_requests_based_on_supplier(
 	query = (
 		frappe.qb.from_(mr)
 		.from_(mr_item)
-		.select(mr.name)
-		.distinct()
-		.select(mr.transaction_date, mr.company)
+		.select(mr.name, mr.transaction_date, mr.company)
 		.where(
 			(mr.name == mr_item.parent)
 			& (mr_item.item_code.isin(supplier_items))
@@ -493,7 +532,8 @@ def get_material_requests_based_on_supplier(
 			& (mr.status != "Stopped")
 			& (mr.company == filters.get("company"))
 		)
-		.orderby(mr_item.item_code, order=Order.asc)
+		.groupby(mr.name, mr.transaction_date, mr.company)
+		.orderby(Min(mr_item.item_code), order=Order.asc)
 		.limit(cint(page_len))
 		.offset(cint(start))
 	)
@@ -510,7 +550,7 @@ def get_material_requests_based_on_supplier(
 	return material_requests
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def raise_work_orders(material_request: str, company: str):
 	mr = frappe.get_doc("Material Request", material_request)
 	errors = []
@@ -575,7 +615,7 @@ def raise_work_orders(material_request: str, company: str):
 
 	if errors:
 		frappe.throw(
-			_("Work Order cannot be created for following reason: <br> {0}").format(new_line_sep(errors))
+			_("Work Order cannot be created for the following reason: <br> {0}").format(new_line_sep(errors))
 		)
 
 	return work_orders

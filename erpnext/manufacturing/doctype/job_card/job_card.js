@@ -172,8 +172,6 @@ frappe.ui.form.on("Job Card", {
 			},
 		}));
 
-		frm.trigger("toggle_operation_number");
-
 		const is_timer_running = frm.events.setup_job_action_buttons(frm, has_items);
 
 		if (!is_timer_running) {
@@ -207,7 +205,9 @@ frappe.ui.form.on("Job Card", {
 		if (frm.is_new() || doc.skip_material_transfer || doc.docstatus >= 2) return;
 
 		const excess_transfer_allowed = doc.__onload.job_card_excess_transfer;
-		const to_request = doc.for_quantity > doc.transferred_qty;
+		const to_transfer =
+			has_items && doc.items.some((row) => flt(row.transferred_qty) < flt(row.required_qty));
+		const to_request = to_transfer;
 
 		if (has_items && (to_request || excess_transfer_allowed)) {
 			frm.add_custom_button(
@@ -216,9 +216,6 @@ frappe.ui.form.on("Job Card", {
 				__("Create")
 			);
 		}
-
-		// check if any row has untransferred materials in case of multiple items in JC
-		const to_transfer = doc.items.some((row) => row.transferred_qty < row.required_qty);
 
 		if (has_items && (to_transfer || excess_transfer_allowed)) {
 			frm.add_custom_button(
@@ -499,45 +496,46 @@ frappe.ui.form.on("Job Card", {
 	},
 
 	operation(frm) {
-		frm.trigger("toggle_operation_number");
-
-		if (frm.doc.operation && frm.doc.work_order) {
-			frappe.call({
-				method: "erpnext.manufacturing.doctype.job_card.job_card.get_operation_details",
-				args: {
-					work_order: frm.doc.work_order,
-					operation: frm.doc.operation,
-				},
-				callback(r) {
-					if (!r.message) return;
-
-					if (r.message.length == 1) {
-						frm.set_value("operation_id", r.message[0].name);
-					} else {
-						const args = r.message.map((row) => ({ label: row.idx, value: row.name }));
-						const description = __("Operation {0} added multiple times in the work order {1}", [
-							frm.doc.operation,
-							frm.doc.work_order,
-						]);
-						frm.set_df_property("operation_row_number", "options", args);
-						frm.set_df_property("operation_row_number", "description", description);
-					}
-
-					frm.trigger("toggle_operation_number");
-				},
-			});
+		if (frm.doc.operation_id) {
+			frm.set_value("operation_id", "");
 		}
-	},
 
-	operation_row_number(frm) {
-		if (frm.doc.operation_row_number) {
-			frm.set_value("operation_id", frm.doc.operation_row_number);
-		}
-	},
+		if (!frm.doc.operation || !frm.doc.work_order) return;
 
-	toggle_operation_number(frm) {
-		frm.toggle_display("operation_row_number", !frm.doc.operation_id && frm.doc.operation);
-		frm.toggle_reqd("operation_row_number", !frm.doc.operation_id && frm.doc.operation);
+		const { operation, work_order } = frm.doc;
+		const is_current = () => frm.doc.operation === operation && frm.doc.work_order === work_order;
+
+		frappe.call({
+			method: "erpnext.manufacturing.doctype.job_card.job_card.get_operation_details",
+			args: { work_order, operation },
+			callback(r) {
+				if (!is_current() || !r.message || !r.message.length) return;
+
+				if (r.message.length == 1) {
+					frm.set_value("operation_id", r.message[0].name);
+				} else {
+					frappe.prompt(
+						{
+							fieldname: "operation_row",
+							fieldtype: "Select",
+							label: __("Operation Row"),
+							options: r.message.map((row) => ({ label: row.idx, value: row.name })),
+							reqd: 1,
+							description: __("Operation {0} is added multiple times in the work order {1}", [
+								operation,
+								work_order,
+							]),
+						},
+						(values) => {
+							if (is_current()) {
+								frm.set_value("operation_id", values.operation_row);
+							}
+						},
+						__("Select Operation Row")
+					);
+				}
+			},
+		});
 	},
 
 	make_time_log(frm, args) {
@@ -586,11 +584,10 @@ frappe.ui.form.on("Job Card", {
 
 		// ── Determine which action buttons to show ────────────────────────
 		const has_remaining_qty = doc.for_quantity + doc.process_loss_qty > doc.total_completed_qty;
+		const pending_transfer =
+			has_items && doc.items.some((row) => flt(row.transferred_qty) < flt(row.required_qty));
 		const materials_ready =
-			doc.skip_material_transfer ||
-			doc.transferred_qty >= doc.for_quantity + doc.process_loss_qty ||
-			!doc.finished_good ||
-			!has_items?.length;
+			doc.skip_material_transfer || !pending_transfer || !doc.finished_good || !has_items;
 
 		let last_row = {};
 		const has_sub_ops_or_pending_qty = doc.sub_operations?.length || doc.pending_qty > 0;
@@ -696,10 +693,11 @@ frappe.ui.form.on("Job Card", {
 		// ── Wire up button click handlers ─────────────────────────────────
 		if (show_start) {
 			wrapper.find(".jcd-btn-start").on("click", () => {
-				const from_time = frappe.datetime.now_datetime();
 				const has_no_employee = !frm.doc.employee || !frm.doc.employee.length;
 
 				if (has_no_employee) {
+					// Capture the start time only when the employee dialog is submitted, not on click,
+					// so the time spent selecting the operator is not counted as worked time.
 					frappe.prompt(
 						{
 							fieldtype: "Table MultiSelect",
@@ -709,11 +707,11 @@ frappe.ui.form.on("Job Card", {
 							reqd: 1,
 							filters: { status: "Active" },
 						},
-						(d) => frm.events.start_timer(frm, from_time, d.employees),
+						(d) => frm.events.start_timer(frm, frappe.datetime.now_datetime(), d.employees),
 						__("Assign Job to Employee")
 					);
 				} else {
-					frm.events.start_timer(frm, from_time, frm.doc.employee);
+					frm.events.start_timer(frm, frappe.datetime.now_datetime(), frm.doc.employee);
 				}
 			});
 		}

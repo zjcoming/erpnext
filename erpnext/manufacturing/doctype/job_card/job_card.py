@@ -45,10 +45,6 @@ class OverlapError(frappe.ValidationError):
 	pass
 
 
-class OperationMismatchError(frappe.ValidationError):
-	pass
-
-
 class OperationSequenceError(frappe.ValidationError):
 	pass
 
@@ -106,7 +102,6 @@ class JobCard(Document):
 		operation: DF.Link
 		operation_id: DF.Data | None
 		operation_row_id: DF.Int
-		operation_row_number: DF.Literal[None]
 		pending_qty: DF.Float
 		posting_date: DF.Date | None
 		process_loss_qty: DF.Float
@@ -127,9 +122,11 @@ class JobCard(Document):
 		status: DF.Literal[
 			"Open",
 			"Work In Progress",
+			"Partially Transferred",
 			"Material Transferred",
 			"On Hold",
 			"Submitted",
+			"To Manufacture",
 			"Cancelled",
 			"Completed",
 		]
@@ -166,7 +163,7 @@ class JobCard(Document):
 		self.validate_time_logs()
 		self.validate_on_hold()
 		self.set_status()
-		self.validate_operation_id()
+		self.set_operation_id()
 		self.validate_sequence_id()
 		self.set_sub_operations()
 		self.update_sub_operation_status()
@@ -186,7 +183,7 @@ class JobCard(Document):
 		if self.items and not self.transferred_qty and not self.skip_material_transfer:
 			frappe.throw(
 				_(
-					"Materials needs to be transferred to the work in progress warehouse for the job card {0}"
+					"Materials need to be transferred to the work in progress warehouse for the job card {0}"
 				).format(self.name)
 			)
 
@@ -351,7 +348,7 @@ class JobCard(Document):
 		data = self.get_overlap_for(d, open_job_cards=open_job_cards)
 		if data:
 			frappe.throw(
-				_("Row {0}: From Time and To Time of {1} is overlapping with {2}").format(
+				_("Row {0}: From Time and To Time of {1} are overlapping with {2}").format(
 					d.idx, self.name, data.name
 				),
 				OverlapError,
@@ -900,7 +897,7 @@ class JobCard(Document):
 		):
 			frappe.throw(
 				_(
-					"Materials needs to be transferred to the work in progress warehouse for the job card {0}"
+					"Materials need to be transferred to the work in progress warehouse for the job card {0}"
 				).format(self.name)
 			)
 
@@ -1040,18 +1037,31 @@ class JobCard(Document):
 		return for_quantity, time_in_mins, process_loss_qty, pending_qty
 
 	def update_semi_finished_good_details(self):
-		if self.operation_id:
-			qty = max(flt(self.manufactured_qty), flt(self.total_completed_qty))
+		if not self.operation_id:
+			return
 
-			frappe.db.set_value("Work Order Operation", self.operation_id, "completed_qty", qty)
-			if (
-				self.finished_good
-				and frappe.get_cached_value("Work Order", self.work_order, "production_item")
-				== self.finished_good
-			):
-				_wo_doc = frappe.get_doc("Work Order", self.work_order)
-				_wo_doc.db_set("produced_qty", self.manufactured_qty)
-				_wo_doc.db_set("status", _wo_doc.get_status())
+		job_cards = frappe.get_all(
+			"Job Card",
+			filters={
+				"work_order": self.work_order,
+				"operation_id": self.operation_id,
+				"docstatus": 1,
+				"is_corrective_job_card": 0,
+			},
+			fields=["manufactured_qty", "total_completed_qty"],
+		)
+
+		completed_qty = sum(max(flt(row.manufactured_qty), flt(row.total_completed_qty)) for row in job_cards)
+
+		frappe.db.set_value("Work Order Operation", self.operation_id, "completed_qty", completed_qty)
+		if (
+			self.finished_good
+			and frappe.get_cached_value("Work Order", self.work_order, "production_item")
+			== self.finished_good
+		):
+			_wo_doc = frappe.get_doc("Work Order", self.work_order)
+			_wo_doc.db_set("produced_qty", sum(flt(row.manufactured_qty) for row in job_cards))
+			_wo_doc.db_set("status", _wo_doc.get_status())
 
 	def update_corrective_in_work_order(self, wo):
 		wo.corrective_operation_cost = 0.0
@@ -1195,6 +1205,8 @@ class JobCard(Document):
 
 			frappe.db.set_value("Job Card Item", row.job_card_item, "transferred_qty", flt(transferred_qty))
 
+		self.set_status(update_status=True)
+
 	def get_job_card_items_transferred_qty(self, ste_doc):
 		from frappe.query_builder.functions import Sum
 
@@ -1299,13 +1311,33 @@ class JobCard(Document):
 			self.update_workstation_status()
 
 	def set_finished_good_status(self):
+		# Only reached for a submitted job card (docstatus == 1) with a finished good, see set_status().
 		if (self.manufactured_qty + self.process_loss_qty) >= self.for_quantity:
 			self.status = "Completed"
+		elif (self.total_completed_qty + self.process_loss_qty) >= self.for_quantity:
+			# Production is done and the card is submitted, but the finished goods have not been
+			# booked into stock yet (Manufacture Stock Entry pending) — distinct from active WIP.
+			self.status = "To Manufacture"
 		elif self.transferred_qty > 0 or self.skip_material_transfer:
 			self.status = "Work In Progress"
 
 	def set_non_semi_fg_status(self):
-		if flt(self.for_quantity) <= flt(self.transferred_qty):
+		if self.items:
+			item_data = frappe.get_all(
+				"Job Card Item",
+				filters={"parent": self.name},
+				fields=["transferred_qty", "required_qty"],
+			)
+			all_transferred = item_data and all(
+				flt(d.transferred_qty) >= flt(d.required_qty) for d in item_data
+			)
+			any_transferred = any(flt(d.transferred_qty) > 0 for d in item_data)
+
+			if all_transferred:
+				self.status = "Material Transferred"
+			elif any_transferred:
+				self.status = "Partially Transferred"
+		elif flt(self.for_quantity) <= flt(self.transferred_qty):
 			self.status = "Material Transferred"
 
 		if self.time_logs:
@@ -1320,21 +1352,33 @@ class JobCard(Document):
 		if not self.wip_warehouse:
 			self.wip_warehouse = frappe.get_cached_value("Company", self.company, "default_wip_warehouse")
 
-	def validate_operation_id(self):
-		if (
-			self.get("operation_id")
-			and self.get("operation_row_number")
-			and self.operation
-			and self.work_order
-			and frappe.get_cached_value("Work Order Operation", self.operation_row_number, "name")
-			!= self.operation_id
-		):
-			work_order = bold(get_link_to_form("Work Order", self.work_order))
+	def set_operation_id(self):
+		if not (self.work_order and self.operation):
+			return
+
+		if self.operation_id and self.docstatus != 0:
+			return
+
+		operation_rows = frappe.get_all(
+			"Work Order Operation",
+			filters={"parent": self.work_order, "operation": self.operation},
+			pluck="name",
+		)
+
+		if self.operation_id:
+			if operation_rows and self.operation_id not in operation_rows:
+				frappe.throw(
+					_("Operation {0} does not belong to the work order {1}").format(
+						bold(self.operation), get_link_to_form("Work Order", self.work_order)
+					)
+				)
+		elif len(operation_rows) == 1:
+			self.operation_id = operation_rows[0]
+		elif operation_rows and self.docstatus == 0:
 			frappe.throw(
-				_("Operation {0} does not belong to the work order {1}").format(
-					bold(self.operation), work_order
-				),
-				OperationMismatchError,
+				_(
+					"Operation {0} is added multiple times in the work order {1}. Please select the operation row."
+				).format(bold(self.operation), get_link_to_form("Work Order", self.work_order))
 			)
 
 	@frappe.whitelist()
@@ -1393,14 +1437,15 @@ class JobCard(Document):
 		return current_operation_qty + flt(self.total_completed_qty)
 
 	def validate_previous_operation(self, row, current_operation_qty):
-		message = "Job Card {}: As per the sequence of the operations in the work order {}".format(
-			bold(self.name), bold(get_link_to_form("Work Order", self.work_order))
-		)
-
 		if not row.completed_qty or (row.status != "Completed" and row.completed_qty < current_operation_qty):
 			frappe.throw(
-				_("{0}, complete the operation {1} before the operation {2}.").format(
-					message, bold(row.operation), bold(self.operation)
+				_(
+					"Job Card {0}: As per the sequence of the operations in the work order {1}, complete the operation {2} before the operation {3}."
+				).format(
+					bold(self.name),
+					bold(get_link_to_form("Work Order", self.work_order)),
+					bold(row.operation),
+					bold(self.operation),
 				),
 				OperationSequenceError,
 			)
@@ -1419,7 +1464,7 @@ class JobCard(Document):
 
 	def validate_work_order(self):
 		if self.is_work_order_closed():
-			frappe.throw(_("You can't make any changes to Job Card since Work Order is closed."))
+			frappe.throw(_("You cannot make any changes to Job Card since Work Order is closed."))
 
 	def set_employees(self):
 		self.employee = []
@@ -1617,7 +1662,9 @@ class JobCard(Document):
 			ste.stock_entry.save()
 
 		frappe.msgprint(
-			_("Stock Entry {0} has created").format(get_link_to_form("Stock Entry", ste.stock_entry.name))
+			_("Stock Entry {0} has been created").format(
+				get_link_to_form("Stock Entry", ste.stock_entry.name)
+			)
 		)
 
 		return ste.stock_entry.as_dict()
@@ -1653,7 +1700,7 @@ class JobCard(Document):
 		)
 
 	def populate_manufacture_stock_entry(self, ste):
-		from erpnext.stock.doctype.stock_entry.stock_entry_handler.manufacturing import ManufactureStockEntry
+		from erpnext.stock.doctype.stock_entry.services.manufacturing import ManufactureStockEntry
 
 		ste.make_stock_entry()
 		ste.stock_entry.flags.ignore_mandatory = True
@@ -1667,8 +1714,7 @@ class JobCard(Document):
 
 @frappe.whitelist()
 def make_time_log(kwargs: str | dict):
-	if isinstance(kwargs, str):
-		kwargs = json.loads(kwargs)
+	kwargs = frappe.parse_json(kwargs)
 
 	kwargs = frappe._dict(kwargs)
 	doc = frappe.get_doc("Job Card", kwargs.job_card_id)
@@ -1707,7 +1753,7 @@ def get_operations(doctype: str, txt: str, searchfield: str, start: int, page_le
 		fields=["operation"],
 		limit_start=start,
 		limit_page_length=page_len,
-		order_by="idx asc",
+		order_by="idx asc",  # pg-ok: dropped under distinct on PG — paging order of an operation autocomplete only
 		as_list=1,
 		distinct=True,
 	)
@@ -1743,8 +1789,7 @@ def get_job_card_filter_conditions(jc, filters):
 	Replaces the previous raw SQL ``get_filters_cond`` based filtering so that all
 	user supplied values are passed as bound parameters via the query builder.
 	"""
-	if isinstance(filters, str):
-		filters = json.loads(filters)
+	filters = frappe.parse_json(filters)
 
 	if not filters:
 		return []
@@ -1829,6 +1874,7 @@ def get_calendar_event(d):
 	event_color = {
 		"Completed": "#cdf5a6",
 		"Material Transferred": "#ffdd9e",
+		"Partially Transferred": "#ffe5b4",
 		"Work In Progress": "#D3D3D3",
 	}
 

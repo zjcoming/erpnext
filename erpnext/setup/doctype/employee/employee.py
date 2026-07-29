@@ -139,7 +139,7 @@ class Employee(NestedSet):
 				user = frappe.get_doc("User", existing_user_id)
 				validate_employee_role(user, ignore_emp_check=True)
 				user.save(ignore_permissions=True)
-				remove_user_permission("Employee", self.name, existing_user_id)
+				remove_user_permission("Employee", self.name, existing_user_id, ignore_permissions=True)
 
 	def after_rename(self, old, new, merge):
 		self.db_set("employee", new)
@@ -150,6 +150,9 @@ class Employee(NestedSet):
 		)
 
 	def validate_user_details(self):
+		if not self.user_id:
+			return
+
 		self.validate_for_enabled_user_id()
 		self.validate_duplicate_user_id()
 
@@ -172,6 +175,7 @@ class Employee(NestedSet):
 		if self.user_id:
 			self.update_user()
 			self.update_user_permissions()
+			self.update_user_status()
 		self.reset_employee_emails_cache()
 
 	def before_insert(self):
@@ -199,11 +203,11 @@ class Employee(NestedSet):
 		)
 
 		if employee_user_permission_exists and not self.create_user_permission:
-			remove_user_permission("Employee", self.name, self.user_id)
-			remove_user_permission("Company", self.company, self.user_id)
+			remove_user_permission("Employee", self.name, self.user_id, ignore_permissions=True)
+			remove_user_permission("Company", self.company, self.user_id, ignore_permissions=True)
 		elif not employee_user_permission_exists and self.create_user_permission:
-			add_user_permission("Employee", self.name, self.user_id)
-			add_user_permission("Company", self.company, self.user_id)
+			add_user_permission("Employee", self.name, self.user_id, ignore_permissions=True)
+			add_user_permission("Company", self.company, self.user_id, ignore_permissions=True)
 
 	def update_user(self):
 		# add employee role if missing
@@ -293,10 +297,18 @@ class Employee(NestedSet):
 		if not frappe.db.exists("User", self.user_id):
 			frappe.throw(_("User {0} does not exist").format(self.user_id))
 
+	def update_user_status(self):
+		if not self.user_id:
+			return
+
+		if not self.has_value_changed("status") and not self.has_value_changed("user_id"):
+			return
+
 		user = frappe.get_doc("User", self.user_id)
 		enabled = user.enabled
 		if self.status != "Active" and enabled or self.status == "Active" and enabled == 0:
 			user.enabled = not enabled
+			# Keep linked User status in sync from the Employee lifecycle and record the audit log.
 			user.save(ignore_permissions=True)
 
 	def validate_duplicate_user_id(self):
@@ -415,12 +427,12 @@ def is_holiday(employee, date=None, raise_exception=True, only_non_weekly=False,
 def deactivate_sales_person(status: str, employee: str):
 	frappe.has_permission("Employee", doc=employee, ptype="write", throw=True)
 	if status == "Left":
-		sales_person = frappe.db.get_value("Sales Person", {"Employee": employee})
+		sales_person = frappe.db.get_value("Sales Person", {"employee": employee})
 		if sales_person:
 			frappe.db.set_value("Sales Person", sales_person, "enabled", 0)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_user(employee: str, email: str | None = None, create_user_permission: int = 0) -> str:
 	emp = frappe.get_doc("Employee", employee)
 	emp.check_permission("write")

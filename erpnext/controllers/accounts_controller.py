@@ -38,7 +38,7 @@ from erpnext.accounts.party import (
 from erpnext.accounts.utils import (
 	get_advance_payment_doctypes as _get_advance_payment_doctypes,
 )
-from erpnext.accounts.utils import validate_fiscal_year
+from erpnext.accounts.utils import get_fiscal_year, validate_fiscal_year
 from erpnext.controllers.print_settings import (
 	set_print_templates_for_item_table,
 	set_print_templates_for_taxes,
@@ -47,7 +47,6 @@ from erpnext.controllers.sales_and_purchase_return import validate_return
 from erpnext.setup.utils import get_exchange_rate
 from erpnext.stock.doctype.item.item import get_uom_conv_factor
 from erpnext.stock.get_item_details import (
-	ItemDetailsCtx,
 	get_item_details,
 )
 from erpnext.utilities.regional import temporary_flag
@@ -114,6 +113,26 @@ class AccountsController(TransactionBase):
 				from erpnext.accounts.services.payment_schedule import PaymentScheduleService
 
 				PaymentScheduleService(self).set_payment_schedule()
+
+	def before_insert(self):
+		self.clear_clearance_date_on_amend()
+
+	def clear_clearance_date_on_amend(self):
+		"""Drop the bank reconciliation clearance date copied over while amending.
+
+		The framework copies `no_copy` fields when amending, so a reconciled
+		voucher would carry a stale clearance date into its amendment even though
+		the linked bank transaction gets unreconciled on cancellation.
+		"""
+		if not self.get("amended_from"):
+			return
+
+		if self.meta.has_field("clearance_date"):
+			self.clearance_date = None
+
+		for payment in self.get("payments") or []:
+			if payment.meta.has_field("clearance_date"):
+				payment.clearance_date = None
 
 	def on_update(self):
 		from erpnext.controllers.taxes_and_totals import process_item_wise_tax_details
@@ -215,7 +234,11 @@ class AccountsController(TransactionBase):
 			if self.is_return:
 				self.validate_qty()
 			else:
-				self.validate_deferred_start_and_end_date()
+				from erpnext.accounts.services.deferred_accounting import DeferredAccountingService
+
+				deferred_service = DeferredAccountingService(self)
+				deferred_service.clear_stale_deferred_fields()
+				deferred_service.validate_start_and_end_date()
 
 		from erpnext.accounts.services.internal_transfer import InternalTransferService
 
@@ -243,7 +266,9 @@ class AccountsController(TransactionBase):
 
 			validate_return(self)
 
-		self.validate_all_documents_schedule()
+		from erpnext.accounts.services.payment_schedule import PaymentScheduleService
+
+		PaymentScheduleService(self).validate_all_documents_schedule()
 
 		from erpnext.accounts.services.party_validation import PartyValidator
 
@@ -254,7 +279,7 @@ class AccountsController(TransactionBase):
 			if invalid_advances := [x for x in self.advances if not x.reference_type or not x.reference_name]:
 				frappe.throw(
 					_(
-						"Rows: {0} in {1} section are Invalid. Reference Name should point to a valid Payment Entry or Journal Entry."
+						"Rows: {0} in {1} section are invalid. Reference Name should point to a valid Payment Entry or Journal Entry."
 					).format(
 						frappe.bold(comma_and([x.idx for x in invalid_advances])),
 						frappe.bold(_("Advance Payments")),
@@ -267,7 +292,9 @@ class AccountsController(TransactionBase):
 
 			self.set_advance_gain_or_loss()
 
-			self.validate_deferred_income_expense_account()
+			from erpnext.accounts.services.deferred_accounting import DeferredAccountingService
+
+			DeferredAccountingService(self).validate_income_expense_account()
 			InternalTransferService(self).set_account()
 
 		if self.doctype == "Purchase Invoice":
@@ -485,88 +512,9 @@ class AccountsController(TransactionBase):
 					)
 				)
 
-	def validate_deferred_income_expense_account(self):
-		field_map = {
-			"Sales Invoice": "deferred_revenue_account",
-			"Purchase Invoice": "deferred_expense_account",
-		}
-
-		for item in self.get("items"):
-			if item.get("enable_deferred_revenue") or item.get("enable_deferred_expense"):
-				if not item.get(field_map.get(self.doctype)):
-					default_deferred_account = frappe.get_cached_value(
-						"Company", self.company, "default_" + field_map.get(self.doctype)
-					)
-					if not default_deferred_account:
-						frappe.throw(
-							_(
-								"Row #{0}: Please update deferred revenue/expense account in item row or default account in company master"
-							).format(item.idx)
-						)
-					else:
-						item.set(field_map.get(self.doctype), default_deferred_account)
-
 	def validate_auto_repeat_subscription_dates(self):
 		if self.get("from_date") and self.get("to_date") and getdate(self.from_date) > getdate(self.to_date):
 			frappe.throw(_("To Date cannot be before From Date"), title=_("Invalid Auto Repeat Date"))
-
-	def validate_deferred_start_and_end_date(self):
-		for d in self.items:
-			if d.get("enable_deferred_revenue") or d.get("enable_deferred_expense"):
-				if not (d.service_start_date and d.service_end_date):
-					frappe.throw(
-						_("Row #{0}: Service Start and End Date is required for deferred accounting").format(
-							d.idx
-						)
-					)
-				elif getdate(d.service_start_date) > getdate(d.service_end_date):
-					frappe.throw(
-						_("Row #{0}: Service Start Date cannot be greater than Service End Date").format(
-							d.idx
-						)
-					)
-				elif getdate(self.posting_date) > getdate(d.service_end_date):
-					frappe.throw(
-						_("Row #{0}: Service End Date cannot be before Invoice Posting Date").format(d.idx)
-					)
-
-	def validate_invoice_documents_schedule(self):
-		if (
-			self.is_return
-			or (self.doctype == "Purchase Invoice" and self.is_paid)
-			or (self.doctype == "Sales Invoice" and self.is_pos)
-			or self.get("is_opening") == "Yes"
-		):
-			self.payment_terms_template = ""
-			self.payment_schedule = []
-
-		if self.is_return:
-			return
-
-		from erpnext.accounts.services.payment_schedule import PaymentScheduleService
-
-		ps = PaymentScheduleService(self)
-		ps.validate_payment_schedule_dates()
-		ps.set_due_date()
-		ps.set_payment_schedule()
-		if not self.get("ignore_default_payment_terms_template"):
-			ps.validate_payment_schedule_amount()
-			self.validate_due_date()
-		self.validate_advance_entries()
-
-	def validate_non_invoice_documents_schedule(self):
-		from erpnext.accounts.services.payment_schedule import PaymentScheduleService
-
-		ps = PaymentScheduleService(self)
-		ps.set_payment_schedule()
-		ps.validate_payment_schedule_dates()
-		ps.validate_payment_schedule_amount()
-
-	def validate_all_documents_schedule(self):
-		if self.doctype in ("Sales Invoice", "Purchase Invoice"):
-			self.validate_invoice_documents_schedule()
-		elif self.doctype in ("Quotation", "Purchase Order", "Sales Order"):
-			self.validate_non_invoice_documents_schedule()
 
 	def before_print(self, settings=None):
 		if self.doctype in [
@@ -640,21 +588,29 @@ class AccountsController(TransactionBase):
 			self.calculate_contribution()
 
 	def validate_date_with_fiscal_year(self):
-		if self.meta.get_field("fiscal_year"):
-			date_field = None
-			if self.meta.get_field("posting_date"):
-				date_field = "posting_date"
-			elif self.meta.get_field("transaction_date"):
-				date_field = "transaction_date"
+		date_field = None
+		if self.meta.get_field("posting_date"):
+			date_field = "posting_date"
+		elif self.meta.get_field("transaction_date"):
+			date_field = "transaction_date"
 
-			if date_field and self.get(date_field):
-				validate_fiscal_year(
-					self.get(date_field),
-					self.fiscal_year,
-					self.company,
-					self.meta.get_label(date_field),
-					self,
-				)
+		if not date_field or not self.get(date_field):
+			return
+
+		if self.meta.get_field("fiscal_year"):
+			validate_fiscal_year(
+				self.get(date_field),
+				self.fiscal_year,
+				self.company,
+				self.meta.get_label(date_field),
+				self,
+			)
+		else:
+			get_fiscal_year(
+				self.get(date_field),
+				company=self.company,
+				label=self.meta.get_label(date_field),
+			)
 
 	def validate_due_date(self):
 		if self.get("is_pos") or self.doctype not in ["Sales Invoice", "Purchase Invoice"]:
@@ -754,7 +710,7 @@ class AccountsController(TransactionBase):
 
 			for item in self.get("items"):
 				if item.get("item_code"):
-					ctx: ItemDetailsCtx = ItemDetailsCtx(parent_dict.copy())
+					ctx: frappe._dict = frappe._dict(parent_dict.copy())
 					ctx.update(item.as_dict())
 
 					ctx.update(
@@ -1205,7 +1161,7 @@ class AccountsController(TransactionBase):
 				{"sales_order": None, "sales_order_item": None},
 			)
 
-			frappe.msgprint(_("Purchase Orders {0} are un-linked").format("\n".join(linked_po)))
+			frappe.msgprint(_("Purchase Orders {0} are unlinked").format("\n".join(linked_po)))
 
 	def get_company_default(self, fieldname, ignore_validation=False):
 		from erpnext.accounts.utils import get_company_default
@@ -1555,13 +1511,13 @@ def update_invoice_status():
 
 		total = (
 			frappe.qb.terms.Case()
-			.when(invoice.disable_rounded_total, invoice.grand_total)
+			.when(invoice.disable_rounded_total == 1, invoice.grand_total)
 			.else_(invoice.rounded_total)
 		)
 
 		base_total = (
 			frappe.qb.terms.Case()
-			.when(invoice.disable_rounded_total, invoice.base_grand_total)
+			.when(invoice.disable_rounded_total == 1, invoice.base_grand_total)
 			.else_(invoice.base_rounded_total)
 		)
 
@@ -1574,7 +1530,7 @@ def update_invoice_status():
 			& (invoice.outstanding_amount > 0)
 			& (invoice.status.like("Unpaid%") | invoice.status.like("Partly Paid%"))
 			& (
-				((invoice.is_pos & invoice.due_date < today) | is_overdue)
+				(((invoice.is_pos == 1) & (invoice.due_date < today)) | is_overdue)
 				if doctype == "Sales Invoice"
 				else is_overdue
 			)
@@ -1697,7 +1653,7 @@ def get_missing_company_details(doctype: str, docname: str):
 	}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def update_company_master_and_address(current_doctype: str, name: str, company: str, details: dict | str):
 	from frappe.utils import validate_email_address
 

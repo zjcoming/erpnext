@@ -11,6 +11,7 @@ are called from other modules.
 import frappe
 from dateutil.relativedelta import relativedelta
 from frappe import _
+from frappe.query_builder.functions import CombineDatetime
 from frappe.utils import (
 	cint,
 	date_diff,
@@ -168,31 +169,74 @@ class OperationsService:
 
 		self.doc.set("operations", operations)
 		self.calculate_time()
+		self.set_operation_warehouses()
+
+	def set_operation_warehouses(self):
+		"""For semi-finished goods tracking, default each operation's warehouses from the Work
+		Order and chain them: the first operation pulls from the WO source warehouse and every
+		later operation pulls from the previous operation's output; intermediate outputs go to the
+		WIP warehouse while the final operation outputs to the WO finished goods warehouse.
+
+		Only empty fields are filled, so values configured on the BOM/operation are preserved."""
+		if not self.doc.track_semi_finished_goods or not self.doc.operations:
+			return
+
+		operations = self.doc.operations
+		last_idx = len(operations) - 1
+		for idx, op in enumerate(operations):
+			if not op.source_warehouse:
+				op.source_warehouse = self.doc.source_warehouse
+
+			if not op.fg_warehouse:
+				op.fg_warehouse = self.doc.fg_warehouse if idx == last_idx else self.doc.source_warehouse
+
+			if not op.wip_warehouse:
+				op.wip_warehouse = self.doc.wip_warehouse
 
 	def _collect_bom_operations(self):
-		operations = []
+		groups = []
 		if self.doc.use_multi_level_bom:
 			bom_tree = frappe.get_doc("BOM", self.doc.bom_no).get_tree_representation()
 			for node in reversed(bom_tree.level_order_traversal()):
 				if node.is_bom:
 					qty = node.exploded_qty / node.bom_qty
-					operations.extend(self._bom_operations(node.name, qty=qty, exploded=True))
+					groups.append((self._bom_operations(node.name), qty, True))
 
 		bom_qty = frappe.get_cached_value("BOM", self.doc.bom_no, "quantity")
-		operations.extend(self._bom_operations(self.doc.bom_no, qty=bom_qty))
+		groups.append((self._bom_operations(self.doc.bom_no), bom_qty, False))
+
+		all_rows = [d for rows, qty, exploded in groups for d in rows]
+		batch_size_flags = self._get_batch_size_flags(d.operation for d in all_rows)
+
+		operations = []
+		for rows, qty, exploded in groups:
+			for d in rows:
+				self._adjust_operation_row(d, qty, exploded, batch_size_flags)
+				operations.append(d)
 		return operations
 
-	def _bom_operations(self, bom_no, qty=1, exploded=False):
-		data = frappe.get_all(
+	def _bom_operations(self, bom_no):
+		return frappe.get_all(
 			"BOM Operation", filters={"parent": bom_no}, fields=_BOM_OPERATION_FIELDS, order_by="idx"
 		)
-		for d in data:
-			self._adjust_operation_row(d, qty, exploded)
-		return data
 
-	def _adjust_operation_row(self, d, qty, exploded):
+	def _get_batch_size_flags(self, operation_names):
+		names = {name for name in operation_names if name}
+		if not names:
+			return {}
+		return dict(
+			frappe.get_all(
+				"Operation",
+				filters={"name": ["in", list(names)]},
+				fields=["name", "create_job_card_based_on_batch_size"],
+				as_list=True,
+				limit_page_length=0,
+			)
+		)
+
+	def _adjust_operation_row(self, d, qty, exploded, batch_size_flags):
 		if not d.fixed_time:
-			if frappe.get_value("Operation", d.operation, "create_job_card_based_on_batch_size"):
+			if batch_size_flags.get(d.operation):
 				qty = d.batch_size
 			d.time_in_mins = d.time_in_mins * flt(qty) if exploded else d.time_in_mins / flt(qty)
 
@@ -268,13 +312,17 @@ class OperationsService:
 			self.doc.actual_end_date = max(end_dates)
 
 	def _set_dates_from_stock_entries(self):
-		data = frappe.get_all(
-			"Stock Entry",
-			fields=[{"TIMESTAMP": ["posting_date", "posting_time"], "as": "posting_datetime"}],
-			filters={
-				"work_order": self.doc.name,
-				"purpose": ("in", ["Material Transfer for Manufacture", "Manufacture"]),
-			},
+		# {"TIMESTAMP": [...]} renders MySQL's TIMESTAMP(date, time), invalid on postgres; use the
+		# portable CombineDatetime via query builder instead.
+		se = frappe.qb.DocType("Stock Entry")
+		data = (
+			frappe.qb.from_(se)
+			.select(CombineDatetime(se.posting_date, se.posting_time).as_("posting_datetime"))
+			.where(
+				(se.work_order == self.doc.name)
+				& (se.purpose.isin(["Material Transfer for Manufacture", "Manufacture"]))
+			)
+			.run(as_dict=True)
 		)
 		if not data:
 			return

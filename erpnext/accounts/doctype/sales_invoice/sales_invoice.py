@@ -412,8 +412,8 @@ class SalesInvoice(SellingController):
 			validate_account_head(item.idx, item.income_account, self.company, _("Income"))
 
 	def before_save(self):
+		POSService(self).update_paid_amount()
 		POSService(self).set_account_for_mode_of_payment()
-		POSService(self).set_paid_amount()
 
 	def before_submit(self):
 		self.add_remarks()
@@ -465,6 +465,7 @@ class SalesInvoice(SellingController):
 			self.update_billing_status_for_zero_amount_refdoc("Delivery Note")
 			self.update_billing_status_for_zero_amount_refdoc("Sales Order")
 			self.check_credit_limit()
+			self.check_overdue_billing_threshold()
 
 		if cint(self.is_pos) != 1 and not self.is_return:
 			self.update_against_document_in_jv()
@@ -669,6 +670,11 @@ class SalesInvoice(SellingController):
 		if validate_against_credit_limit:
 			check_credit_limit(self.customer, self.company, bypass_credit_limit_check_at_sales_order)
 
+	def check_overdue_billing_threshold(self):
+		from erpnext.selling.doctype.customer.customer import check_overdue_billing_threshold
+
+		check_overdue_billing_threshold(self.customer, self.company)
+
 	@frappe.whitelist()
 	def set_missing_values(self, for_validate: bool = False):
 		pos = POSService(self).set_pos_fields(for_validate)
@@ -755,7 +761,7 @@ class SalesInvoice(SellingController):
 
 		if account.report_type != "Balance Sheet":
 			msg = (
-				_("Please ensure {} account is a Balance Sheet account.").format(frappe.bold(_("Debit To")))
+				_("Please ensure {0} account is a Balance Sheet account.").format(frappe.bold(_("Debit To")))
 				+ " "
 			)
 			msg += _(
@@ -765,7 +771,7 @@ class SalesInvoice(SellingController):
 
 		if self.customer and account.account_type != "Receivable":
 			msg = (
-				_("Please ensure {} account {} is a Receivable account.").format(
+				_("Please ensure {0} account {1} is a Receivable account.").format(
 					frappe.bold(_("Debit To")), frappe.bold(self.debit_to)
 				)
 				+ " "

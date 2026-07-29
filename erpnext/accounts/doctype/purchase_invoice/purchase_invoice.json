@@ -614,10 +614,12 @@
   {
    "default": "0",
    "depends_on": "eval:doc.items.every((item) => !item.pr_detail)",
+   "description": "If checked, updates inventory; stock and accounting entries are created together. Leave unchecked if a Purchase Receipt is created separately.",
    "fieldname": "update_stock",
    "fieldtype": "Check",
    "label": "Update Stock",
-   "print_hide": 1
+   "print_hide": 1,
+   "show_description_on_click": 1
   },
   {
    "fieldname": "scan_barcode",
@@ -1394,8 +1396,10 @@
    "fetch_from": "supplier.represents_company",
    "fieldname": "represents_company",
    "fieldtype": "Link",
+   "ignore_user_permissions": 1,
    "label": "Represents Company",
-   "options": "Company"
+   "options": "Company",
+   "read_only": 1
   },
   {
    "depends_on": "eval:doc.update_stock && doc.is_internal_supplier",
@@ -1690,7 +1694,7 @@
  "idx": 204,
  "is_submittable": 1,
  "links": [],
- "modified": "2026-05-28 12:36:55.215363",
+ "modified": "2026-07-12 23:54:21.263951",
  "modified_by": "Administrator",
  "module": "Accounts",
  "name": "Purchase Invoice",
