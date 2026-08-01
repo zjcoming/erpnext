@@ -137,9 +137,7 @@ services:
           fi
         done
 
-        if [ ! -e sites/assets/erpnext ]; then
-          bench build --app erpnext --force || true
-        fi
+        bench build --force
 
         bench compile-po-to-mo --app frappe --locale zh --force || true
         bench compile-po-to-mo --app erpnext --locale zh --force || true
@@ -147,8 +145,18 @@ services:
         bench --site "$$SITE_NAME" execute process_simplification.install.set_default_language || true
         bench --site "$$SITE_NAME" enable-scheduler || true
         bench --site "$$SITE_NAME" clear-cache
+        bench --site "$$SITE_NAME" clear-website-cache || true
 
-        exec bench start
+        {
+          echo "web: bench --site $$SITE_NAME serve --port 8000"
+          echo
+          echo "socketio: node apps/frappe/socketio.js"
+          echo
+          echo "schedule: bench schedule"
+          echo "worker: bench worker 1>> logs/worker.log 2>> logs/worker.error.log"
+        } > Procfile.docker
+
+        exec bench start --procfile Procfile.docker
 
 volumes:
   mariadb-data:
