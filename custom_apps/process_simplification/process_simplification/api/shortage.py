@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-from collections import defaultdict
-
 import frappe
-from frappe import _
 from frappe.query_builder.functions import Sum
 from frappe.utils import add_days, nowdate, parse_json
 
@@ -77,32 +74,21 @@ def _source_note(sources):
 	)
 
 
-@frappe.whitelist()
-def check_shortage(selected_rows, company: str | None = None):
-	frappe.has_permission("Material Request", "read", throw=True)
-	rows = _selected_rows(selected_rows)
-	defaults = get_company_defaults(company)
-	company = company or defaults.company
-	if not company:
-		throw_chinese("默认公司缺失，请先设置公司。")
+def calculate_material_shortages(demands, company: str, defaults=None):
+	"""Calculate net raw-material shortages for BOM demand from any guided flow.
 
+	Each demand supplies ``bom_no``, ``qty`` and an optional ``source`` mapping.
+	The returned rows intentionally match the shortage-purchase page contract.
+	"""
+	defaults = defaults or get_company_defaults(company)
 	materials = {}
-	for selected in rows:
-		workbench_row = _workbench_row(selected.sales_order, selected.sales_order_item)
-		if workbench_row.get("unsupported"):
+	for demand in demands or []:
+		demand = frappe._dict(demand)
+		qty = normalize_qty(demand.get("qty"))
+		if not demand.get("bom_no") or qty <= 0:
 			continue
 
-		demand_qty = normalize_qty(selected.get("qty")) or normalize_qty(workbench_row.uncovered_qty)
-		if demand_qty <= 0:
-			demand_qty = normalize_qty(workbench_row.active_work_order_qty)
-		if demand_qty <= 0:
-			continue
-
-		bom_no = get_default_bom(workbench_row.item_code)
-		if not bom_no:
-			continue
-
-		bom_items = get_bom_items_as_dict(bom_no, company, qty=demand_qty, fetch_exploded=1)
+		bom_items = get_bom_items_as_dict(demand.bom_no, company, qty=qty, fetch_exploded=1)
 		for item_code, bom_item in bom_items.items():
 			warehouse = bom_item.get("source_warehouse") or bom_item.get("default_warehouse") or defaults.source_warehouse
 			key = (item_code, warehouse)
@@ -120,17 +106,15 @@ def check_shortage(selected_rows, company: str | None = None):
 					"sources": [],
 				}
 			materials[key]["required_qty"] += normalize_qty(bom_item.get("qty"))
-			materials[key]["sources"].append(
-				{
-					"sales_order": selected.sales_order,
-					"sales_order_item": selected.sales_order_item,
-					"finished_item": workbench_row.item_code,
-					"qty": demand_qty,
-				}
-			)
+			if demand.get("source"):
+				materials[key]["sources"].append(demand.source)
 
 	for material in materials.values():
-		material["available_qty"] = get_stock_balance(material["item_code"], material["warehouse"]) if material["warehouse"] else 0
+		material["available_qty"] = (
+			get_stock_balance(material["item_code"], material["warehouse"])
+			if material["warehouse"]
+			else 0
+		)
 		material["open_material_request_qty"] = _mr_outstanding(material["item_code"])
 		material["open_purchase_order_qty"] = _po_outstanding(material["item_code"])
 		material["shortage_qty"] = max(
@@ -141,7 +125,48 @@ def check_shortage(selected_rows, company: str | None = None):
 			0,
 		)
 
-	shortages = [material for material in materials.values() if material["shortage_qty"] > 0]
+	return [material for material in materials.values() if material["shortage_qty"] > 0]
+
+
+@frappe.whitelist()
+def check_shortage(selected_rows, company: str | None = None):
+	frappe.has_permission("Material Request", "read", throw=True)
+	rows = _selected_rows(selected_rows)
+	defaults = get_company_defaults(company)
+	company = company or defaults.company
+	if not company:
+		throw_chinese("默认公司缺失，请先设置公司。")
+
+	demands = []
+	for selected in rows:
+		workbench_row = _workbench_row(selected.sales_order, selected.sales_order_item)
+		if workbench_row.get("unsupported"):
+			continue
+
+		demand_qty = normalize_qty(selected.get("qty")) or normalize_qty(workbench_row.uncovered_qty)
+		if demand_qty <= 0:
+			demand_qty = normalize_qty(workbench_row.active_work_order_qty)
+		if demand_qty <= 0:
+			continue
+
+		bom_no = get_default_bom(workbench_row.item_code)
+		if not bom_no:
+			continue
+
+		demands.append(
+			{
+				"bom_no": bom_no,
+				"qty": demand_qty,
+				"source": {
+					"sales_order": selected.sales_order,
+					"sales_order_item": selected.sales_order_item,
+					"finished_item": workbench_row.item_code,
+					"qty": demand_qty,
+				},
+			}
+		)
+
+	shortages = calculate_material_shortages(demands, company, defaults)
 	if not shortages:
 		return {"shortages": [], "message": "当前选择的订单没有需要采购的缺料。"}
 	return {"shortages": shortages}

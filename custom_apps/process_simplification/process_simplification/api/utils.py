@@ -89,6 +89,7 @@ def get_sales_order_item(sales_order_item: str):
 			"delivered_qty",
 			"conversion_factor",
 			"stock_uom",
+			"bom_no",
 			"docstatus",
 		],
 		as_dict=True,

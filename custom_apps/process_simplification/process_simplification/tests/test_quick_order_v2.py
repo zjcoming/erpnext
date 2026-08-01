@@ -1,0 +1,662 @@
+from unittest.mock import MagicMock, patch
+
+import frappe
+from frappe.tests import UnitTestCase
+from frappe.utils import add_days, nowdate
+
+from process_simplification.api.utils import SimplifiedFlowError
+
+
+class TestQuickOrderV2(UnitTestCase):
+	def _normalized_order(self):
+		return frappe._dict(
+			{
+				"customer": "_Test Customer",
+				"delivery_date": add_days(nowdate(), 1),
+				"po_no": "PO-1001",
+				"remarks": "同批送达",
+				"items": [{"item_code": "_Test Item", "qty": 1, "rate": 10}],
+			}
+		)
+
+	def test_normalized_payload_keeps_only_supported_quick_order_fields(self):
+		from process_simplification.api.quick_order import normalize_quick_order_payload
+
+		result = normalize_quick_order_payload(
+			{
+				"customer": " _Test Customer ",
+				"delivery_date": "2099-01-01",
+				"po_no": " PO-1001 ",
+				"remarks": "  同批送达  ",
+				"items": [{"item_code": " _Test Item ", "qty": "2", "rate": "9.5"}],
+			}
+		)
+
+		self.assertEqual(result.customer, "_Test Customer")
+		self.assertEqual(result.po_no, "PO-1001")
+		self.assertEqual(result.remarks, "同批送达")
+		self.assertEqual(result.get("items"), [{"item_code": "_Test Item", "qty": 2.0, "rate": 9.5}])
+
+	def test_normalized_payload_rejects_advanced_line_fields(self):
+		from process_simplification.api.quick_order import normalize_quick_order_payload
+
+		with self.assertRaises(SimplifiedFlowError):
+			normalize_quick_order_payload(
+				{
+					"customer": "_Test Customer",
+					"delivery_date": add_days(nowdate(), 1),
+					"items": [
+						{
+							"item_code": "_Test Item",
+							"qty": 1,
+							"rate": 10,
+							"warehouse": "Stores - _TC",
+						}
+					],
+				}
+			)
+
+	def test_normalized_payload_rejects_removed_partial_delivery_field_even_when_false(self):
+		from process_simplification.api.quick_order import normalize_quick_order_payload
+
+		with self.assertRaises(SimplifiedFlowError):
+			normalize_quick_order_payload(
+				{
+					"customer": "_Test Customer",
+					"delivery_date": add_days(nowdate(), 1),
+					"allow_partial_delivery": 0,
+					"items": [{"item_code": "_Test Item", "qty": 1, "rate": 10}],
+				}
+			)
+
+	def test_normalized_payload_rejects_zero_rate(self):
+		from process_simplification.api.quick_order import normalize_quick_order_payload
+
+		with self.assertRaises(SimplifiedFlowError):
+			normalize_quick_order_payload(
+				{
+					"customer": "_Test Customer",
+					"delivery_date": add_days(nowdate(), 1),
+					"items": [{"item_code": "_Test Item", "qty": 1, "rate": 0}],
+				}
+			)
+
+	def test_normalized_payload_rejects_past_delivery_date(self):
+		from process_simplification.api.quick_order import normalize_quick_order_payload
+
+		with self.assertRaises(SimplifiedFlowError):
+			normalize_quick_order_payload(
+				{
+					"customer": "_Test Customer",
+					"delivery_date": add_days(nowdate(), -1),
+					"items": [{"item_code": "_Test Item", "qty": 1, "rate": 10}],
+				}
+			)
+
+	@patch("process_simplification.api.quick_order.get_quick_order_item_defaults")
+	def test_lightweight_preview_uses_reservable_qty_and_allows_stock_covered_item_without_bom(self, defaults):
+		from process_simplification.api.quick_order import preview_quick_order_items
+
+		defaults.return_value = {
+			"item_code": "FG-001",
+			"item_name": "Finished Good",
+			"stock_uom": "Nos",
+			"warehouse": "Finished Goods - TC",
+			"rate": 5,
+			"currency": "CNY",
+			"price_list": "Standard Selling",
+			"available_to_reserve": 10,
+			"bom_no": None,
+			"has_bom": False,
+		}
+
+		result = preview_quick_order_items([{"item_code": "FG-001", "qty": 8}])
+
+		self.assertEqual(result["rows"][0]["available_to_reserve"], 8)
+		self.assertEqual(result["rows"][0]["production_required"], 0)
+		self.assertFalse(result["rows"][0]["blocked"])
+
+	@patch("process_simplification.api.quick_order.get_quick_order_item_defaults")
+	def test_lightweight_preview_blocks_production_without_bom(self, defaults):
+		from process_simplification.api.quick_order import preview_quick_order_items
+
+		defaults.return_value = {
+			"item_code": "FG-001",
+			"item_name": "Finished Good",
+			"stock_uom": "Nos",
+			"warehouse": "Finished Goods - TC",
+			"rate": 5,
+			"currency": "CNY",
+			"price_list": "Standard Selling",
+			"available_to_reserve": 2,
+			"bom_no": None,
+			"has_bom": False,
+		}
+
+		result = preview_quick_order_items([{"item_code": "FG-001", "qty": 8}])
+
+		self.assertEqual(result["rows"][0]["production_required"], 6)
+		self.assertTrue(result["rows"][0]["blocked"])
+		self.assertEqual(result["rows"][0]["issues"][0]["code"], "PRODUCTION_BOM_MISSING")
+
+	@patch("process_simplification.api.quick_order.get_quick_order_item_defaults")
+	def test_lightweight_preview_blocks_when_finished_goods_warehouse_is_missing(self, defaults):
+		from process_simplification.api.quick_order import preview_quick_order_items
+
+		defaults.return_value = {
+			"item_code": "FG-001",
+			"item_name": "Finished Good",
+			"stock_uom": "Nos",
+			"warehouse": None,
+			"available_to_reserve": 0,
+			"bom_no": "BOM-FG-001",
+		}
+
+		result = preview_quick_order_items([{"item_code": "FG-001", "qty": 1}])
+
+		self.assertTrue(result["rows"][0]["blocked"])
+		self.assertEqual(result["rows"][0]["issues"][0]["code"], "FG_WAREHOUSE_MISSING")
+
+	@patch("process_simplification.api.quick_order.frappe.db.exists", return_value=True)
+	@patch("process_simplification.api.quick_order.frappe.get_cached_value")
+	@patch("process_simplification.api.quick_order.frappe.has_permission")
+	def test_item_defaults_reject_active_product_bundle(self, has_permission, get_cached_value, db_exists):
+		from process_simplification.api.quick_order import get_quick_order_item_defaults
+
+		get_cached_value.return_value = frappe._dict(
+			{
+				"item_code": "BUNDLE-001",
+				"item_name": "Bundle",
+				"stock_uom": "Nos",
+				"is_sales_item": 1,
+				"is_stock_item": 0,
+				"disabled": 0,
+				"has_variants": 0,
+				"has_serial_no": 0,
+				"has_batch_no": 0,
+			}
+		)
+
+		with self.assertRaises(SimplifiedFlowError):
+			get_quick_order_item_defaults("BUNDLE-001", "_Test Company")
+
+	def test_lightweight_preview_batches_multiple_lines(self):
+		from process_simplification.api.quick_order import preview_quick_order_items
+
+		def item_defaults(item_code, company=None):
+			return {
+				"item_code": item_code,
+				"item_name": item_code,
+				"stock_uom": "Nos",
+				"warehouse": "Finished Goods - TC",
+				"available_to_reserve": 3 if item_code == "FG-001" else 0,
+				"bom_no": "BOM-{0}".format(item_code),
+			}
+
+		with patch(
+			"process_simplification.api.quick_order.get_quick_order_item_defaults",
+			side_effect=item_defaults,
+		):
+			result = preview_quick_order_items(
+				[
+					{"item_code": "FG-001", "qty": 2},
+					{"item_code": "FG-002", "qty": 5},
+				]
+			)
+
+		self.assertEqual(len(result["rows"]), 2)
+		self.assertEqual(result["available_to_reserve"], 2)
+		self.assertEqual(result["production_required"], 5)
+
+	@patch(
+		"process_simplification.api.quick_order.get_quick_order_item_defaults",
+		side_effect=frappe.PermissionError,
+	)
+	def test_lightweight_preview_returns_blocker_for_inaccessible_item(self, defaults):
+		from process_simplification.api.quick_order import preview_quick_order_items
+
+		result = preview_quick_order_items([{"item_code": "SECRET-ITEM", "qty": 1}])
+
+		self.assertTrue(result["rows"][0]["blocked"])
+		self.assertEqual(result["rows"][0]["issues"][0]["code"], "ITEM_UNAVAILABLE")
+
+	@patch("process_simplification.api.quick_order.frappe.get_single_value", return_value=0)
+	@patch("process_simplification.api.quick_order.frappe.db.get_value", return_value="SO-0001")
+	def test_duplicate_customer_po_is_a_named_blocker(self, db_get_value, get_single_value):
+		from process_simplification.api.quick_order import _customer_po_issue
+
+		issue = _customer_po_issue("_Test Customer", "PO-1001")
+
+		self.assertEqual(issue["code"], "DUPLICATE_CUSTOMER_PO")
+		self.assertEqual(issue["severity"], "blocker")
+
+	@patch("process_simplification.api.quick_order.frappe.get_single_value", return_value=1)
+	@patch("process_simplification.api.quick_order.frappe.db.get_value", return_value="SO-0001")
+	def test_duplicate_customer_po_is_warning_when_erpnext_allows_it(self, db_get_value, get_single_value):
+		from process_simplification.api.quick_order import _customer_po_issue
+
+		issue = _customer_po_issue("_Test Customer", "PO-1001")
+
+		self.assertEqual(issue["code"], "DUPLICATE_CUSTOMER_PO_ALLOWED")
+		self.assertEqual(issue["severity"], "warning")
+
+	@patch("process_simplification.api.quick_order._standard_validate_sales_order")
+	def test_credit_limit_failure_is_a_named_blocker(self, standard_validate):
+		from process_simplification.api.quick_order import _validate_commercial_rules
+
+		order = MagicMock()
+		order.check_credit_limit.side_effect = frappe.ValidationError("credit exceeded")
+		issues = _validate_commercial_rules(order)
+
+		self.assertEqual(issues[0]["code"], "CREDIT_LIMIT")
+		self.assertEqual(issues[0]["severity"], "blocker")
+
+	@patch("process_simplification.api.quick_order._validate_commercial_rules", return_value=[])
+	@patch("process_simplification.api.quick_order._build_sales_order")
+	@patch("process_simplification.api.quick_order.calculate_material_shortages")
+	@patch("process_simplification.api.quick_order.preview_quick_order_items")
+	@patch("process_simplification.api.quick_order._customer_po_issue", return_value=None)
+	@patch("process_simplification.api.quick_order._validate_customer", return_value=[])
+	@patch("process_simplification.api.quick_order.get_company_defaults")
+	@patch("process_simplification.api.quick_order.frappe.has_permission")
+	def test_production_and_material_shortages_are_warning_only(
+		self,
+		has_permission,
+		get_company_defaults,
+		validate_customer,
+		customer_po_issue,
+		preview,
+		material_shortages,
+		build_sales_order,
+		commercial_rules,
+	):
+		from process_simplification.api.quick_order import _evaluate_quick_order
+
+		get_company_defaults.return_value = frappe._dict(
+			{"company": "_Test Company", "source_warehouse": "Stores - TC"}
+		)
+		preview.return_value = {
+			"rows": [
+				{
+					"row": 1,
+					"item_code": "_Test Item",
+					"warehouse": "Finished Goods - TC",
+					"available_to_reserve": 0,
+					"production_required": 1,
+					"bom_no": "BOM-_Test Item-001",
+					"issues": [
+						{
+							"code": "FINISHED_GOODS_SHORTAGE",
+							"severity": "warning",
+							"message": "需要生产 1。",
+							"scope": "line",
+							"row": 1,
+						}
+					],
+				}
+			],
+			"available_to_reserve": 0,
+			"production_required": 1,
+		}
+		material_shortages.return_value = [{"item_code": "RM-001", "shortage_qty": 2}]
+		order = MagicMock()
+		order.grand_total = 10
+		order.currency = "CNY"
+		build_sales_order.return_value = order
+
+		result = _evaluate_quick_order(self._normalized_order())
+
+		self.assertTrue(result["can_submit"])
+		self.assertEqual(
+			{issue["code"] for issue in result["warnings"]},
+			{"FINISHED_GOODS_SHORTAGE", "RAW_MATERIAL_SHORTAGE"},
+		)
+		self.assertEqual(result["shortage_item_count"], 1)
+
+	def test_review_fingerprint_ignores_check_time_but_detects_material_change(self):
+		from process_simplification.api.quick_order import quick_order_review_fingerprint
+
+		base = {
+			"intent_digest": "intent-1",
+			"grand_total": 100,
+			"available_to_reserve": 3,
+			"production_required": 7,
+			"shortage_item_count": 2,
+			"blockers": [],
+			"warnings": [{"code": "RAW_MATERIAL_SHORTAGE"}],
+			"checked_at": "2026-08-01 10:00:00",
+		}
+		later = {**base, "checked_at": "2026-08-01 10:01:00"}
+		changed = {**later, "production_required": 8}
+
+		self.assertEqual(quick_order_review_fingerprint(base), quick_order_review_fingerprint(later))
+		self.assertNotEqual(quick_order_review_fingerprint(base), quick_order_review_fingerprint(changed))
+
+	def test_standard_sales_order_mapping_preserves_po_remark_and_bom_snapshot(self):
+		from process_simplification.api.quick_order import _build_sales_order
+
+		data = self._normalized_order()
+		preview = [
+			{
+				"item_code": "_Test Item",
+				"warehouse": "_Test Warehouse - _TC",
+				"production_required": 1,
+				"bom_no": "BOM-_Test Item-001",
+			}
+		]
+		order = _build_sales_order(data, preview, "_Test Company")
+
+		self.assertEqual(order.doctype, "Sales Order")
+		self.assertEqual(order.po_no, "PO-1001")
+		self.assertEqual(order.terms, "同批送达")
+		self.assertNotIn("分批", order.terms)
+		self.assertEqual(order.items[0].delivery_date, data.delivery_date)
+		self.assertEqual(order.items[0].warehouse, "_Test Warehouse - _TC")
+		self.assertEqual(order.items[0].bom_no, "BOM-_Test Item-001")
+
+	def test_idempotency_record_name_is_user_bound(self):
+		from process_simplification.api.quick_order import quick_order_idempotency_name
+
+		first = quick_order_idempotency_name("owner@example.com", "request-1")
+		retry = quick_order_idempotency_name("owner@example.com", "request-1")
+		other_user = quick_order_idempotency_name("other@example.com", "request-1")
+
+		self.assertEqual(first, retry)
+		self.assertNotEqual(first, other_user)
+		self.assertEqual(len(first), 40)
+
+	def test_completed_idempotency_record_returns_the_existing_sales_order(self):
+		from process_simplification.api.quick_order import _existing_idempotency_result
+
+		record = frappe._dict(
+			{"intent_digest": "intent-1", "status": "Completed", "sales_order": "SO-0001"}
+		)
+		with patch("process_simplification.api.quick_order.frappe.db.exists", return_value=True):
+			result = _existing_idempotency_result(record, "intent-1")
+
+		self.assertEqual(result["sales_order"], "SO-0001")
+		self.assertTrue(result["idempotent_replay"])
+
+	def test_idempotency_key_cannot_be_reused_for_another_intent(self):
+		from process_simplification.api.quick_order import _existing_idempotency_result
+
+		record = frappe._dict(
+			{"intent_digest": "intent-1", "status": "Completed", "sales_order": "SO-0001"}
+		)
+		with self.assertRaises(SimplifiedFlowError):
+			_existing_idempotency_result(record, "intent-2")
+
+	@patch("process_simplification.api.quick_order.frappe.db.commit")
+	@patch("process_simplification.api.quick_order._create_idempotency_record")
+	@patch("process_simplification.api.quick_order._evaluate_quick_order")
+	@patch("process_simplification.api.quick_order._get_review_token")
+	@patch("process_simplification.api.quick_order.normalize_quick_order_payload")
+	@patch("process_simplification.api.quick_order.frappe.has_permission")
+	def test_guarded_submission_commits_before_releasing_the_concurrency_lock(
+		self,
+		has_permission,
+		normalize_payload,
+		get_review_token,
+		evaluate,
+		create_record,
+		db_commit,
+	):
+		from process_simplification.api.quick_order import _quick_order_intent_digest, submit_quick_sales_order
+
+		data = self._normalized_order()
+		intent_digest = _quick_order_intent_digest(data)
+		normalize_payload.return_value = data
+		get_review_token.return_value = frappe._dict(
+			{"intent_digest": intent_digest, "review_fingerprint": "review-1"}
+		)
+		order = MagicMock(name="sales_order")
+		order.name = "SO-0001"
+		order.docstatus = 1
+		evaluate.return_value = {
+			"can_submit": True,
+			"review_fingerprint": "review-1",
+			"_sales_order": order,
+		}
+		record = MagicMock(name="idempotency_record")
+		create_record.return_value = record
+
+		lock = MagicMock()
+		lock.__enter__ = MagicMock(return_value=lock)
+		lock.__exit__ = MagicMock(return_value=False)
+		with (
+			patch("process_simplification.api.quick_order.frappe.cache.lock", return_value=lock),
+			patch("process_simplification.api.quick_order.frappe.db.exists", return_value=False),
+			patch("process_simplification.api.quick_order.frappe.db.savepoint"),
+		):
+			result = submit_quick_sales_order(data, "review-token", "request-1")
+
+		self.assertEqual(result["sales_order"], "SO-0001")
+		order.insert.assert_called_once_with()
+		order.submit.assert_called_once_with()
+		self.assertEqual(record.status, "Completed")
+		db_commit.assert_called_once_with()
+
+	@patch("process_simplification.api.quick_order.frappe.db.commit")
+	@patch("process_simplification.api.quick_order._create_idempotency_record")
+	@patch("process_simplification.api.quick_order._evaluate_quick_order")
+	@patch("process_simplification.api.quick_order._get_review_token")
+	@patch("process_simplification.api.quick_order.normalize_quick_order_payload")
+	@patch("process_simplification.api.quick_order.frappe.has_permission")
+	def test_same_key_retry_replays_completed_order_without_second_insert(
+		self,
+		has_permission,
+		normalize_payload,
+		get_review_token,
+		evaluate,
+		create_record,
+		db_commit,
+	):
+		from process_simplification.api.quick_order import _quick_order_intent_digest, submit_quick_sales_order
+
+		data = self._normalized_order()
+		intent_digest = _quick_order_intent_digest(data)
+		normalize_payload.return_value = data
+		get_review_token.return_value = frappe._dict(
+			{"intent_digest": intent_digest, "review_fingerprint": "review-1"}
+		)
+		order = MagicMock(name="sales_order")
+		order.name = "SO-0001"
+		order.docstatus = 1
+		evaluate.return_value = {
+			"can_submit": True,
+			"review_fingerprint": "review-1",
+			"_sales_order": order,
+		}
+		create_record.return_value = MagicMock(name="new_idempotency_record")
+		completed_record = frappe._dict(
+			{"intent_digest": intent_digest, "status": "Completed", "sales_order": "SO-0001"}
+		)
+		idempotency_lookups = iter([False, True])
+
+		def exists(doctype, name):
+			if doctype == "Quick Order Idempotency":
+				return next(idempotency_lookups)
+			if doctype == "Sales Order":
+				return True
+			return False
+
+		lock = MagicMock()
+		lock.__enter__ = MagicMock(return_value=lock)
+		lock.__exit__ = MagicMock(return_value=False)
+		with (
+			patch("process_simplification.api.quick_order.frappe.cache.lock", return_value=lock) as cache_lock,
+			patch("process_simplification.api.quick_order.frappe.db.exists", side_effect=exists),
+			patch("process_simplification.api.quick_order.frappe.get_doc", return_value=completed_record),
+			patch("process_simplification.api.quick_order.frappe.db.savepoint"),
+		):
+			first = submit_quick_sales_order(data, "review-token", "request-1")
+			retry = submit_quick_sales_order(data, "review-token", "request-1")
+
+		self.assertEqual(first["sales_order"], "SO-0001")
+		self.assertTrue(retry["idempotent_replay"])
+		self.assertEqual(retry["sales_order"], "SO-0001")
+		order.insert.assert_called_once_with()
+		order.submit.assert_called_once_with()
+		evaluate.assert_called_once_with(data)
+		self.assertEqual(cache_lock.call_count, 2)
+		self.assertEqual(cache_lock.call_args_list[0], cache_lock.call_args_list[1])
+
+	@patch("process_simplification.api.quick_order._create_idempotency_record")
+	@patch("process_simplification.api.quick_order._evaluate_quick_order")
+	@patch("process_simplification.api.quick_order._get_review_token")
+	@patch("process_simplification.api.quick_order.normalize_quick_order_payload")
+	@patch("process_simplification.api.quick_order.frappe.has_permission")
+	def test_guarded_submission_rolls_back_order_and_in_progress_record_on_failure(
+		self,
+		has_permission,
+		normalize_payload,
+		get_review_token,
+		evaluate,
+		create_record,
+	):
+		from process_simplification.api.quick_order import _quick_order_intent_digest, submit_quick_sales_order
+
+		data = self._normalized_order()
+		intent_digest = _quick_order_intent_digest(data)
+		normalize_payload.return_value = data
+		get_review_token.return_value = frappe._dict(
+			{"intent_digest": intent_digest, "review_fingerprint": "review-1"}
+		)
+		order = MagicMock(name="sales_order")
+		order.submit.side_effect = frappe.ValidationError("submit failed")
+		evaluate.return_value = {
+			"can_submit": True,
+			"review_fingerprint": "review-1",
+			"_sales_order": order,
+		}
+		create_record.return_value = MagicMock(name="idempotency_record")
+		lock = MagicMock()
+		lock.__enter__ = MagicMock(return_value=lock)
+		lock.__exit__ = MagicMock(return_value=False)
+
+		with (
+			patch("process_simplification.api.quick_order.frappe.cache.lock", return_value=lock),
+			patch("process_simplification.api.quick_order.frappe.db.exists", return_value=False),
+			patch("process_simplification.api.quick_order.frappe.db.savepoint"),
+			patch("process_simplification.api.quick_order.frappe.db.rollback") as rollback,
+			self.assertRaises(SimplifiedFlowError),
+		):
+			submit_quick_sales_order(data, "review-token", "request-1")
+
+		rollback.assert_called_once_with(save_point="quick_order_submit")
+
+	@patch("process_simplification.api.quick_order._issue_review_token", return_value="review-token-2")
+	@patch("process_simplification.api.quick_order._evaluate_quick_order")
+	@patch("process_simplification.api.quick_order._get_review_token")
+	@patch("process_simplification.api.quick_order.normalize_quick_order_payload")
+	@patch("process_simplification.api.quick_order.frappe.has_permission")
+	def test_guarded_submission_requires_reconfirmation_when_material_result_changes(
+		self,
+		has_permission,
+		normalize_payload,
+		get_review_token,
+		evaluate,
+		issue_review_token,
+	):
+		from process_simplification.api.quick_order import _quick_order_intent_digest, submit_quick_sales_order
+
+		data = self._normalized_order()
+		intent_digest = _quick_order_intent_digest(data)
+		normalize_payload.return_value = data
+		get_review_token.return_value = frappe._dict(
+			{"intent_digest": intent_digest, "review_fingerprint": "old-review"}
+		)
+		evaluate.return_value = {
+			"can_submit": True,
+			"review_fingerprint": "new-review",
+			"checked_at": "2026-08-01 10:01:00",
+			"blockers": [],
+			"warnings": [],
+		}
+		lock = MagicMock()
+		lock.__enter__ = MagicMock(return_value=lock)
+		lock.__exit__ = MagicMock(return_value=False)
+
+		with (
+			patch("process_simplification.api.quick_order.frappe.cache.lock", return_value=lock),
+			patch("process_simplification.api.quick_order.frappe.db.exists", return_value=False),
+			patch("process_simplification.api.quick_order._create_idempotency_record") as create_record,
+		):
+			result = submit_quick_sales_order(data, "review-token", "request-1")
+
+		self.assertEqual(result["status"], "reconfirmation_required")
+		self.assertEqual(result["review_token"], "review-token-2")
+		create_record.assert_not_called()
+
+	@patch("process_simplification.api.shortage._po_outstanding", return_value=1)
+	@patch("process_simplification.api.shortage._mr_outstanding", return_value=2)
+	@patch("process_simplification.api.shortage.get_stock_balance", return_value=3)
+	@patch("process_simplification.api.shortage.get_bom_items_as_dict")
+	def test_shared_shortage_calculation_nets_stock_and_open_supply(
+		self, get_bom_items, get_stock_balance, mr_outstanding, po_outstanding
+	):
+		from process_simplification.api.shortage import calculate_material_shortages
+
+		get_bom_items.return_value = {
+			"RM-001": frappe._dict(
+				{
+					"item_name": "Raw Material",
+					"stock_uom": "Nos",
+					"source_warehouse": "Stores - TC",
+					"qty": 10,
+				}
+			)
+		}
+		result = calculate_material_shortages(
+			[{"bom_no": "BOM-FG-001", "qty": 2}],
+			"Test Company",
+			frappe._dict({"source_warehouse": "Stores - TC"}),
+		)
+
+		self.assertEqual(result[0]["required_qty"], 10)
+		self.assertEqual(result[0]["shortage_qty"], 4)
+
+	@patch("process_simplification.api.actions.make_work_order")
+	@patch("process_simplification.api.actions.get_default_bom")
+	@patch("process_simplification.api.actions.get_company_defaults")
+	@patch("process_simplification.api.actions.frappe.get_doc")
+	@patch("process_simplification.api.actions.get_sales_order_item")
+	@patch("process_simplification.api.actions._row_from_workbench")
+	@patch("process_simplification.api.actions.frappe.has_permission")
+	def test_create_work_order_prefers_bom_snapshotted_on_sales_order_item(
+		self,
+		has_permission,
+		row_from_workbench,
+		get_sales_order_item,
+		get_doc,
+		get_company_defaults,
+		get_default_bom,
+		make_work_order,
+	):
+		from process_simplification.api.actions import create_work_order
+
+		has_permission.return_value = True
+		row_from_workbench.return_value = frappe._dict({"uncovered_qty": 4})
+		get_sales_order_item.return_value = frappe._dict(
+			{
+				"item_code": "FG-001",
+				"bom_no": "BOM-FG-001-OLD",
+				"warehouse": "Finished Goods - TC",
+				"delivery_date": "2099-01-01",
+			}
+		)
+		get_doc.return_value = frappe._dict({"company": "Test Company"})
+		get_company_defaults.return_value = frappe._dict(
+			{
+				"source_warehouse": "Stores - TC",
+				"wip_warehouse": "Work In Progress - TC",
+				"fg_warehouse": "Finished Goods - TC",
+			}
+		)
+		work_order = MagicMock()
+		make_work_order.return_value = work_order
+
+		create_work_order("SO-001", "SOI-001", 4)
+
+		self.assertEqual(make_work_order.call_args.kwargs["bom_no"], "BOM-FG-001-OLD")
+		get_default_bom.assert_not_called()

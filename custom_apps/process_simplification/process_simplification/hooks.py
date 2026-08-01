@@ -7,9 +7,13 @@ app_license = "GPL-3.0"
 
 required_apps = ["erpnext"]
 
-app_include_css = "/assets/process_simplification/css/process_simplification.css"
+app_include_css = "/assets/process_simplification/css/process_simplification.css?v=3"
 
 after_install = "process_simplification.install.after_install"
+
+scheduler_events = {
+	"daily": ["process_simplification.api.quick_order.cleanup_expired_quick_order_idempotency"]
+}
 
 add_to_apps_screen = [
 	{

@@ -1,0 +1,493 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>快速开单 · 流程简化</title>
+  <style>
+    :root {
+      --bg: #f8fafc;
+      --surface: #ffffff;
+      --fg: #111827;
+      --muted: #64748b;
+      --border: #e2e8f0;
+      --accent: #3b82f6;
+      --accent-soft: color-mix(in oklch, var(--accent) 12%, transparent);
+      --fg-soft: color-mix(in oklch, var(--fg) 5%, transparent);
+      --font-display: 'Poppins', 'Segoe UI', system-ui, sans-serif;
+      --font-body: 'Roboto', 'Segoe UI', system-ui, sans-serif;
+      --font-mono: 'Inconsolata', 'SFMono-Regular', Consolas, monospace;
+      --radius: 8px;
+      --radius-lg: 12px;
+      --shadow: 0 12px 36px color-mix(in oklch, var(--fg) 9%, transparent);
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+    html { color-scheme: light; }
+    body {
+      margin: 0;
+      min-width: 320px;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: var(--font-body);
+      font-size: 14px;
+      line-height: 1.5;
+      text-rendering: optimizeLegibility;
+      -webkit-font-smoothing: antialiased;
+    }
+    button, input { font: inherit; }
+    button { cursor: pointer; }
+    a { color: inherit; text-decoration: none; }
+    h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; }
+    .num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+    .sr-only {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+    }
+
+    .topbar {
+      position: sticky; top: 0; z-index: 20;
+      display: flex; align-items: center; justify-content: space-between;
+      min-height: 58px; padding: 0 28px;
+      background: color-mix(in oklch, var(--surface) 94%, transparent);
+      border-bottom: 1px solid var(--border);
+      backdrop-filter: blur(12px);
+    }
+    .breadcrumb { display: flex; align-items: center; gap: 9px; min-width: 0; }
+    .home-mark {
+      width: 28px; height: 28px; display: grid; place-items: center;
+      border: 1px solid var(--border); border-radius: var(--radius); color: var(--muted);
+    }
+    .breadcrumb-sep { color: var(--muted); }
+    .page-name { font-family: var(--font-display); font-size: 17px; font-weight: 650; }
+    .top-actions { display: flex; align-items: center; gap: 8px; }
+    .kbd {
+      padding: 2px 7px; border: 1px solid var(--border); border-radius: 5px;
+      color: var(--muted); background: var(--bg); font-family: var(--font-mono); font-size: 11px;
+    }
+
+    .shell { max-width: 1480px; margin: 0 auto; padding: 24px 28px 112px; }
+    .surface {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius-lg); box-shadow: 0 1px 2px var(--fg-soft);
+    }
+    .section-head {
+      display: flex; align-items: flex-start; justify-content: space-between; gap: 20px;
+      padding: 20px 22px 14px;
+    }
+    .section-title { margin: 0; font-size: 16px; line-height: 1.3; }
+    .section-help { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+
+    .order-fields {
+      display: grid; grid-template-columns: minmax(260px, 1.2fr) minmax(190px, .75fr) minmax(230px, 1fr);
+      gap: 18px; padding: 4px 22px 20px;
+    }
+    .field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+    .field label { color: var(--muted); font-size: 12px; font-weight: 600; }
+    .required::after { content: ' *'; color: var(--fg); }
+    .input-wrap { position: relative; }
+    .input {
+      width: 100%; min-height: 40px; padding: 9px 36px 9px 12px;
+      background: var(--surface); color: var(--fg);
+      border: 1px solid var(--border); border-radius: var(--radius);
+      outline: none; transition: border-color 160ms ease, box-shadow 160ms ease;
+    }
+    .input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+    .input-icon { position: absolute; right: 12px; top: 50%; translate: 0 -50%; color: var(--muted); }
+    .optional { color: var(--muted); font-weight: 400; }
+    .remarks-row { padding: 0 22px 20px; }
+    details { border-top: 1px solid var(--border); padding-top: 13px; }
+    summary { width: fit-content; color: var(--muted); cursor: pointer; user-select: none; }
+    details .input { margin-top: 10px; max-width: 760px; }
+
+    .items-card { margin-top: 18px; overflow: hidden; }
+    .items-head { border-bottom: 1px solid var(--border); }
+    .table-scroll { overflow-x: auto; }
+    table { width: 100%; min-width: 1020px; border-collapse: collapse; }
+    th, td { padding: 12px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th {
+      background: var(--bg); color: var(--muted); font-family: var(--font-mono);
+      font-size: 11px; font-weight: 600; letter-spacing: .035em;
+    }
+    tbody tr:last-child td { border-bottom: 0; }
+    .product-cell { min-width: 300px; }
+    .product-name { display: block; font-weight: 650; }
+    .product-code { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; }
+    .cell-input {
+      width: 100%; min-height: 38px; padding: 8px 10px;
+      border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--fg);
+    }
+    .cell-input:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+    .amount { padding-top: 9px; text-align: right; font-weight: 650; }
+    .fulfillment { min-width: 300px; }
+    .fulfillment-main { display: flex; align-items: center; gap: 8px; font-weight: 650; }
+    .state-mark {
+      display: inline-grid; place-items: center; width: 20px; height: 20px;
+      border: 1px solid var(--fg); border-radius: 50%; font-family: var(--font-mono); font-size: 11px;
+    }
+    .fulfillment-detail { margin-top: 4px; color: var(--muted); font-size: 12px; }
+    .state-tag {
+      display: inline-flex; align-items: center; gap: 5px; margin-top: 7px; padding: 3px 8px;
+      border: 1px solid var(--border); border-radius: 999px; color: var(--muted); font-size: 11px;
+    }
+    .icon-btn {
+      display: inline-grid; place-items: center; width: 34px; height: 34px;
+      border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--muted);
+    }
+    .icon-btn:hover { color: var(--fg); border-color: var(--fg); }
+    .add-row-wrap { padding: 13px 16px; border-top: 1px solid var(--border); }
+
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+      min-height: 38px; padding: 8px 15px; border-radius: var(--radius);
+      border: 1px solid transparent; font-weight: 600; transition: 150ms ease;
+    }
+    .btn:focus-visible, .text-link:focus-visible, summary:focus-visible {
+      outline: 3px solid var(--accent-soft); outline-offset: 2px;
+    }
+    .btn-primary { background: var(--accent); border-color: var(--accent); color: var(--surface); }
+    .btn-primary:hover { background: color-mix(in oklch, var(--accent) 88%, var(--fg)); }
+    .btn-primary:disabled { opacity: .5; cursor: not-allowed; }
+    .btn-secondary { background: var(--surface); border-color: var(--border); color: var(--fg); }
+    .btn-secondary:hover { border-color: var(--fg); }
+    .btn-ghost { background: transparent; border-color: transparent; color: var(--muted); }
+    .btn-ghost:hover { background: var(--fg-soft); color: var(--fg); }
+    .text-link { color: var(--muted); border-bottom: 1px solid var(--border); }
+    .text-link:hover { color: var(--fg); border-color: var(--fg); }
+
+    .guidance {
+      display: grid; grid-template-columns: auto 1fr; gap: 12px; align-items: start;
+      margin-top: 18px; padding: 16px 18px;
+    }
+    .guidance-mark {
+      width: 24px; height: 24px; display: grid; place-items: center;
+      border: 1px solid var(--fg); border-radius: 50%; font-family: var(--font-mono); font-weight: 700;
+    }
+    .guidance strong { display: block; margin-bottom: 3px; }
+    .guidance p { margin: 0; color: var(--muted); font-size: 12px; }
+
+    .summary-bar {
+      position: fixed; z-index: 18; left: 0; right: 0; bottom: 0;
+      background: color-mix(in oklch, var(--surface) 96%, transparent);
+      border-top: 1px solid var(--border); box-shadow: 0 -12px 30px var(--fg-soft); backdrop-filter: blur(14px);
+    }
+    .summary-inner {
+      max-width: 1480px; min-height: 84px; margin: 0 auto; padding: 12px 28px;
+      display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 24px;
+    }
+    .metrics { display: flex; align-items: center; gap: 0; min-width: 0; overflow-x: auto; }
+    .metric { min-width: 118px; padding: 2px 20px; border-left: 1px solid var(--border); }
+    .metric:first-child { padding-left: 0; border-left: 0; }
+    .metric-label { display: block; color: var(--muted); font-size: 11px; }
+    .metric-value { display: block; margin-top: 2px; font-family: var(--font-mono); font-size: 15px; font-weight: 700; white-space: nowrap; }
+    .summary-actions { display: flex; align-items: center; gap: 10px; }
+
+    .scrim {
+      position: fixed; z-index: 50; inset: 0; display: none; place-items: center; padding: 22px;
+      background: color-mix(in oklch, var(--fg) 36%, transparent);
+    }
+    .scrim.open { display: grid; }
+    .modal {
+      width: min(620px, 100%); max-height: min(760px, calc(100vh - 44px)); overflow: auto;
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow);
+    }
+    .modal-head { display: flex; justify-content: space-between; gap: 18px; padding: 22px; border-bottom: 1px solid var(--border); }
+    .modal-title { margin: 0; font-size: 19px; }
+    .modal-subtitle { margin: 5px 0 0; color: var(--muted); }
+    .modal-body { padding: 20px 22px; }
+    .confirm-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+    .confirm-cell { padding: 12px; background: var(--bg); border-radius: var(--radius); }
+    .confirm-cell span { display: block; color: var(--muted); font-size: 11px; }
+    .confirm-cell strong { display: block; margin-top: 4px; }
+    .notice { margin-top: 16px; padding: 13px 14px; border: 1px solid var(--fg); border-radius: var(--radius); }
+    .notice strong { display: block; }
+    .notice p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+    .modal-foot { display: flex; justify-content: flex-end; gap: 10px; padding: 16px 22px; border-top: 1px solid var(--border); }
+
+    .toast {
+      position: fixed; z-index: 70; top: 72px; right: 24px; display: none;
+      padding: 11px 14px; background: var(--fg); color: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow);
+    }
+    .toast.show { display: block; }
+    .spin { animation: spin 700ms linear infinite; }
+    @keyframes spin { to { rotate: 360deg; } }
+
+    @media (max-width: 920px) {
+      .topbar { padding-inline: 16px; }
+      .kbd { display: none; }
+      .shell { padding: 16px 16px 190px; }
+      .order-fields { grid-template-columns: 1fr; }
+      .items-head { flex-direction: column; align-items: stretch; }
+      .items-head .btn { width: 100%; }
+      .section-head { padding-inline: 16px; }
+      .order-fields, .remarks-row { padding-inline: 16px; }
+      .summary-inner { width: 100vw; max-width: 100vw; margin: 0; grid-template-columns: minmax(0, 1fr); padding: 10px 16px 14px; gap: 10px; }
+      .summary-actions { display: grid; width: calc(100vw - 32px); grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; min-width: 0; }
+      .summary-actions .btn { width: 100%; min-width: 0; padding-inline: 8px; white-space: nowrap; font-size: 13px; }
+      .standard-route { display: none; }
+      .confirm-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar" data-od-id="quick-order-topbar">
+    <div class="breadcrumb">
+      <span class="home-mark" aria-hidden="true">⌂</span>
+      <span class="breadcrumb-sep">/</span>
+      <span class="page-name">快速开单</span>
+    </div>
+    <div class="top-actions">
+      <span class="kbd">搜索 Ctrl K</span>
+      <a class="text-link standard-route" href="#standard-order">使用标准销售订单</a>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="surface" data-od-id="order-header">
+      <div class="section-head">
+        <div>
+          <h1 class="section-title">订单信息</h1>
+          <p class="section-help">只填写客户和统一交期，其余信息由系统按 ERPNext 设置带出。</p>
+        </div>
+      </div>
+      <div class="order-fields">
+        <div class="field">
+          <label class="required" for="customer">客户</label>
+          <div class="input-wrap">
+            <input class="input" id="customer" value="测试客户1" autocomplete="off" />
+            <span class="input-icon" aria-hidden="true">⌄</span>
+          </div>
+        </div>
+        <div class="field">
+          <label class="required" for="delivery-date">交付日期</label>
+          <input class="input num" id="delivery-date" type="date" value="2026-08-14" />
+        </div>
+        <div class="field">
+          <label for="po-no">客户订单号 <span class="optional">（可选）</span></label>
+          <input class="input" id="po-no" placeholder="例如 PO-2026-0814" />
+        </div>
+      </div>
+      <div class="remarks-row">
+        <details>
+          <summary>添加订单备注（可选）</summary>
+          <label class="sr-only" for="remarks">订单备注</label>
+          <input class="input" id="remarks" placeholder="例如：客户要求同批送达。特殊情况请使用标准销售订单。" />
+        </details>
+      </div>
+    </section>
+
+    <section class="surface items-card" data-od-id="product-lines">
+      <div class="section-head items-head">
+        <div>
+          <h2 class="section-title">产品明细</h2>
+          <p class="section-help">库存是当前可预留数量，不等于仓库账面数量。</p>
+        </div>
+        <button class="btn btn-secondary" id="add-row" type="button">＋ 添加产品</button>
+      </div>
+      <div class="table-scroll">
+        <table aria-label="快速开单产品明细">
+          <thead>
+            <tr>
+              <th style="width:30%">产品</th>
+              <th style="width:11%">数量</th>
+              <th style="width:13%">成交单价</th>
+              <th style="width:12%;text-align:right">金额</th>
+              <th style="width:29%">履约情况</th>
+              <th style="width:5%"><span class="sr-only">操作</span></th>
+            </tr>
+          </thead>
+          <tbody id="line-body">
+            <tr>
+              <td class="product-cell">
+                <span class="product-name">CFCG125-12脚 蓝/黄/绿 L=610 无标</span>
+                <span class="product-code num">CFCG125-12</span>
+              </td>
+              <td><label class="sr-only" for="qty">数量</label><input class="cell-input num" id="qty" type="number" min="0.001" step="1" value="4300" /></td>
+              <td><label class="sr-only" for="rate">成交单价</label><input class="cell-input num" id="rate" type="number" min="0.01" step="0.01" value="1.00" /></td>
+              <td class="amount num" id="line-amount">¥ 4,300.00</td>
+              <td class="fulfillment">
+                <div class="fulfillment-main"><span class="state-mark" id="state-mark">i</span><span id="state-title">库存预览</span></div>
+                <div class="fulfillment-detail" id="state-detail">可预留 <span class="num">1,511</span> · 需生产 <span class="num">2,789</span> · BOM 已就绪</div>
+                <span class="state-tag" id="state-tag">原料待检查</span>
+              </td>
+              <td><button class="icon-btn" type="button" title="删除产品" aria-label="删除产品">×</button></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="add-row-wrap">
+        <button class="btn btn-ghost" type="button" id="add-row-inline">＋ 添加一行</button>
+      </div>
+    </section>
+
+    <section class="surface guidance" data-od-id="quick-order-boundary" id="standard-order">
+      <div class="guidance-mark" aria-hidden="true">?</div>
+      <div>
+        <strong>什么时候使用标准销售订单？</strong>
+        <p>同一订单需要多个交期、同一产品分行定价、外币或特殊税费、产品组合、委外、客户供料、序列号/批次等情况，请进入标准销售订单。</p>
+      </div>
+    </section>
+  </main>
+
+  <section class="summary-bar" data-od-id="order-summary" aria-label="订单汇总">
+    <div class="summary-inner">
+      <div class="metrics">
+        <div class="metric"><span class="metric-label">订单金额</span><strong class="metric-value" id="total">¥ 4,300.00</strong></div>
+        <div class="metric"><span class="metric-label">可预留成品</span><strong class="metric-value" id="available">1,511</strong></div>
+        <div class="metric"><span class="metric-label">需生产</span><strong class="metric-value" id="production">2,789</strong></div>
+        <div class="metric"><span class="metric-label">缺料项</span><strong class="metric-value" id="shortage-count">待检查</strong></div>
+        <div class="metric"><span class="metric-label">最近检查</span><strong class="metric-value" id="checked-at">—</strong></div>
+      </div>
+      <div class="summary-actions">
+        <button class="btn btn-secondary" id="deep-check" type="button">检查库存与缺料</button>
+        <button class="btn btn-primary" id="confirm" type="button">确认下单</button>
+      </div>
+    </div>
+  </section>
+
+  <div class="scrim" id="confirm-scrim" role="presentation">
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title" data-od-id="confirmation-dialog">
+      <div class="modal-head">
+        <div>
+          <h2 class="modal-title" id="confirm-title">确认这张销售订单</h2>
+          <p class="modal-subtitle">系统已在服务器重新检查，以下结果为当前状态。</p>
+        </div>
+        <button class="icon-btn" id="close-modal" type="button" aria-label="关闭确认窗口">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="confirm-grid">
+          <div class="confirm-cell"><span>客户</span><strong>测试客户1</strong></div>
+          <div class="confirm-cell"><span>交付日期</span><strong class="num">2026-08-14</strong></div>
+          <div class="confirm-cell"><span>产品 / 数量</span><strong><span class="num">1</span> 种 / <span class="num" id="dialog-qty">4,300</span></strong></div>
+          <div class="confirm-cell"><span>订单金额</span><strong class="num" id="dialog-total">¥ 4,300.00</strong></div>
+          <div class="confirm-cell"><span>可预留 / 需生产</span><strong><span class="num">1,511</span> / <span class="num" id="dialog-production">2,789</span></strong></div>
+          <div class="confirm-cell"><span>原料缺料</span><strong><span class="num">2</span> 项 · 警告</strong></div>
+        </div>
+        <div class="notice">
+          <strong>可以下单，但后续需要采购缺料</strong>
+          <p>缺料不会阻止销售订单创建。销售订单提交也不会自动预留库存、创建工单或生成采购申请；这些动作在订单总览中继续完成并再次检查。</p>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-secondary" id="cancel-modal" type="button">返回修改</button>
+        <button class="btn btn-primary" id="submit-order" type="button">确认创建销售订单</button>
+      </div>
+    </section>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite">原型演示：销售订单将只创建一次</div>
+
+  <script>
+    (() => {
+      const qty = document.querySelector('#qty');
+      const rate = document.querySelector('#rate');
+      const amount = document.querySelector('#line-amount');
+      const total = document.querySelector('#total');
+      const production = document.querySelector('#production');
+      const shortageCount = document.querySelector('#shortage-count');
+      const checkedAt = document.querySelector('#checked-at');
+      const stateMark = document.querySelector('#state-mark');
+      const stateTitle = document.querySelector('#state-title');
+      const stateDetail = document.querySelector('#state-detail');
+      const stateTag = document.querySelector('#state-tag');
+      const checkButton = document.querySelector('#deep-check');
+      const confirmButton = document.querySelector('#confirm');
+      const scrim = document.querySelector('#confirm-scrim');
+      const toast = document.querySelector('#toast');
+      let current = false;
+      let timer;
+
+      const number = (value) => new Intl.NumberFormat('zh-CN').format(value);
+      const money = (value) => `¥ ${new Intl.NumberFormat('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value)}`;
+      const demand = () => Math.max(0, Number(qty.value || 0) - 1511);
+
+      function recalculate() {
+        const value = Number(qty.value || 0) * Number(rate.value || 0);
+        amount.textContent = money(value);
+        total.textContent = money(value);
+        production.textContent = number(demand());
+        document.querySelector('#dialog-qty').textContent = number(Number(qty.value || 0));
+        document.querySelector('#dialog-total').textContent = money(value);
+        document.querySelector('#dialog-production').textContent = number(demand());
+      }
+
+      function markStale() {
+        current = false;
+        recalculate();
+        stateMark.textContent = '!';
+        stateTitle.textContent = '待重新检查';
+        stateDetail.innerHTML = `输入已变化 · 预计可预留 <span class="num">1,511</span> · 预计需生产 <span class="num">${number(demand())}</span>`;
+        stateTag.textContent = '上次结果已失效';
+        shortageCount.textContent = '待检查';
+        checkedAt.textContent = '—';
+      }
+
+      function runCheck(afterCheck) {
+        checkButton.disabled = true;
+        confirmButton.disabled = true;
+        checkButton.textContent = '正在检查…';
+        stateMark.textContent = '↻';
+        stateMark.classList.add('spin');
+        stateTitle.textContent = '服务器检查中';
+        stateDetail.textContent = '正在核对可预留成品、BOM 和原料需求';
+        window.setTimeout(() => {
+          current = true;
+          const now = new Date();
+          stateMark.classList.remove('spin');
+          stateMark.textContent = '✓';
+          stateTitle.textContent = '可下单 · 有缺料提醒';
+          stateDetail.innerHTML = `可预留 <span class="num">1,511</span> · 需生产 <span class="num">${number(demand())}</span> · BOM 已就绪`;
+          stateTag.textContent = '原料缺 2 项（不阻止下单）';
+          shortageCount.textContent = '2 项';
+          checkedAt.textContent = now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+          checkButton.disabled = false;
+          confirmButton.disabled = false;
+          checkButton.textContent = '重新检查库存与缺料';
+          if (afterCheck) afterCheck();
+        }, 850);
+      }
+
+      function openDialog() {
+        scrim.classList.add('open');
+        document.querySelector('#close-modal').focus();
+      }
+
+      [qty, rate, document.querySelector('#customer'), document.querySelector('#delivery-date')].forEach((field) => {
+        field.addEventListener('input', () => {
+          window.clearTimeout(timer);
+          markStale();
+          timer = window.setTimeout(() => {
+            stateDetail.innerHTML = `轻量预览 · 可预留 <span class="num">1,511</span> · 需生产 <span class="num">${number(demand())}</span> · 深度缺料待检查`;
+          }, 650);
+        });
+      });
+
+      checkButton.addEventListener('click', () => runCheck());
+      confirmButton.addEventListener('click', () => current ? openDialog() : runCheck(openDialog));
+      document.querySelector('#close-modal').addEventListener('click', () => scrim.classList.remove('open'));
+      document.querySelector('#cancel-modal').addEventListener('click', () => scrim.classList.remove('open'));
+      scrim.addEventListener('click', (event) => { if (event.target === scrim) scrim.classList.remove('open'); });
+      document.addEventListener('keydown', (event) => { if (event.key === 'Escape') scrim.classList.remove('open'); });
+      document.querySelector('#submit-order').addEventListener('click', (event) => {
+        event.currentTarget.disabled = true;
+        event.currentTarget.textContent = '正在安全提交…';
+        window.setTimeout(() => {
+          scrim.classList.remove('open');
+          toast.classList.add('show');
+          window.setTimeout(() => toast.classList.remove('show'), 2600);
+          event.currentTarget.disabled = false;
+          event.currentTarget.textContent = '确认创建销售订单';
+        }, 700);
+      });
+      [document.querySelector('#add-row'), document.querySelector('#add-row-inline')].forEach((button) => {
+        button.addEventListener('click', () => {
+          toast.textContent = '原型聚焦单行状态；实现版支持添加多个不同产品';
+          toast.classList.add('show');
+          window.setTimeout(() => toast.classList.remove('show'), 2400);
+        });
+      });
+      recalculate();
+    })();
+  </script>
+</body>
+</html>

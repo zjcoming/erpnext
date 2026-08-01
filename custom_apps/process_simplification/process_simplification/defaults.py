@@ -47,10 +47,10 @@ def get_company_manufacturing_defaults(company: str | None = None):
 	company_defaults = frappe.get_cached_value(
 		"Company",
 		company,
-		["default_wip_warehouse", "default_fg_warehouse"],
+		["default_warehouse", "default_wip_warehouse", "default_fg_warehouse"],
 		as_dict=True,
 	)
-	source_warehouse = frappe.db.get_single_value("Stock Settings", "default_warehouse")
+	source_warehouse = company_defaults.default_warehouse if company_defaults else None
 	if not warehouse_belongs_to_company(source_warehouse, company):
 		source_warehouse = find_company_warehouse(company, SOURCE_WAREHOUSE_NAMES)
 
@@ -77,17 +77,18 @@ def configure_company_manufacturing_defaults(company: str | None = None):
 	if not defaults.company:
 		return defaults
 
-	current_source_warehouse = frappe.db.get_single_value("Stock Settings", "default_warehouse")
-	if defaults.source_warehouse and not warehouse_belongs_to_company(current_source_warehouse, defaults.company):
-		frappe.db.set_single_value("Stock Settings", "default_warehouse", defaults.source_warehouse)
-
 	current_company_defaults = frappe.get_cached_value(
 		"Company",
 		defaults.company,
-		["default_wip_warehouse", "default_fg_warehouse"],
+		["default_warehouse", "default_wip_warehouse", "default_fg_warehouse"],
 		as_dict=True,
 	)
 	updates = {}
+	if defaults.source_warehouse and not warehouse_belongs_to_company(
+		current_company_defaults.default_warehouse if current_company_defaults else None,
+		defaults.company,
+	):
+		updates["default_warehouse"] = defaults.source_warehouse
 	if defaults.wip_warehouse and not warehouse_belongs_to_company(
 		current_company_defaults.default_wip_warehouse if current_company_defaults else None,
 		defaults.company,

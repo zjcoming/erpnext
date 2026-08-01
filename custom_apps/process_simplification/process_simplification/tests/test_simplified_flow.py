@@ -144,30 +144,49 @@ class TestSimplifiedFlow(UnitTestCase):
 	def test_quick_order_item_defaults_include_price_and_warehouse(self):
 		from process_simplification.api.quick_order import get_quick_order_item_defaults
 
-		item_code = "PS FG ITEM {0}".format(frappe.generate_hash(length=8))
-		frappe.get_doc(
-			{
-				"doctype": "Item",
-				"item_code": item_code,
-				"item_name": item_code,
-				"item_group": "Products",
-				"stock_uom": "Nos",
-				"is_stock_item": 1,
-				"is_sales_item": 1,
-			}
-		).insert()
+		item_code = "PS FG ITEM"
+		warehouse = "Finished Goods - TC"
+		with (
+			patch("process_simplification.api.quick_order.frappe.has_permission"),
+			patch(
+				"process_simplification.api.quick_order.frappe.get_cached_value",
+				return_value=frappe._dict(
+					{
+						"item_code": item_code,
+						"item_name": item_code,
+						"stock_uom": "Nos",
+						"is_sales_item": 1,
+						"is_stock_item": 1,
+						"disabled": 0,
+						"has_variants": 0,
+						"has_serial_no": 0,
+						"has_batch_no": 0,
+					}
+				),
+			),
+			patch("process_simplification.api.quick_order.frappe.db.exists", return_value=False),
+			patch(
+				"process_simplification.api.quick_order.get_company_defaults",
+				return_value=frappe._dict({"company": "_Test Company", "fg_warehouse": warehouse}),
+			),
+			patch(
+				"process_simplification.api.quick_order._item_default",
+				return_value=frappe._dict(
+					{"default_warehouse": warehouse, "default_price_list": "Standard Selling"}
+				),
+			),
+			patch(
+				"process_simplification.api.quick_order._item_price",
+				return_value=frappe._dict(
+					{"price_list": "Standard Selling", "price_list_rate": 99, "currency": "CNY"}
+				),
+			),
+			patch("process_simplification.api.quick_order.get_available_qty_to_reserve", return_value=7),
+			patch("process_simplification.api.quick_order.get_default_bom", return_value="BOM-PS-FG-001"),
+		):
+			defaults = get_quick_order_item_defaults(item_code, "_Test Company")
 
-		frappe.get_doc(
-			{
-				"doctype": "Item Price",
-				"item_code": item_code,
-				"price_list": "Standard Selling",
-				"selling": 1,
-				"price_list_rate": 99,
-			}
-		).insert()
-
-		defaults = get_quick_order_item_defaults(item_code, "_Test Company")
-
-		self.assertEqual(defaults["warehouse"], "PS FG - _TC")
+		self.assertEqual(defaults["warehouse"], warehouse)
 		self.assertEqual(defaults["rate"], 99)
+		self.assertEqual(defaults["available_to_reserve"], 7)
+		self.assertEqual(defaults["stock_uom"], "Nos")

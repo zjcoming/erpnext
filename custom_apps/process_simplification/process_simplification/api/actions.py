@@ -121,7 +121,7 @@ def create_work_order(sales_order: str, sales_order_item: str, qty: float | None
 
 	item = get_sales_order_item(sales_order_item)
 	so = frappe.get_doc("Sales Order", sales_order)
-	bom_no = get_default_bom(item.item_code)
+	bom_no = item.get("bom_no") or get_default_bom(item.item_code)
 	if not bom_no:
 		throw_chinese("产品 {0} 没有已提交、启用的默认 BOM。".format(item.item_code))
 
