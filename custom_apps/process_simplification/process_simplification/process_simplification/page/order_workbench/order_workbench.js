@@ -50,6 +50,11 @@ function productionWorkbenchRoute(_salesOrder, salesOrderItem) {
 	return ["production-workbench", salesOrderItem];
 }
 
+function deliveryNoteRouteFromResponse(response) {
+	const deliveryNote = response?.message?.delivery_note;
+	return deliveryNote ? ["Form", "Delivery Note", deliveryNote] : null;
+}
+
 function fulfillmentCsv(orders) {
 	const quote = (value) => {
 		const text = String(value ?? "");
@@ -151,6 +156,7 @@ const fulfillmentOverviewApi = {
 	orderOverviewHtml,
 	refreshFulfillmentOverview,
 	productionWorkbenchRoute,
+	deliveryNoteRouteFromResponse,
 };
 
 if (typeof module !== "undefined" && module.exports) {
@@ -196,7 +202,7 @@ if (typeof frappe !== "undefined") {
 		`);
 
 		const $root = page.main.find(".fulfillment-overview");
-		const state = { data: { orders: [] }, filters: {}, expandedOrders: new Set() };
+		const state = { data: { orders: [] }, filters: {}, expandedOrders: new Set(), inFlightActions: new Set() };
 		page.fulfillment_overview = { state, loadOverview };
 
 		function browserHelpers() {
@@ -273,7 +279,7 @@ if (typeof frappe !== "undefined") {
 			});
 		}
 
-		function runRowAction(action, salesOrder, salesOrderItem) {
+		function runRowAction(action, salesOrder, salesOrderItem, $button) {
 			const methodMap = {
 				reserve_stock: "process_simplification.api.actions.reserve_stock",
 				reserve_completed_stock: "process_simplification.api.actions.reserve_completed_stock",
@@ -289,12 +295,41 @@ if (typeof frappe !== "undefined") {
 			}
 			const method = methodMap[action];
 			if (!method) return;
-			frappe.confirm(__("确认执行该操作？"), () => {
-				frappe.call({ method, args: { sales_order: salesOrder, sales_order_item: salesOrderItem }, freeze: true }).then(() => {
-					frappe.show_alert({ message: __("操作完成"), indicator: "green" });
-					loadOverview();
-				});
-			});
+			const actionKey = `${action}:${salesOrder}:${salesOrderItem || ""}`;
+			if (state.inFlightActions.has(actionKey)) return;
+			const finish = () => {
+				state.inFlightActions.delete(actionKey);
+				$button?.prop("disabled", false);
+			};
+			state.inFlightActions.add(actionKey);
+			$button?.prop("disabled", true);
+			frappe.confirm(
+				__("确认执行该操作？"),
+				() => {
+					frappe.call({
+						method,
+						args: { sales_order: salesOrder, sales_order_item: salesOrderItem },
+						freeze: true,
+						callback: (response) => {
+							if (action === "create_delivery_note") {
+								const route = deliveryNoteRouteFromResponse(response);
+								if (route) {
+									frappe.show_alert({
+										message: response.message.reused ? __("已存在草稿发货单，正在打开") : __("发货单已创建，正在打开"),
+										indicator: "green",
+									});
+									frappe.set_route(...route);
+									return;
+								}
+							}
+							frappe.show_alert({ message: __("操作完成"), indicator: "green" });
+							loadOverview();
+						},
+						always: finish,
+					});
+				},
+				finish
+			);
 		}
 
 		function exportVisibleOrders() {
@@ -314,7 +349,7 @@ if (typeof frappe !== "undefined") {
 		});
 		$root.on("click", ".row-action", (event) => {
 			const $button = $(event.currentTarget);
-			runRowAction($button.data("action"), $button.data("sales-order"), $button.data("row"));
+			runRowAction($button.data("action"), $button.data("sales-order"), $button.data("row"), $button);
 		});
 		$root.on("click", ".fulfillment-export", exportVisibleOrders);
 		page.add_inner_button(__("刷新"), loadOverview);

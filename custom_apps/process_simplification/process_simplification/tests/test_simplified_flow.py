@@ -412,6 +412,49 @@ class TestSimplifiedFlow(UnitTestCase):
 
 		row_from_workbench.assert_called_once_with("SO-TEST", "SO-ITEM-TEST")
 
+	@patch("process_simplification.api.actions.make_delivery_note")
+	@patch("process_simplification.api.actions.get_sales_order_item")
+	@patch("process_simplification.api.actions.frappe.get_doc")
+	@patch("process_simplification.api.actions.frappe.get_all")
+	@patch("process_simplification.api.actions.frappe.db.get_value")
+	@patch("process_simplification.api.actions.frappe.has_permission")
+	@patch("process_simplification.api.actions._row_from_workbench")
+	def test_create_delivery_note_reuses_existing_draft_for_the_same_order_item(
+		self,
+		row_from_workbench,
+		has_permission,
+		get_value,
+		get_all,
+		get_doc,
+		get_sales_order_item,
+		make_delivery_note,
+	):
+		from process_simplification.api.actions import create_delivery_note
+
+		has_permission.return_value = True
+		get_value.return_value = "SO-ITEM-TEST"
+		# A draft Delivery Note can consume the effective reservation shown by the workbench.
+		# Retrying the action must still reopen that draft instead of reporting no reservation.
+		row_from_workbench.return_value = frappe._dict({"reserved_qty": 0})
+		get_all.return_value = [frappe._dict({"parent": "DN-DRAFT-001"})]
+		existing_draft = MagicMock(name="existing_delivery_note")
+		existing_draft.name = "DN-DRAFT-001"
+		existing_draft.docstatus = 0
+		get_doc.return_value = existing_draft
+		get_sales_order_item.return_value = frappe._dict({"conversion_factor": 1})
+		new_delivery_note = MagicMock(name="new_delivery_note")
+		new_delivery_note.name = "DN-NEW-001"
+		new_delivery_note.docstatus = 0
+		new_delivery_note.items = [frappe._dict({"so_detail": "SO-ITEM-TEST", "qty": 5})]
+		make_delivery_note.return_value = new_delivery_note
+
+		result = create_delivery_note("SO-TEST", "SO-ITEM-TEST")
+
+		self.assertEqual(
+			result,
+			{"delivery_note": "DN-DRAFT-001", "docstatus": 0, "reused": True},
+		)
+
 	@patch("process_simplification.api.actions.get_available_qty_to_reserve")
 	@patch("process_simplification.api.actions.frappe.get_doc")
 	@patch("process_simplification.api.actions.frappe.has_permission")

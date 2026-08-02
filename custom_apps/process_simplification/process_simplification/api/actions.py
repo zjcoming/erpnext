@@ -236,10 +236,37 @@ def reserve_completed_stock(sales_order: str, sales_order_item: str, qty: float 
 	return {"stock_reservation_entries": created}
 
 
+def _get_existing_draft_delivery_note(sales_order: str, sales_order_item: str):
+	rows = frappe.get_all(
+		"Delivery Note Item",
+		filters={
+			"against_sales_order": sales_order,
+			"so_detail": sales_order_item,
+			"docstatus": 0,
+		},
+		fields=["parent"],
+		order_by="creation desc",
+		limit=1,
+	)
+	if not rows:
+		return None
+
+	delivery_note = frappe.get_doc("Delivery Note", rows[0].parent)
+	if delivery_note.docstatus != 0:
+		return None
+	delivery_note.check_permission("read")
+	return delivery_note
+
+
 @frappe.whitelist()
 def create_delivery_note(sales_order: str, sales_order_item: str):
 	frappe.has_permission("Delivery Note", "create", throw=True)
 	row = _row_from_workbench(sales_order, sales_order_item)
+	# Serialize requests for the same order row so concurrent clicks cannot both create a draft.
+	frappe.db.get_value("Sales Order Item", sales_order_item, "name", for_update=True)
+	existing_draft = _get_existing_draft_delivery_note(sales_order, sales_order_item)
+	if existing_draft:
+		return {"delivery_note": existing_draft.name, "docstatus": existing_draft.docstatus, "reused": True}
 	if row.reserved_qty <= 0:
 		throw_chinese("当前订单行没有有效预留，不能创建发货单。")
 
@@ -257,4 +284,4 @@ def create_delivery_note(sales_order: str, sales_order_item: str):
 		if normalize_qty(item.qty) > max_qty:
 			item.qty = max_qty
 	delivery_note.insert()
-	return {"delivery_note": delivery_note.name, "docstatus": delivery_note.docstatus}
+	return {"delivery_note": delivery_note.name, "docstatus": delivery_note.docstatus, "reused": False}

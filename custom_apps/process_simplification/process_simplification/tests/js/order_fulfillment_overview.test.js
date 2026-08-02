@@ -11,6 +11,7 @@ const {
 	fulfillmentCsv,
 	refreshFulfillmentOverview,
 	productionWorkbenchRoute,
+	deliveryNoteRouteFromResponse,
 } = require("../../process_simplification/page/order_workbench/order_workbench.js");
 
 const escapeHtml = (value) =>
@@ -198,6 +199,16 @@ test("expanded product rows expose labels for the mobile card layout", () => {
 
 test("production actions route to the production workbench by Sales Order Item", () => {
 	assert.deepEqual(productionWorkbenchRoute("SO-001", "SOI-001"), ["production-workbench", "SOI-001"]);
+});
+
+test("delivery note creation response resolves the created document route", () => {
+	assert.equal(typeof deliveryNoteRouteFromResponse, "function");
+	assert.deepEqual(deliveryNoteRouteFromResponse({ message: { delivery_note: "DN-001" } }), [
+		"Form",
+		"Delivery Note",
+		"DN-001",
+	]);
+	assert.equal(deliveryNoteRouteFromResponse({ message: {} }), null);
 });
 
 test("CSV uses Chinese headers and filename", () => {
