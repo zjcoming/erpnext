@@ -561,16 +561,26 @@ def _evaluate_quick_order(payload):
 		for row in preview["rows"]
 		if row.get("production_required") > 0 and row.get("bom_no")
 	]
-	coverage = (
-		calculate_material_coverage(
-			demands,
-			company,
-			need_by_date=data.delivery_date,
-			defaults=defaults,
-		)
-		if company and demands
-		else frappe._dict({"materials": [], "shortages": []})
-	)
+	coverage = frappe._dict({"materials": [], "shortages": []})
+	if company and demands:
+		try:
+			coverage = calculate_material_coverage(
+				demands,
+				company,
+				need_by_date=data.delivery_date,
+				defaults=defaults,
+			)
+		except Exception:
+			for demand in demands:
+				blockers.append(
+					_issue(
+						"BOM_EXPLOSION_FAILED",
+						"blocker",
+						"BOM 展开失败，无法评估原料风险，请检查 BOM 后重试。",
+						"line",
+						demand["source"]["row"],
+					)
+				)
 	material_coverage = coverage.get("materials") or []
 	shortages = coverage.get("shortages") or []
 	material_groups = []

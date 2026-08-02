@@ -413,6 +413,67 @@ class TestQuickOrderV2(UnitTestCase):
 		)
 		self.assertEqual(result["shortage_item_count"], 0)
 
+	@patch("process_simplification.api.quick_order.calculate_material_coverage")
+	@patch("process_simplification.api.quick_order.preview_quick_order_items")
+	@patch("process_simplification.api.quick_order._customer_po_issue", return_value=None)
+	@patch("process_simplification.api.quick_order._validate_customer", return_value=[])
+	@patch("process_simplification.api.quick_order.get_company_defaults")
+	@patch("process_simplification.api.quick_order.frappe.has_permission")
+	def test_bom_explosion_failure_blocks_each_affected_production_row(
+		self,
+		has_permission,
+		get_company_defaults,
+		validate_customer,
+		customer_po_issue,
+		preview,
+		material_coverage,
+	):
+		from process_simplification.api.quick_order import _evaluate_quick_order
+
+		get_company_defaults.return_value = frappe._dict({"company": "_Test Company"})
+		preview.return_value = {
+			"rows": [
+				{
+					"row": 1,
+					"item_code": "FG-001",
+					"qty": 1,
+					"warehouse": "Finished Goods - TC",
+					"available_to_reserve": 0,
+					"production_required": 1,
+					"bom_no": "BOM-FG-001",
+					"issues": [],
+				},
+				{
+					"row": 2,
+					"item_code": "FG-002",
+					"qty": 2,
+					"warehouse": "Finished Goods - TC",
+					"available_to_reserve": 0,
+					"production_required": 2,
+					"bom_no": "BOM-FG-002",
+					"issues": [],
+				},
+			],
+			"available_to_reserve": 0,
+			"production_required": 3,
+		}
+		material_coverage.side_effect = frappe.ValidationError("BOM explosion failed")
+
+		result = _evaluate_quick_order(self._normalized_order())
+
+		self.assertFalse(result["can_submit"])
+		self.assertEqual(
+			{
+				(issue["code"], issue["scope"], issue["row"])
+				for issue in result["blockers"]
+				if issue["code"] == "BOM_EXPLOSION_FAILED"
+			},
+			{
+				("BOM_EXPLOSION_FAILED", "line", 1),
+				("BOM_EXPLOSION_FAILED", "line", 2),
+			},
+		)
+
 	def test_review_fingerprint_ignores_check_time_but_detects_material_change(self):
 		from process_simplification.api.quick_order import quick_order_review_fingerprint
 
