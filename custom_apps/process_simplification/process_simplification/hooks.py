@@ -20,7 +20,7 @@ add_to_apps_screen = [
 		"name": app_name,
 		"logo": "/assets/process_simplification/images/process-simplification.svg",
 		"title": app_title,
-		"route": "/app/process-simplification",
+		"route": "/desk/process-simplification",
 		"has_permission": "process_simplification.permissions.can_access_app",
 	}
 ]

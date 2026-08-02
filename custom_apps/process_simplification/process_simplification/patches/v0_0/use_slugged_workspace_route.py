@@ -21,7 +21,11 @@ def execute():
 		frappe.db.set_value(
 			"Workspace",
 			"process-simplification",
-			{"label": "流程简化", "title": "流程简化", "type": "Workspace"},
+			{
+				"label": "process-simplification",
+				"title": "process-simplification",
+				"type": "Workspace",
+			},
 			update_modified=False,
 		)
 
@@ -42,3 +46,27 @@ def execute():
 				item.link_type = "Workspace"
 				item.link_to = "process-simplification"
 		sidebar.save(ignore_permissions=True)
+
+	app_icon = frappe.db.get_value(
+		"Desktop Icon",
+		{"app": "process_simplification", "icon_type": "App"},
+		"name",
+	)
+	if app_icon:
+		frappe.db.set_value(
+			"Desktop Icon",
+			app_icon,
+			"link",
+			"/desk/process-simplification",
+			update_modified=False,
+		)
+
+	if frappe.db.exists("Desktop Icon", "process-simplification"):
+		frappe.db.set_value(
+			"Desktop Icon",
+			"process-simplification",
+			{"parent_icon": None, "hidden": 1},
+			update_modified=False,
+		)
+
+	frappe.clear_cache()
