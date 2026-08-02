@@ -26,7 +26,8 @@ final submit recheck. The result is a timestamped snapshot for decision support;
 finished goods or raw materials and does not create production or purchasing documents. Each product/BOM card
 keeps these quantities separate:
 
-- `当前生产缺口`: finished-goods demand that must be produced after reservable finished-goods stock is applied.
+- `当前生产缺口`: BOM raw-material demand left after available raw material in the resolved source warehouse is
+  applied, before open purchase requests or on-time purchase orders are deducted.
 - `已提采购申请`: on-time, unconverted Purchase Material Request balance, which avoids proposing a duplicate request.
 - `按时在途`: outstanding Purchase Order quantity due by the order's delivery date.
 - `建议新增采购申请`: raw-material gap left after available stock, open purchase requests and on-time purchase
