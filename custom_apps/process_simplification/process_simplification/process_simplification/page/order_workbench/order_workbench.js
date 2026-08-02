@@ -46,6 +46,10 @@ function overviewSummary(orders) {
 	);
 }
 
+function productionWorkbenchRoute(_salesOrder, salesOrderItem) {
+	return ["production-workbench", salesOrderItem];
+}
+
 function fulfillmentCsv(orders) {
 	const quote = (value) => {
 		const text = String(value ?? "");
@@ -53,7 +57,7 @@ function fulfillmentCsv(orders) {
 		return `"${safeText.replaceAll('"', '""')}"`;
 	};
 	const lines = [
-		["销售订单", "客户", "最早交期", "订购", "已发", "待交", "已预留", "生产中", "已完工", "未覆盖", "风险"],
+		["销售订单", "客户", "最早交期", "订购", "已发", "待交", "有效预留", "成品覆盖", "需生产", "已安排", "未安排", "风险"],
 		...(orders || []).map((order) => [
 			order.name,
 			order.customer_name || order.customer,
@@ -62,9 +66,10 @@ function fulfillmentCsv(orders) {
 			order.delivered_qty,
 			order.pending_qty,
 			order.reserved_qty,
+			order.finished_stock_coverage_qty,
+			order.production_required_qty,
 			order.active_work_order_qty,
-			order.completed_qty,
-			order.uncovered_qty,
+			order.unplanned_production_qty ?? order.uncovered_qty,
 			order.risk_label,
 		]),
 	].map((row) => row.map(quote).join(","));
@@ -89,14 +94,13 @@ function orderOverviewHtml(order, helpers) {
 				<tr class="${row.unsupported ? "text-muted" : ""}">
 					<td data-label="${esc(t("产品"))}"><a href="/app/item/${encodeURIComponent(row.item_code || "")}">${esc(row.item_code || "")}</a><br><small>${esc(row.item_name || "")}</small></td>
 					<td data-label="${esc(t("交期"))}">${esc(date(row.delivery_date)) || esc(t("未设置"))}</td>
-					<td class="fulfillment-number" data-label="${esc(t("订购"))}">${number(row.order_qty)}</td>
-					<td class="fulfillment-number" data-label="${esc(t("已发"))}">${number(row.delivered_qty)}</td>
 					<td class="fulfillment-number" data-label="${esc(t("待交"))}">${number(row.pending_qty)}</td>
-					<td class="fulfillment-number" data-label="${esc(t("已预留"))}">${number(row.reserved_qty)}</td>
-					<td class="fulfillment-number" data-label="${esc(t("生产中"))}">${number(row.active_work_order_qty)}</td>
-					<td class="fulfillment-number" data-label="${esc(t("已完工"))}">${number(row.completed_qty)}</td>
-					<td class="fulfillment-number" data-label="${esc(t("未覆盖"))}">${number(row.uncovered_qty)}</td>
-					<td data-label="${esc(t("原料"))}">${esc(row.material_status || "")}</td>
+					<td class="fulfillment-number" data-label="${esc(t("有效预留"))}">${number(row.reserved_qty)}</td>
+					<td class="fulfillment-number" data-label="${esc(t("可用成品"))}">${number(row.available_to_reserve)}</td>
+					<td class="fulfillment-number" data-label="${esc(t("成品覆盖"))}">${number(row.finished_stock_coverage_qty)}</td>
+					<td class="fulfillment-number" data-label="${esc(t("需生产"))}">${number(row.production_required_qty)}</td>
+					<td class="fulfillment-number" data-label="${esc(t("已安排"))}">${number(row.active_work_order_qty)}</td>
+					<td class="fulfillment-number" data-label="${esc(t("未安排"))}">${number(row.unplanned_production_qty ?? row.uncovered_qty)}</td>
 					<td data-label="${esc(t("状态"))}"><span class="indicator-pill gray">${esc(row.status || "")}</span>${row.unsupported_reason ? `<br><small>${esc(row.unsupported_reason)}</small>` : ""}</td>
 					<td class="fulfillment-item-actions" data-label="${esc(t("下一步"))}">${actions(row)}</td>
 				</tr>`
@@ -111,20 +115,19 @@ function orderOverviewHtml(order, helpers) {
 				</div>
 				<div class="fulfillment-order-fact"><span>${esc(t("最早交期"))}</span><strong>${esc(date(order.delivery_date)) || esc(t("未设置"))}</strong>${order.has_multiple_delivery_dates ? ` <span class="indicator-pill gray">${esc(t("多交期"))}</span>` : ""}</div>
 				<div class="fulfillment-order-fact fulfillment-number"><span>${esc(t("已发 / 订购"))}</span><strong>${number(order.delivered_qty)} / ${number(order.order_qty)}</strong></div>
-				<div class="fulfillment-order-fact fulfillment-number"><span>${esc(t("已预留 / 待交"))}</span><strong>${number(order.reserved_qty)} / ${number(order.pending_qty)}</strong></div>
-				<div class="fulfillment-order-fact fulfillment-number"><span>${esc(t("生产中 / 生产缺口"))}</span><strong>${number(order.active_work_order_qty)} / ${number(order.uncovered_qty)}</strong></div>
+				<div class="fulfillment-order-fact fulfillment-number"><span>${esc(t("成品覆盖 / 待交"))}</span><strong>${number(order.finished_stock_coverage_qty ?? order.reserved_qty)} / ${number(order.pending_qty)}</strong></div>
+				<div class="fulfillment-order-fact fulfillment-number"><span>${esc(t("已安排 / 未安排"))}</span><strong>${number(order.active_work_order_qty)} / ${number(order.unplanned_production_qty ?? order.uncovered_qty)}</strong></div>
 				<div class="fulfillment-order-risk"><span class="indicator-pill ${esc(order.risk_level || "gray")}">${esc(order.risk_label || order.status_label || "")}</span></div>
 				<span class="fulfillment-toggle">${esc(t("查看并处理"))}</span>
 			</summary>
 			<div class="fulfillment-order-details">
 				<div class="fulfillment-order-actions" aria-label="${esc(t("订单操作"))}">
 					<strong class="fulfillment-order-actions-title">${esc(t("订单操作"))}</strong>
-					<button class="btn btn-default btn-sm order-material-check" data-sales-order="${esc(order.name)}">${esc(t("检查缺料"))}</button>
 					<button class="btn btn-default btn-sm row-action" data-action="view_sales_order" data-sales-order="${esc(order.name)}">${esc(t("查看销售订单"))}</button>
 				</div>
 				<div class="fulfillment-item-table-wrap">
 					<table class="table table-bordered fulfillment-item-table">
-						<thead><tr><th>${esc(t("产品"))}</th><th>${esc(t("交期"))}</th><th>${esc(t("订购"))}</th><th>${esc(t("已发"))}</th><th>${esc(t("待交"))}</th><th>${esc(t("已预留"))}</th><th>${esc(t("生产中"))}</th><th>${esc(t("已完工"))}</th><th>${esc(t("未覆盖"))}</th><th>${esc(t("原料"))}</th><th>${esc(t("状态"))}</th><th>${esc(t("下一步"))}</th></tr></thead>
+						<thead><tr><th>${esc(t("产品"))}</th><th>${esc(t("交期"))}</th><th>${esc(t("待交"))}</th><th>${esc(t("有效预留"))}</th><th>${esc(t("可用成品"))}</th><th>${esc(t("成品覆盖"))}</th><th>${esc(t("需生产"))}</th><th>${esc(t("已安排"))}</th><th>${esc(t("未安排"))}</th><th>${esc(t("状态"))}</th><th>${esc(t("下一步"))}</th></tr></thead>
 						<tbody>${itemRows}</tbody>
 					</table>
 				</div>
@@ -147,6 +150,7 @@ const fulfillmentOverviewApi = {
 	fulfillmentCsv,
 	orderOverviewHtml,
 	refreshFulfillmentOverview,
+	productionWorkbenchRoute,
 };
 
 if (typeof module !== "undefined" && module.exports) {
@@ -157,7 +161,7 @@ if (typeof frappe !== "undefined") {
 	frappe.pages["order-workbench"].on_page_load = function (wrapper) {
 		const page = frappe.ui.make_app_page({
 			parent: wrapper,
-			title: __("订单履约总览"),
+			title: __("订单工作台"),
 			single_column: true,
 		});
 		page.main.html(`
@@ -269,21 +273,9 @@ if (typeof frappe !== "undefined") {
 			});
 		}
 
-		function showWorkOrders(workOrders) {
-			const html = workOrders.length
-				? workOrders
-						.map(
-							(wo) => `<div class="mb-3"><div><b><a href="/app/work-order/${encodeURIComponent(wo.name)}">${frappe.utils.escape_html(wo.name)}</a></b> ${frappe.utils.escape_html(wo.status || "")}</div><div class="text-muted">${__("数量")}: ${format_number(flt(wo.qty), null, 2)} / ${__("已生产")}: ${format_number(flt(wo.produced_qty), null, 2)}</div><div>${__("原料")}: ${(wo.required_items || []).map((item) => `${frappe.utils.escape_html(item.item_code)} ${format_number(flt(item.required_qty), null, 2)}`).join(", ") || __("无")}</div></div>`
-						)
-						.join("")
-				: __("暂无生产任务");
-			frappe.msgprint({ title: __("生产任务"), message: html, wide: true });
-		}
-
 		function runRowAction(action, salesOrder, salesOrderItem) {
 			const methodMap = {
 				reserve_stock: "process_simplification.api.actions.reserve_stock",
-				create_work_order: "process_simplification.api.actions.create_work_order",
 				reserve_completed_stock: "process_simplification.api.actions.reserve_completed_stock",
 				create_delivery_note: "process_simplification.api.actions.create_delivery_note",
 			};
@@ -291,11 +283,8 @@ if (typeof frappe !== "undefined") {
 				frappe.set_route("Form", "Sales Order", salesOrder);
 				return;
 			}
-			if (action === "view_work_orders") {
-				frappe.call({
-					method: "process_simplification.api.workbench.get_work_order_details",
-					args: { sales_order: salesOrder, sales_order_item: salesOrderItem },
-				}).then((response) => showWorkOrders((response.message || {}).work_orders || []));
+			if (action === "open_production_workbench") {
+				frappe.set_route(...productionWorkbenchRoute(salesOrder, salesOrderItem));
 				return;
 			}
 			const method = methodMap[action];
@@ -306,19 +295,6 @@ if (typeof frappe !== "undefined") {
 					loadOverview();
 				});
 			});
-		}
-
-		function checkOrderMaterials(salesOrder) {
-			const order = (state.data.orders || []).find((candidate) => candidate.name === salesOrder);
-			const selectedRows = (order ? order.rows : [])
-				.filter((row) => !row.unsupported && flt(row.pending_qty) > 0 && row.sales_order_item)
-				.map((row) => ({ sales_order: salesOrder, sales_order_item: row.sales_order_item }));
-			if (!selectedRows.length) {
-				frappe.show_alert({ message: __("没有可检查的受支持待交产品。"), indicator: "orange" });
-				return;
-			}
-			frappe.route_options = { selected_rows: selectedRows };
-			frappe.set_route("shortage-purchase-planning");
 		}
 
 		function exportVisibleOrders() {
@@ -340,7 +316,6 @@ if (typeof frappe !== "undefined") {
 			const $button = $(event.currentTarget);
 			runRowAction($button.data("action"), $button.data("sales-order"), $button.data("row"));
 		});
-		$root.on("click", ".order-material-check", (event) => checkOrderMaterials($(event.currentTarget).data("sales-order")));
 		$root.on("click", ".fulfillment-export", exportVisibleOrders);
 		page.add_inner_button(__("刷新"), loadOverview);
 

@@ -10,6 +10,7 @@ const {
 	orderOverviewHtml,
 	fulfillmentCsv,
 	refreshFulfillmentOverview,
+	productionWorkbenchRoute,
 } = require("../../process_simplification/page/order_workbench/order_workbench.js");
 
 const escapeHtml = (value) =>
@@ -37,7 +38,11 @@ function order(name, overrides = {}) {
 		delivered_qty: 2,
 		pending_qty: 8,
 		reserved_qty: 3,
+		available_to_reserve: 1,
+		finished_stock_coverage_qty: 4,
+		production_required_qty: 4,
 		active_work_order_qty: 2,
+		unplanned_production_qty: 2,
 		completed_qty: 1,
 		uncovered_qty: 3,
 		delivery_timing: "later",
@@ -57,7 +62,11 @@ function order(name, overrides = {}) {
 				delivered_qty: 2,
 				pending_qty: 8,
 				reserved_qty: 3,
+				available_to_reserve: 1,
+				finished_stock_coverage_qty: 4,
+				production_required_qty: 4,
 				active_work_order_qty: 2,
+				unplanned_production_qty: 2,
 				completed_qty: 1,
 				uncovered_qty: 3,
 				material_status: "Ready",
@@ -143,11 +152,12 @@ test("order HTML escapes customer and item labels", () => {
 	assert.match(html, /&lt;img/);
 });
 
-test("expanded product rows include completed quantity", () => {
+test("expanded product rows explain stock coverage and production demand", () => {
 	const html = orderOverviewHtml(order("SO-COMPLETED"), helpers);
 
-	assert.match(html, /已完工/);
-	assert.match(html, /1\.00/);
+	for (const label of ["成品覆盖", "需生产", "已安排", "未安排"]) {
+		assert.match(html, new RegExp(label));
+	}
 });
 
 test("order HTML shows the multiple delivery dates badge", () => {
@@ -170,14 +180,13 @@ test("expanded product rows expose labels for the mobile card layout", () => {
 	for (const label of [
 		"产品",
 		"交期",
-		"订购",
-		"已发",
 		"待交",
-		"已预留",
-		"生产中",
-		"已完工",
-		"未覆盖",
-		"原料",
+		"有效预留",
+		"可用成品",
+		"成品覆盖",
+		"需生产",
+		"已安排",
+		"未安排",
 		"状态",
 		"下一步",
 	]) {
@@ -187,11 +196,15 @@ test("expanded product rows expose labels for the mobile card layout", () => {
 	assert.match(html, /class="fulfillment-order-actions-title">订单操作</);
 });
 
+test("production actions route to the production workbench by Sales Order Item", () => {
+	assert.deepEqual(productionWorkbenchRoute("SO-001", "SOI-001"), ["production-workbench", "SOI-001"]);
+});
+
 test("CSV uses Chinese headers and filename", () => {
 	const csv = fulfillmentCsv([order("SO-CSV")]);
 
 	assert.equal(csv.filename, "订单履约总览.csv");
-	assert.match(csv.content, /^\uFEFF"销售订单","客户","最早交期","订购","已发","待交","已预留","生产中","已完工","未覆盖","风险"/);
+	assert.match(csv.content, /^\uFEFF"销售订单","客户","最早交期","订购","已发","待交","有效预留","成品覆盖","需生产","已安排","未安排","风险"/);
 	assert.match(csv.content, /"SO-CSV"/);
 });
 

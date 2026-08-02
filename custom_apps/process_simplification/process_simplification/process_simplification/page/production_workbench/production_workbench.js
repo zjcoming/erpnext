@@ -1,0 +1,323 @@
+function isProductionDueWithin7Days(demand) {
+	return ["today", "within_7_days"].includes(demand.delivery_timing);
+}
+
+function filterProductionDemands(demands, filters = {}) {
+	const search = String(filters.search || "").trim().toLowerCase();
+	return (demands || []).filter((demand) => {
+		const searchable = [
+			demand.demand_key,
+			demand.sales_order,
+			demand.customer,
+			demand.customer_name,
+			demand.item_code,
+			demand.item_name,
+			...(demand.work_orders || []).map((row) => row.name),
+		]
+			.join(" ")
+			.toLowerCase();
+		return (
+			(!search || searchable.includes(search)) &&
+			(!filters.customer || demand.customer === filters.customer) &&
+			(!filters.deliveryWindow ||
+				(filters.deliveryWindow === "within_7_days"
+					? isProductionDueWithin7Days(demand)
+					: demand.delivery_timing === filters.deliveryWindow)) &&
+			(!filters.status || demand.status_code === filters.status) &&
+			(!filters.risk || demand.risk_level === filters.risk) &&
+			(!filters.shortageOnly || Number(demand.material_summary?.shortage_item_count || 0) > 0) &&
+			(!filters.unplannedOnly || Number(demand.unplanned_production_qty || 0) > 0)
+		);
+	});
+}
+
+function productionSummary(demands) {
+	return (demands || []).reduce(
+		(summary, demand) => {
+			summary.total_demands += 1;
+			summary.unplanned_demands += Number(Number(demand.unplanned_production_qty || 0) > 0);
+			summary.overdue_demands += Number(demand.delivery_timing === "overdue");
+			summary.due_within_7_days += Number(isProductionDueWithin7Days(demand));
+			summary.material_shortage_demands += Number(
+				Number(demand.material_summary?.shortage_item_count || 0) > 0
+			);
+			summary.in_production_demands += Number(
+				["in_production", "partially_completed"].includes(demand.status_code)
+			);
+			summary.awaiting_order_reservation_demands += Number(
+				demand.status_code === "awaiting_order_reservation"
+			);
+			return summary;
+		},
+		{
+			total_demands: 0,
+			unplanned_demands: 0,
+			overdue_demands: 0,
+			due_within_7_days: 0,
+			material_shortage_demands: 0,
+			in_production_demands: 0,
+			awaiting_order_reservation_demands: 0,
+		}
+	);
+}
+
+function productionDemandHtml(demand, helpers) {
+	const t = helpers.translate;
+	const esc = helpers.escapeHtml;
+	const number = helpers.formatNumber;
+	const date = helpers.formatDate;
+	const quantityFacts = [
+		[t("订单待交"), demand.pending_qty],
+		[t("有效预留"), demand.reserved_qty],
+		[t("可用成品"), demand.available_to_reserve],
+		[t("成品覆盖"), demand.finished_stock_coverage_qty],
+		[t("需要生产"), demand.production_required_qty],
+		[t("工单覆盖"), demand.active_work_order_qty],
+		[t("未安排"), demand.unplanned_production_qty],
+		[t("已完工"), demand.completed_qty],
+		[t("待回补"), demand.completed_unreserved_qty],
+	];
+	const actions = (demand.next_actions || [])
+		.map(
+			(row) =>
+				`<button class="btn btn-sm btn-default production-action" data-action="${esc(row.action)}" data-sales-order="${esc(demand.sales_order)}" data-row="${esc(demand.sales_order_item)}" ${row.enabled === false ? "disabled" : ""}>${esc(t(row.label))}</button>`
+		)
+		.join(" ");
+	const workOrders = (demand.work_orders || []).length
+		? (demand.work_orders || [])
+				.map(
+					(row) => `
+						<div class="production-work-order-card">
+							<div class="production-work-order-heading"><a href="/app/work-order/${encodeURIComponent(row.name || "")}"><strong>${esc(row.name || "")}</strong></a><span class="indicator-pill gray">${esc(row.status || "")}</span></div>
+							<div data-label="${esc(t("计划数量"))}">${number(row.qty)}</div>
+							<div data-label="${esc(t("已生产"))}">${number(row.produced_qty)}</div>
+							<div data-label="${esc(t("剩余"))}">${number(Math.max(Number(row.qty || 0) - Number(row.produced_qty || 0), 0))}</div>
+							<div data-label="BOM">${esc(row.bom_no || t("未设置"))}</div>
+							<div data-label="${esc(t("原料仓"))}">${esc(row.source_warehouse || t("未设置"))}</div>
+							<div data-label="${esc(t("在制仓"))}">${esc(row.wip_warehouse || t("未设置"))}</div>
+							<div data-label="${esc(t("成品仓"))}">${esc(row.fg_warehouse || t("未设置"))}</div>
+						</div>`
+				)
+				.join("")
+		: `<div class="text-muted production-empty-section">${esc(t("尚未创建生产任务。"))}</div>`;
+	const materials = (demand.materials || []).length
+		? `
+			<div class="production-material-table-wrap">
+				<table class="table table-bordered production-material-table">
+					<thead><tr><th>${esc(t("物料"))}</th><th>${esc(t("本需求"))}</th><th>${esc(t("全部需求"))}</th><th>${esc(t("仓库库存"))}</th><th>${esc(t("已占用"))}</th><th>${esc(t("本次可用"))}</th><th>${esc(t("采购申请"))}</th><th>${esc(t("在途采购"))}</th><th>${esc(t("即时缺口"))}</th><th>${esc(t("采购缺口"))}</th><th>${esc(t("状态"))}</th></tr></thead>
+					<tbody>${(demand.materials || [])
+						.map(
+							(row) => `
+								<tr>
+									<td data-label="${esc(t("物料"))}"><strong>${esc(row.item_code || "")}</strong><br><small>${esc(row.item_name || "")} · ${esc(row.warehouse || t("未设置仓库"))}${row.is_shared ? ` · <span class="production-shared-material">${esc(t("共享物料"))}</span>` : ""}</small></td>
+									<td data-label="${esc(t("本需求"))}">${number(row.source_required_qty)}</td>
+									<td data-label="${esc(t("全部需求"))}">${number(row.total_required_qty)}</td>
+									<td data-label="${esc(t("仓库库存"))}">${number(row.actual_qty)}</td>
+									<td data-label="${esc(t("已占用"))}">${number(row.committed_qty)}</td>
+									<td data-label="${esc(t("本次可用"))}">${number(row.available_qty)}</td>
+									<td data-label="${esc(t("采购申请"))}">${number(row.open_material_request_qty)}</td>
+									<td data-label="${esc(t("在途采购"))}">${number(row.open_purchase_order_qty)}</td>
+									<td data-label="${esc(t("即时缺口"))}">${number(row.current_gap_qty)}</td>
+									<td data-label="${esc(t("采购缺口"))}">${number(row.shortage_qty)}</td>
+									<td data-label="${esc(t("状态"))}"><span class="indicator-pill ${row.status === "new_purchase_required" ? "red" : row.status === "ready_now" ? "green" : "orange"}">${esc(row.status || "")}</span></td>
+								</tr>`
+						)
+						.join("")}</tbody>
+				</table>
+			</div>`
+		: `<div class="text-muted production-empty-section">${esc(t("当前没有可展示的 BOM 物料。"))}</div>`;
+	return `
+		<details class="production-demand production-risk-${esc(demand.risk_level || "gray")}" data-demand-key="${esc(demand.demand_key)}">
+			<summary>
+				<div class="production-demand-source"><strong>${esc(demand.sales_order || "")}</strong><span>${esc(demand.customer_name || demand.customer || "")}</span></div>
+				<div class="production-demand-product"><strong>${esc(demand.item_code || "")}</strong><span>${esc(demand.item_name || "")}</span></div>
+				<div class="production-demand-fact"><span>${esc(t("交期"))}</span><strong>${esc(date(demand.delivery_date)) || esc(t("未设置"))}</strong></div>
+				<div class="production-demand-fact"><span>${esc(t("成品覆盖 / 待交"))}</span><strong>${number(demand.finished_stock_coverage_qty)} / ${number(demand.pending_qty)}</strong></div>
+				<div class="production-demand-fact"><span>${esc(t("已安排 / 需生产"))}</span><strong>${number(demand.active_work_order_qty)} / ${number(demand.production_required_qty)}</strong></div>
+				<div class="production-demand-fact"><span>${esc(t("未安排 / 已完工"))}</span><strong>${number(demand.unplanned_production_qty)} / ${number(demand.completed_qty)}</strong></div>
+				<div class="production-demand-risk"><span class="indicator-pill ${esc(demand.risk_level || "gray")}">${esc(demand.risk_label || "")}</span><span class="indicator-pill gray">${esc(demand.status_label || "")}</span></div>
+				<span class="production-demand-toggle">${esc(t("查看并处理"))}</span>
+			</summary>
+			<div class="production-demand-details">
+				<div class="production-demand-actions">${actions}</div>
+				<section><h5>${esc(t("数量关系"))}</h5><div class="production-quantity-grid">${quantityFacts
+					.map(([label, value]) => `<div data-label="${esc(label)}"><span>${esc(label)}</span><strong>${number(value)}</strong></div>`)
+					.join("")}</div></section>
+				<section><h5>${esc(t("关联生产任务"))}</h5><div class="production-work-order-list">${workOrders}</div></section>
+				<section><h5>${esc(t("BOM 物料风险"))}</h5><p class="text-muted">${esc(t("共享物料按当前全部生产需求汇总，采购动作会再次复核。"))}</p>${materials}</section>
+			</div>
+		</details>`;
+}
+
+function refreshProductionOverview(page, demandKey) {
+	if (!page || !page.production_workbench) return;
+	const { state, loadOverview } = page.production_workbench;
+	state.filters.search = demandKey || "";
+	state.expandedDemands.clear();
+	if (demandKey) state.expandedDemands.add(demandKey);
+	return loadOverview();
+}
+
+const productionWorkbenchApi = {
+	filterProductionDemands,
+	productionSummary,
+	productionDemandHtml,
+	refreshProductionOverview,
+};
+
+if (typeof module !== "undefined" && module.exports) {
+	module.exports = productionWorkbenchApi;
+}
+
+if (typeof frappe !== "undefined") {
+	frappe.pages["production-workbench"].on_page_load = function (wrapper) {
+		const page = frappe.ui.make_app_page({ parent: wrapper, title: __("生产工作台"), single_column: true });
+		page.main.html(`
+			<div class="process-simplification-page production-workbench">
+				<div class="production-kpis"></div>
+				<div class="production-filter-bar">
+					<input class="form-control production-search" data-filter="search" placeholder="${__("搜索订单、客户、产品或生产任务")}">
+					<select class="form-control" data-filter="deliveryWindow"><option value="">${__("全部交期")}</option><option value="overdue">${__("已逾期")}</option><option value="today">${__("今日交期")}</option><option value="within_7_days">${__("7 天内交期")}</option><option value="later">${__("稍后交期")}</option><option value="missing">${__("缺少交期")}</option></select>
+					<select class="form-control" data-filter="status"><option value="">${__("全部状态")}</option><option value="master_data_blocked">${__("基础资料异常")}</option><option value="unplanned">${__("待安排")}</option><option value="material_shortage">${__("缺料")}</option><option value="ready_to_start">${__("可开工")}</option><option value="in_production">${__("生产中")}</option><option value="partially_completed">${__("部分完工")}</option><option value="awaiting_order_reservation">${__("待回补订单")}</option><option value="overplanned">${__("超计划生产")}</option></select>
+					<select class="form-control" data-filter="risk"><option value="">${__("全部风险")}</option><option value="red">${__("高风险")}</option><option value="orange">${__("需关注")}</option><option value="blue">${__("处理中")}</option><option value="green">${__("正常")}</option></select>
+					<select class="form-control" data-filter="customer"><option value="">${__("全部客户")}</option></select>
+					<label><input type="checkbox" data-filter="shortageOnly"> ${__("只看缺料")}</label>
+					<label><input type="checkbox" data-filter="unplannedOnly"> ${__("只看未安排")}</label>
+					<label><input type="checkbox" data-filter="showOther"> ${__("其他生产")}</label>
+				</div>
+				<div class="production-update-time text-muted"></div>
+				<p class="text-muted production-sort-note">${__("默认排序：订单交期、风险、未安排数量、订单创建时间。")}</p>
+				<div class="production-demand-list"></div>
+				<div class="production-other-section"></div>
+			</div>`);
+
+		const $root = page.main.find(".production-workbench");
+		const state = { data: { demands: [], other_work_orders: [] }, filters: {}, expandedDemands: new Set() };
+		page.production_workbench = { state, loadOverview };
+
+		const helpers = () => ({
+			translate: __,
+			escapeHtml: frappe.utils.escape_html,
+			formatNumber: (value) => format_number(flt(value), null, 2),
+			formatDate: (value) => (value ? frappe.datetime.str_to_user(value) : ""),
+		});
+
+		function visibleDemands() {
+			return filterProductionDemands(state.data.demands || [], state.filters);
+		}
+
+		function renderKpis(summary) {
+			const cards = [
+				[__("待安排生产"), summary.unplanned_demands, "orange"],
+				[__("已逾期生产"), summary.overdue_demands, "red"],
+				[__("7 天内到期"), summary.due_within_7_days, "orange"],
+				[__("原料短缺"), summary.material_shortage_demands, "red"],
+				[__("生产中"), summary.in_production_demands, "blue"],
+				[__("待回补订单"), summary.awaiting_order_reservation_demands, "green"],
+			];
+			$root.find(".production-kpis").html(
+				cards.map(([label, value, color]) => `<div class="production-kpi production-kpi-${color}"><span>${frappe.utils.escape_html(label)}</span><strong>${value}</strong></div>`).join("")
+			);
+		}
+
+		function renderOtherWorkOrders() {
+			if (!state.filters.showOther) {
+				$root.find(".production-other-section").empty();
+				return;
+			}
+			const rows = state.data.other_work_orders || [];
+			const html = rows.length
+				? rows.map((row) => `<div class="production-other-card"><a href="/app/work-order/${encodeURIComponent(row.name || "")}"><strong>${frappe.utils.escape_html(row.name || "")}</strong></a><span>${frappe.utils.escape_html(row.production_item || "")}</span><span>${frappe.utils.escape_html(row.status || "")}</span><strong>${format_number(flt(row.produced_qty), null, 2)} / ${format_number(flt(row.qty), null, 2)}</strong></div>`).join("")
+				: `<div class="text-muted production-empty-section">${frappe.utils.escape_html(__("没有无订单来源的活动生产任务。"))}</div>`;
+			$root.find(".production-other-section").html(`<h4>${frappe.utils.escape_html(__("其他生产"))}</h4>${html}`);
+		}
+
+		function render() {
+			const demands = visibleDemands();
+			renderKpis(productionSummary(demands));
+			for (const [name, value] of Object.entries(state.filters)) {
+				const $field = $root.find(`[data-filter="${name}"]`);
+				if ($field.is(":checkbox")) $field.prop("checked", Boolean(value));
+				else $field.val(value || "");
+			}
+			$root.find(".production-demand-list").html(
+				demands.length
+					? demands.map((row) => productionDemandHtml(row, helpers())).join("")
+					: `<div class="text-muted fulfillment-empty">${frappe.utils.escape_html(__("没有符合当前筛选条件的生产需求。"))}</div>`
+			);
+			$root.find(".production-demand").each((_, element) => {
+				const $demand = $(element);
+				$demand.prop("open", state.expandedDemands.has($demand.data("demand-key")));
+				$demand.on("toggle", () => {
+					const key = $demand.data("demand-key");
+					if ($demand.prop("open")) state.expandedDemands.add(key);
+					else state.expandedDemands.delete(key);
+				});
+			});
+			renderOtherWorkOrders();
+		}
+
+		function loadOverview() {
+			return frappe.call({
+				method: "process_simplification.api.production.get_production_overview",
+				freeze: true,
+				freeze_message: __("正在计算生产需求与物料风险..."),
+			}).then((response) => {
+				state.data = response.message || { demands: [], other_work_orders: [] };
+				const customers = [...new Map((state.data.demands || []).map((row) => [row.customer, row.customer_name || row.customer])).entries()]
+					.filter(([customer]) => customer)
+					.sort((left, right) => left[1].localeCompare(right[1]));
+				$root.find('[data-filter="customer"]').html(
+					[`<option value="">${frappe.utils.escape_html(__("全部客户"))}</option>`]
+						.concat(customers.map(([value, label]) => `<option value="${frappe.utils.escape_html(value)}">${frappe.utils.escape_html(label)}</option>`))
+						.join("")
+				);
+				$root.find(".production-update-time").text(
+					state.data.checked_at ? `${__("数据更新于")} ${frappe.datetime.str_to_user(state.data.checked_at)}` : ""
+				);
+				render();
+			});
+		}
+
+		function runAction(action, salesOrder, salesOrderItem) {
+			if (action === "check_materials") return loadOverview();
+			if (action === "view_sales_order") return frappe.set_route("Form", "Sales Order", salesOrder);
+			if (action === "handle_shortage") {
+				frappe.route_options = { selected_rows: [{ sales_order: salesOrder, sales_order_item: salesOrderItem }] };
+				return frappe.set_route("shortage-purchase-planning");
+			}
+			const methods = {
+				create_work_order: "process_simplification.api.actions.create_work_order",
+				reserve_completed_stock: "process_simplification.api.actions.reserve_completed_stock",
+			};
+			if (!methods[action]) return;
+			const demand = (state.data.demands || []).find((row) => row.sales_order_item === salesOrderItem);
+			const message = action === "create_work_order"
+				? `${__("确认按当前未安排数量创建生产任务？")}<br>${frappe.utils.escape_html(demand?.item_code || "")} · ${format_number(flt(demand?.unplanned_production_qty), null, 2)}`
+				: __("确认将当前可用完工成品回补到来源订单？");
+			frappe.confirm(message, () => {
+				frappe.call({ method: methods[action], args: { sales_order: salesOrder, sales_order_item: salesOrderItem }, freeze: true }).then(() => {
+					frappe.show_alert({ message: __("操作完成，已按最新数据重新检查。"), indicator: "green" });
+					loadOverview();
+				});
+			});
+		}
+
+		$root.on("input change", "[data-filter]", (event) => {
+			const $input = $(event.currentTarget);
+			state.filters[$input.data("filter")] = $input.is(":checkbox") ? $input.prop("checked") : $input.val();
+			render();
+		});
+		$root.on("click", ".production-action", (event) => {
+			const $button = $(event.currentTarget);
+			runAction($button.data("action"), $button.data("sales-order"), $button.data("row"));
+		});
+		page.add_inner_button(__("刷新"), loadOverview);
+	};
+
+	frappe.pages["production-workbench"].refresh = function (wrapper) {
+		const demandKey = frappe.get_route()[1] || null;
+		return refreshProductionOverview(wrapper.page, demandKey);
+	};
+}
+
