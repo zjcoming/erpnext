@@ -167,6 +167,22 @@ test("order HTML shows the multiple delivery dates badge", () => {
 	assert.match(html, /多交期/);
 });
 
+test("collapsed order shows ready-to-ship status alongside a higher delivery risk", () => {
+	const html = orderOverviewHtml(
+		order("SO-READY-OVERDUE", {
+			status_code: "ready_to_ship",
+			status_label: "可发货",
+			direct_ship: true,
+			risk_level: "red",
+			risk_label: "已逾期",
+		}),
+		helpers
+	);
+
+	assert.match(html, /class="indicator-pill green fulfillment-order-status">可发货<\/span>/);
+	assert.match(html, /class="indicator-pill red fulfillment-order-risk-pill">已逾期<\/span>/);
+});
+
 test("expanded product rows show their own delivery date", () => {
 	const itemDateOrder = order("SO-ITEM-DATE");
 	itemDateOrder.rows[0].delivery_date = "2026-08-09";

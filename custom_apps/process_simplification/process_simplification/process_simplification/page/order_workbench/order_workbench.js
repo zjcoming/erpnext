@@ -55,6 +55,15 @@ function deliveryNoteRouteFromResponse(response) {
 	return deliveryNote ? ["Form", "Delivery Note", deliveryNote] : null;
 }
 
+function fulfillmentStatusColor(statusCode) {
+	return {
+		ready_to_ship: "green",
+		needs_production: "blue",
+		awaiting_stock: "orange",
+		awaiting_fulfillment: "gray",
+	}[statusCode] || "gray";
+}
+
 function fulfillmentCsv(orders) {
 	const quote = (value) => {
 		const text = String(value ?? "");
@@ -111,6 +120,14 @@ function orderOverviewHtml(order, helpers) {
 				</tr>`
 		)
 		.join("");
+	const statusLabel = order.status_label || "";
+	const riskLabel = order.risk_label || "";
+	const statusPill = statusLabel
+		? `<span class="indicator-pill ${esc(fulfillmentStatusColor(order.status_code))} fulfillment-order-status">${esc(statusLabel)}</span>`
+		: "";
+	const riskPill = riskLabel && riskLabel !== statusLabel
+		? `<span class="indicator-pill ${esc(order.risk_level || "gray")} fulfillment-order-risk-pill">${esc(riskLabel)}</span>`
+		: "";
 	return `
 		<details class="fulfillment-order fulfillment-risk-${esc(order.risk_level || "gray")}" data-sales-order="${esc(order.name)}">
 			<summary>
@@ -122,7 +139,7 @@ function orderOverviewHtml(order, helpers) {
 				<div class="fulfillment-order-fact fulfillment-number"><span>${esc(t("已发 / 订购"))}</span><strong>${number(order.delivered_qty)} / ${number(order.order_qty)}</strong></div>
 				<div class="fulfillment-order-fact fulfillment-number"><span>${esc(t("成品覆盖 / 待交"))}</span><strong>${number(order.finished_stock_coverage_qty ?? order.reserved_qty)} / ${number(order.pending_qty)}</strong></div>
 				<div class="fulfillment-order-fact fulfillment-number"><span>${esc(t("已安排 / 未安排"))}</span><strong>${number(order.active_work_order_qty)} / ${number(order.unplanned_production_qty ?? order.uncovered_qty)}</strong></div>
-				<div class="fulfillment-order-risk"><span class="indicator-pill ${esc(order.risk_level || "gray")}">${esc(order.risk_label || order.status_label || "")}</span></div>
+				<div class="fulfillment-order-risk">${statusPill}${statusPill && riskPill ? " " : ""}${riskPill}</div>
 				<span class="fulfillment-toggle">${esc(t("查看并处理"))}</span>
 			</summary>
 			<div class="fulfillment-order-details">
