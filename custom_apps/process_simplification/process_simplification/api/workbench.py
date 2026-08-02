@@ -259,17 +259,49 @@ def _fulfillment_status(direct_ship: bool, needs_production: bool, uncovered_qty
 	return "awaiting_fulfillment", _("待处理")
 
 
-def _fulfillment_risk(delivery_timing: str, direct_ship: bool, needs_production: bool, uncovered_qty: float):
-	if delivery_timing == "overdue":
-		return "red", 100, _("已逾期")
-	if delivery_timing == "missing":
-		return "gray", 0, _("未设置交期")
-	if uncovered_qty > 0:
-		return "orange", 80, _("待处理")
-	if needs_production:
-		return "blue", 60, _("生产中")
-	if direct_ship:
-		return "green", 20, _("可发货")
+def _row_uncovered_qty(row) -> float:
+	return remaining_qty(
+		_positive_qty(row, "pending_qty"),
+		min(_positive_qty(row, "reserved_qty"), _positive_qty(row, "pending_qty")),
+		_positive_qty(row, "active_work_order_qty"),
+	)
+
+
+def _fulfillment_risk(
+	delivery_timing: str,
+	pending_rows,
+	direct_ship: bool,
+	pending_qty: float,
+	reserved_qty: float,
+):
+	unsupported = any(row.get("unsupported") for row in pending_rows)
+	missing_production_base = any(
+		_row_uncovered_qty(row) > 0 and row.get("material_status") == "不涉及生产" for row in pending_rows
+	)
+	production_uncovered = any(
+		_row_uncovered_qty(row) > 0 and _has_action(row, "create_work_order") for row in pending_rows
+	)
+	active_production = any(_positive_qty(row, "active_work_order_qty") > 0 for row in pending_rows)
+	partial_stock = 0 < reserved_qty < pending_qty
+
+	# Ordered candidates mirror the approved single-highest-risk hierarchy.
+	candidates = (
+		(delivery_timing == "overdue", ("red", 100, _("已逾期"))),
+		(unsupported, ("orange", 90, _("简化操作不支持"))),
+		(missing_production_base, ("orange", 90, _("缺少生产基础资料"))),
+		(delivery_timing == "missing", ("orange", 85, _("缺少交期"))),
+		(
+			delivery_timing in {"today", "within_7_days"} and production_uncovered,
+			("orange", 80, _("临期生产未覆盖")),
+		),
+		(production_uncovered, ("orange", 70, _("生产未覆盖"))),
+		(active_production, ("blue", 60, _("生产中"))),
+		(partial_stock, ("orange", 40, _("库存部分覆盖"))),
+		(direct_ship, ("green", 20, _("可发货"))),
+	)
+	for matches, risk in candidates:
+		if matches:
+			return risk
 	return "gray", 0, _("待确认")
 
 
@@ -301,7 +333,7 @@ def build_fulfillment_order(order, rows, today=None) -> dict:
 	direct_ship = bool(pending_rows) and reserved_qty == pending_qty and not needs_production
 	status_code, status_label = _fulfillment_status(direct_ship, needs_production, uncovered_qty)
 	risk_level, risk_score, risk_label = _fulfillment_risk(
-		delivery_timing, direct_ship, needs_production, uncovered_qty
+		delivery_timing, pending_rows, direct_ship, pending_qty, reserved_qty
 	)
 
 	return {
@@ -359,6 +391,7 @@ def get_fulfillment_overview():
 				"per_delivered": ["<", 100],
 			},
 			fields=["name", "customer", "customer_name", "transaction_date", "delivery_date", "creation"],
+			order_by="creation asc, name asc",
 			limit_start=limit_start,
 			limit_page_length=page_length,
 		)

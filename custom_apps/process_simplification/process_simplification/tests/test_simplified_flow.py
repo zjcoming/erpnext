@@ -101,7 +101,83 @@ class TestSimplifiedFlow(UnitTestCase):
 
 		self.assertEqual(result["delivery_timing"], "missing")
 		self.assertIsNone(result["days_to_delivery"])
-		self.assertEqual(result["risk_level"], "gray")
+		self.assertEqual(result["risk_level"], "orange")
+		self.assertGreater(result["risk_score"], 0)
+
+	def test_fulfillment_risk_follows_the_approved_priority_hierarchy(self):
+		from process_simplification.api.workbench import build_fulfillment_order
+
+		base_row = {
+			"pending_qty": 10,
+			"reserved_qty": 0,
+			"active_work_order_qty": 0,
+			"delivery_date": "2026-08-20",
+			"material_status": "未检查",
+			"next_actions": [],
+		}
+		cases = [
+			(
+				"overdue overrides unsupported",
+				{**base_row, "delivery_date": "2026-08-01", "unsupported": True},
+				("red", 100, "已逾期"),
+			),
+			(
+				"unsupported simplified action",
+				{**base_row, "reserved_qty": 10, "unsupported": True},
+				("orange", 90, "简化操作不支持"),
+			),
+			(
+				"missing production base data",
+				{**base_row, "material_status": "不涉及生产"},
+				("orange", 90, "缺少生产基础资料"),
+			),
+			(
+				"missing delivery date",
+				{**base_row, "delivery_date": None, "reserved_qty": 10},
+				("orange", 85, "缺少交期"),
+			),
+			(
+				"due soon uncovered production",
+				{
+					**base_row,
+					"delivery_date": "2026-08-07",
+					"next_actions": [{"action": "create_work_order"}],
+				},
+				("orange", 80, "临期生产未覆盖"),
+			),
+			(
+				"later uncovered production",
+				{**base_row, "next_actions": [{"action": "create_work_order"}]},
+				("orange", 70, "生产未覆盖"),
+			),
+			(
+				"active production",
+				{**base_row, "active_work_order_qty": 10},
+				("blue", 60, "生产中"),
+			),
+			(
+				"partial stock coverage",
+				{**base_row, "reserved_qty": 5},
+				("orange", 40, "库存部分覆盖"),
+			),
+			(
+				"ready to ship",
+				{**base_row, "reserved_qty": 10},
+				("green", 20, "可发货"),
+			),
+		]
+
+		for name, row, expected in cases:
+			with self.subTest(name=name):
+				result = build_fulfillment_order(
+					frappe._dict(name="SO-RISK", creation="2026-08-01"),
+					[row],
+					today="2026-08-02",
+				)
+
+				self.assertEqual(
+					(result["risk_level"], result["risk_score"], result["risk_label"]), expected
+				)
 
 	@patch("process_simplification.api.workbench.now_datetime")
 	@patch("process_simplification.api.workbench.get_order_workbench")
@@ -131,8 +207,20 @@ class TestSimplifiedFlow(UnitTestCase):
 					{"pending_qty": 3, "reserved_qty": 3, "delivery_date": "2026-08-04", "next_actions": []}
 				],
 				"SO-BLOCKED": [
-					{"pending_qty": 1, "reserved_qty": 0, "delivery_date": "2026-08-04", "next_actions": []},
-					{"pending_qty": 4, "reserved_qty": 0, "delivery_date": "2026-08-04", "next_actions": []},
+					{
+						"pending_qty": 1,
+						"reserved_qty": 0,
+						"delivery_date": "2026-08-04",
+						"unsupported": True,
+						"next_actions": [],
+					},
+					{
+						"pending_qty": 4,
+						"reserved_qty": 0,
+						"delivery_date": "2026-08-04",
+						"unsupported": True,
+						"next_actions": [],
+					},
 				],
 				"SO-OVERDUE": [
 					{"pending_qty": 1, "reserved_qty": 1, "delivery_date": "2026-08-01", "next_actions": []}
@@ -162,6 +250,39 @@ class TestSimplifiedFlow(UnitTestCase):
 		)
 		self.assertEqual(get_list.call_args.kwargs["limit_start"], 0)
 		self.assertEqual(get_list.call_args.kwargs["limit_page_length"], 500)
+
+	@patch("process_simplification.api.workbench.now_datetime")
+	@patch("process_simplification.api.workbench.get_order_workbench")
+	@patch("process_simplification.api.workbench.frappe.get_list")
+	@patch("process_simplification.api.workbench.frappe.has_permission")
+	def test_fulfillment_overview_fetches_a_second_deterministically_ordered_page(
+		self, has_permission, get_list, get_order_workbench, now_datetime
+	):
+		from process_simplification.api.workbench import get_fulfillment_overview
+
+		has_permission.return_value = True
+		now_datetime.return_value = frappe.utils.get_datetime("2026-08-02 09:00:00")
+		first_page = [
+			frappe._dict(name=f"SO-{index:04d}", creation=f"2026-08-01 00:{index % 60:02d}:00")
+			for index in range(500)
+		]
+		get_list.side_effect = [first_page, [frappe._dict(name="SO-0500", creation="2026-08-02")]]
+		get_order_workbench.return_value = {
+			"rows": [{"pending_qty": 1, "reserved_qty": 1, "delivery_date": "2026-08-08", "next_actions": []}]
+		}
+
+		result = get_fulfillment_overview()
+
+		self.assertEqual(len(result["orders"]), 501)
+		self.assertEqual(get_list.call_count, 2)
+		self.assertEqual(
+			[(call.kwargs["limit_start"], call.kwargs["limit_page_length"]) for call in get_list.call_args_list],
+			[(0, 500), (500, 500)],
+		)
+		self.assertTrue(
+			all(call.kwargs.get("order_by") == "creation asc, name asc" for call in get_list.call_args_list)
+		)
+
 	def test_quick_order_rejects_duplicate_finished_goods(self):
 		items = [
 			frappe._dict({"item_code": "FG-001"}),

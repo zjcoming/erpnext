@@ -9,6 +9,7 @@ const {
 	overviewSummary,
 	orderOverviewHtml,
 	fulfillmentCsv,
+	refreshFulfillmentOverview,
 } = require("../../process_simplification/page/order_workbench/order_workbench.js");
 
 const escapeHtml = (value) =>
@@ -51,6 +52,7 @@ function order(name, overrides = {}) {
 				sales_order_item: `${name}-ITEM-1`,
 				item_code: `FG-${name}`,
 				item_name: `Finished ${name}`,
+				delivery_date: "2026-08-08",
 				order_qty: 10,
 				delivered_qty: 2,
 				pending_qty: 8,
@@ -86,9 +88,32 @@ test("filters by order, customer, and product search", () => {
 	assert.deepEqual(filterFulfillmentOrders(fixture, { search: "fg-so-blocked" }).map((row) => row.name), ["SO-BLOCKED"]);
 });
 
+test("dedicated customer filter matches the customer identity", () => {
+	const customers = [
+		order("SO-CUSTOMER-1", { customer: "CUST-001", customer_name: "Shared Name" }),
+		order("SO-CUSTOMER-2", { customer: "CUST-002", customer_name: "Shared Name" }),
+	];
+
+	assert.deepEqual(filterFulfillmentOrders(customers, { customer: "CUST-002" }).map((row) => row.name), [
+		"SO-CUSTOMER-2",
+	]);
+});
+
 test("filters by delivery window and fulfillment status", () => {
 	assert.deepEqual(filterFulfillmentOrders(fixture, { deliveryWindow: "overdue" }).map((row) => row.name), ["SO-OVERDUE"]);
 	assert.deepEqual(filterFulfillmentOrders(fixture, { status: "needs_production" }).map((row) => row.name), ["SO-PRODUCTION"]);
+});
+
+test("7 day delivery filter uses the KPI predicate and includes today", () => {
+	const deliveries = [
+		order("SO-TODAY", { delivery_timing: "today" }),
+		order("SO-WITHIN-7", { delivery_timing: "within_7_days" }),
+		order("SO-LATER", { delivery_timing: "later" }),
+	];
+	const visible = filterFulfillmentOrders(deliveries, { deliveryWindow: "within_7_days" });
+
+	assert.deepEqual(visible.map((row) => row.name), ["SO-TODAY", "SO-WITHIN-7"]);
+	assert.equal(overviewSummary(visible).due_within_7_days, 2);
 });
 
 test("visible counters recalculate from filtered orders", () => {
@@ -125,10 +150,64 @@ test("expanded product rows include completed quantity", () => {
 	assert.match(html, /1\.00/);
 });
 
+test("order HTML shows the multiple delivery dates badge", () => {
+	const html = orderOverviewHtml(order("SO-MULTI", { has_multiple_delivery_dates: true }), helpers);
+
+	assert.match(html, /多交期/);
+});
+
+test("expanded product rows show their own delivery date", () => {
+	const itemDateOrder = order("SO-ITEM-DATE");
+	itemDateOrder.rows[0].delivery_date = "2026-08-09";
+	const html = orderOverviewHtml(itemDateOrder, helpers);
+
+	assert.match(html, /2026-08-09/);
+});
+
 test("CSV uses Chinese headers and filename", () => {
 	const csv = fulfillmentCsv([order("SO-CSV")]);
 
 	assert.equal(csv.filename, "订单履约总览.csv");
 	assert.match(csv.content, /^\uFEFF"销售订单","客户","最早交期","订购","已发","待交","已预留","生产中","已完工","未覆盖","风险"/);
 	assert.match(csv.content, /"SO-CSV"/);
+});
+
+test("CSV neutralizes every formula-leading cell before quoting", () => {
+	const csv = fulfillmentCsv([
+		order("=1+1", {
+			customer_name: "+SUM(A1:A2)",
+			delivery_date: "-1+1",
+			order_qty: "@cmd",
+			delivered_qty: "\tformula",
+			pending_qty: "\rformula",
+		}),
+	]);
+
+	for (const cell of ["'=1+1", "'+SUM(A1:A2)", "'-1+1", "'@cmd", "'\tformula", "'\rformula"]) {
+		assert.ok(csv.content.includes(`"${cell}"`), `expected neutralized CSV cell ${JSON.stringify(cell)}`);
+	}
+});
+
+test("every page refresh clears or sets route focus and reloads once", async () => {
+	const loads = [];
+	const state = { filters: { search: "SO-OLD" }, expandedOrders: new Set(["SO-OLD"]) };
+	const page = {
+		fulfillment_overview: {
+			state,
+			loadOverview: () => {
+				loads.push("load");
+				return Promise.resolve();
+			},
+		},
+	};
+
+	await refreshFulfillmentOverview(page, "SO-NEW");
+	assert.equal(state.filters.search, "SO-NEW");
+	assert.deepEqual([...state.expandedOrders], ["SO-NEW"]);
+	assert.equal(loads.length, 1);
+
+	await refreshFulfillmentOverview(page, null);
+	assert.equal(state.filters.search, "");
+	assert.deepEqual([...state.expandedOrders], []);
+	assert.equal(loads.length, 2);
 });

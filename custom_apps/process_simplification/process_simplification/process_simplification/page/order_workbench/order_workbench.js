@@ -1,3 +1,7 @@
+function isDueWithin7Days(order) {
+	return ["today", "within_7_days"].includes(order.delivery_timing);
+}
+
 function filterFulfillmentOrders(orders, filters = {}) {
 	const search = String(filters.search || "").trim().toLowerCase();
 	return (orders || []).filter((order) => {
@@ -11,7 +15,11 @@ function filterFulfillmentOrders(orders, filters = {}) {
 			.toLowerCase();
 		return (
 			(!search || searchable.includes(search)) &&
-			(!filters.deliveryWindow || order.delivery_timing === filters.deliveryWindow) &&
+			(!filters.customer || order.customer === filters.customer) &&
+			(!filters.deliveryWindow ||
+				(filters.deliveryWindow === "within_7_days"
+					? isDueWithin7Days(order)
+					: order.delivery_timing === filters.deliveryWindow)) &&
 			(!filters.status || order.status_code === filters.status) &&
 			(!filters.riskOnly || ["red", "orange"].includes(order.risk_level))
 		);
@@ -23,7 +31,7 @@ function overviewSummary(orders) {
 		(summary, order) => {
 			summary.total_orders += 1;
 			summary.overdue_orders += Number(order.delivery_timing === "overdue");
-			summary.due_within_7_days += Number(["today", "within_7_days"].includes(order.delivery_timing));
+			summary.due_within_7_days += Number(isDueWithin7Days(order));
 			summary.needs_production_orders += Number(Boolean(order.needs_production));
 			summary.direct_ship_orders += Number(Boolean(order.direct_ship));
 			return summary;
@@ -39,7 +47,11 @@ function overviewSummary(orders) {
 }
 
 function fulfillmentCsv(orders) {
-	const quote = (value) => `"${String(value ?? "").replaceAll('"', '""')}"`;
+	const quote = (value) => {
+		const text = String(value ?? "");
+		const safeText = /^[=+\-@\t\r]/.test(text) ? `'${text}` : text;
+		return `"${safeText.replaceAll('"', '""')}"`;
+	};
 	const lines = [
 		["销售订单", "客户", "最早交期", "订购", "已发", "待交", "已预留", "生产中", "已完工", "未覆盖", "风险"],
 		...(orders || []).map((order) => [
@@ -76,6 +88,7 @@ function orderOverviewHtml(order, helpers) {
 			(row) => `
 				<tr class="${row.unsupported ? "text-muted" : ""}">
 					<td><a href="/app/item/${encodeURIComponent(row.item_code || "")}">${esc(row.item_code || "")}</a><br><small>${esc(row.item_name || "")}</small></td>
+					<td>${esc(date(row.delivery_date)) || esc(t("未设置"))}</td>
 					<td class="fulfillment-number">${number(row.order_qty)}</td>
 					<td class="fulfillment-number">${number(row.delivered_qty)}</td>
 					<td class="fulfillment-number">${number(row.pending_qty)}</td>
@@ -96,7 +109,7 @@ function orderOverviewHtml(order, helpers) {
 					<strong>${esc(order.name)}</strong>
 					<span>${esc(order.customer_name || order.customer || "")}</span>
 				</div>
-				<div class="fulfillment-order-fact"><span>${esc(t("最早交期"))}</span><strong>${esc(date(order.delivery_date)) || esc(t("未设置"))}</strong></div>
+				<div class="fulfillment-order-fact"><span>${esc(t("最早交期"))}</span><strong>${esc(date(order.delivery_date)) || esc(t("未设置"))}</strong>${order.has_multiple_delivery_dates ? ` <span class="indicator-pill gray">${esc(t("多交期"))}</span>` : ""}</div>
 				<div class="fulfillment-order-fact fulfillment-number"><span>${esc(t("已发 / 订购"))}</span><strong>${number(order.delivered_qty)} / ${number(order.order_qty)}</strong></div>
 				<div class="fulfillment-order-fact fulfillment-number"><span>${esc(t("已预留 / 待交"))}</span><strong>${number(order.reserved_qty)} / ${number(order.pending_qty)}</strong></div>
 				<div class="fulfillment-order-fact fulfillment-number"><span>${esc(t("生产中 / 生产缺口"))}</span><strong>${number(order.active_work_order_qty)} / ${number(order.uncovered_qty)}</strong></div>
@@ -110,7 +123,7 @@ function orderOverviewHtml(order, helpers) {
 				</div>
 				<div class="fulfillment-item-table-wrap">
 					<table class="table table-bordered fulfillment-item-table">
-						<thead><tr><th>${esc(t("产品"))}</th><th>${esc(t("订购"))}</th><th>${esc(t("已发"))}</th><th>${esc(t("待交"))}</th><th>${esc(t("已预留"))}</th><th>${esc(t("生产中"))}</th><th>${esc(t("已完工"))}</th><th>${esc(t("未覆盖"))}</th><th>${esc(t("原料"))}</th><th>${esc(t("状态"))}</th><th>${esc(t("下一步"))}</th></tr></thead>
+						<thead><tr><th>${esc(t("产品"))}</th><th>${esc(t("交期"))}</th><th>${esc(t("订购"))}</th><th>${esc(t("已发"))}</th><th>${esc(t("待交"))}</th><th>${esc(t("已预留"))}</th><th>${esc(t("生产中"))}</th><th>${esc(t("已完工"))}</th><th>${esc(t("未覆盖"))}</th><th>${esc(t("原料"))}</th><th>${esc(t("状态"))}</th><th>${esc(t("下一步"))}</th></tr></thead>
 						<tbody>${itemRows}</tbody>
 					</table>
 				</div>
@@ -118,7 +131,22 @@ function orderOverviewHtml(order, helpers) {
 		</details>`;
 }
 
-const fulfillmentOverviewApi = { filterFulfillmentOrders, overviewSummary, fulfillmentCsv, orderOverviewHtml };
+function refreshFulfillmentOverview(page, salesOrder) {
+	if (!page || !page.fulfillment_overview) return;
+	const { state, loadOverview } = page.fulfillment_overview;
+	state.filters.search = salesOrder || "";
+	state.expandedOrders.clear();
+	if (salesOrder) state.expandedOrders.add(salesOrder);
+	return loadOverview();
+}
+
+const fulfillmentOverviewApi = {
+	filterFulfillmentOrders,
+	overviewSummary,
+	fulfillmentCsv,
+	orderOverviewHtml,
+	refreshFulfillmentOverview,
+};
 
 if (typeof module !== "undefined" && module.exports) {
 	module.exports = fulfillmentOverviewApi;
@@ -151,6 +179,9 @@ if (typeof frappe !== "undefined") {
 						<option value="awaiting_stock">${__("待预留")}</option>
 						<option value="awaiting_fulfillment">${__("待处理")}</option>
 					</select>
+					<select class="form-control" data-filter="customer">
+						<option value="">${__("全部客户")}</option>
+					</select>
 					<label class="fulfillment-risk-filter"><input type="checkbox" data-filter="riskOnly"> ${__("仅看风险")}</label>
 					<button class="btn btn-default fulfillment-export">${__("导出当前可见 CSV")}</button>
 				</div>
@@ -162,10 +193,6 @@ if (typeof frappe !== "undefined") {
 		const $root = page.main.find(".fulfillment-overview");
 		const state = { data: { orders: [] }, filters: {}, expandedOrders: new Set() };
 		page.fulfillment_overview = { state, loadOverview };
-
-		function routeSalesOrder() {
-			return frappe.get_route()[1] || (frappe.route_options && frappe.route_options.sales_order);
-		}
 
 		function browserHelpers() {
 			return {
@@ -199,6 +226,7 @@ if (typeof frappe !== "undefined") {
 			$root.find(".fulfillment-search").val(state.filters.search || "");
 			$root.find('[data-filter="deliveryWindow"]').val(state.filters.deliveryWindow || "");
 			$root.find('[data-filter="status"]').val(state.filters.status || "");
+			$root.find('[data-filter="customer"]').val(state.filters.customer || "");
 			$root.find('[data-filter="riskOnly"]').prop("checked", Boolean(state.filters.riskOnly));
 			const html = orders.length
 				? orders.map((order) => orderOverviewHtml(order, browserHelpers())).join("")
@@ -222,6 +250,20 @@ if (typeof frappe !== "undefined") {
 				freeze_message: __("正在读取订单履约总览..."),
 			}).then((response) => {
 				state.data = response.message || { orders: [] };
+				const customers = [...new Map(
+					(state.data.orders || []).map((order) => [order.customer, order.customer_name || order.customer])
+				).entries()]
+					.filter(([customer]) => customer)
+					.sort((left, right) => left[1].localeCompare(right[1]));
+				$root.find('[data-filter="customer"]').html(
+					[`<option value="">${frappe.utils.escape_html(__("全部客户"))}</option>`]
+						.concat(
+							customers.map(
+								([customer, label]) => `<option value="${frappe.utils.escape_html(customer)}">${frappe.utils.escape_html(label)}</option>`
+							)
+						)
+						.join("")
+				);
 				render();
 			});
 		}
@@ -301,21 +343,11 @@ if (typeof frappe !== "undefined") {
 		$root.on("click", ".fulfillment-export", exportVisibleOrders);
 		page.add_inner_button(__("刷新"), loadOverview);
 
-		const initialSalesOrder = routeSalesOrder();
-		if (initialSalesOrder) {
-			state.filters.search = initialSalesOrder;
-			state.expandedOrders.add(initialSalesOrder);
-		}
-		loadOverview();
 	};
 
 	frappe.pages["order-workbench"].refresh = function (wrapper) {
 		const page = wrapper.page;
-		const routeSalesOrder = frappe.get_route()[1];
-		if (routeSalesOrder && page && page.fulfillment_overview) {
-			page.fulfillment_overview.state.filters.search = routeSalesOrder;
-			page.fulfillment_overview.state.expandedOrders.add(routeSalesOrder);
-			page.fulfillment_overview.loadOverview();
-		}
+		const routeSalesOrder = frappe.get_route()[1] || null;
+		return refreshFulfillmentOverview(page, routeSalesOrder);
 	};
 }
