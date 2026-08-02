@@ -160,6 +160,8 @@ class TestSimplifiedFlow(UnitTestCase):
 				"direct_ship_orders": 5,
 			},
 		)
+		self.assertEqual(get_list.call_args.kwargs["limit_start"], 0)
+		self.assertEqual(get_list.call_args.kwargs["limit_page_length"], 500)
 	def test_quick_order_rejects_duplicate_finished_goods(self):
 		items = [
 			frappe._dict({"item_code": "FG-001"}),

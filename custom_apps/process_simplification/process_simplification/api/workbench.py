@@ -347,15 +347,26 @@ def get_fulfillment_overview():
 	"""Return readable unfinished Sales Orders recalculated through the item workbench."""
 	frappe.has_permission("Sales Order", "read", throw=True)
 	checked_at = now_datetime()
-	orders = frappe.get_list(
-		"Sales Order",
-		filters={
-			"docstatus": 1,
-			"status": ["not in", ["Closed", "Completed"]],
-			"per_delivered": ["<", 100],
-		},
-		fields=["name", "customer", "customer_name", "transaction_date", "delivery_date", "creation"],
-	)
+	orders = []
+	page_length = 500
+	limit_start = 0
+	while True:
+		page = frappe.get_list(
+			"Sales Order",
+			filters={
+				"docstatus": 1,
+				"status": ["not in", ["Closed", "Completed"]],
+				"per_delivered": ["<", 100],
+			},
+			fields=["name", "customer", "customer_name", "transaction_date", "delivery_date", "creation"],
+			limit_start=limit_start,
+			limit_page_length=page_length,
+		)
+		orders.extend(page)
+		if len(page) < page_length:
+			break
+		limit_start += page_length
+
 	fulfillment_orders = []
 	for order in orders:
 		rows = get_order_workbench(order.name).get("rows") or []
