@@ -1,184 +1,302 @@
-frappe.pages["order-workbench"].on_page_load = function (wrapper) {
-	const page = frappe.ui.make_app_page({
-		parent: wrapper,
-		title: __("订单工作台"),
-		single_column: true,
+function filterFulfillmentOrders(orders, filters = {}) {
+	const search = String(filters.search || "").trim().toLowerCase();
+	return (orders || []).filter((order) => {
+		const searchable = [
+			order.name,
+			order.customer,
+			order.customer_name,
+			...(order.rows || []).flatMap((row) => [row.item_code, row.item_name]),
+		]
+			.join(" ")
+			.toLowerCase();
+		return (
+			(!search || searchable.includes(search)) &&
+			(!filters.deliveryWindow || order.delivery_timing === filters.deliveryWindow) &&
+			(!filters.status || order.status_code === filters.status) &&
+			(!filters.riskOnly || ["red", "orange"].includes(order.risk_level))
+		);
 	});
+}
 
-	page.main.html(`
-		<div class="process-simplification-page order-workbench">
-			<div class="row form-section">
-				<div class="col-md-4" data-field="sales_order"></div>
-				<div class="col-md-8 text-right workbench-actions"></div>
-			</div>
-			<div class="workbench-summary text-muted"></div>
-			<div class="table-responsive">
-				<table class="table table-bordered table-hover workbench-table">
-					<thead>
-						<tr>
-							<th><input type="checkbox" class="select-all"></th>
-							<th>${__("产品")}</th>
-							<th class="text-right">${__("订单")}</th>
-							<th class="text-right">${__("已发")}</th>
-							<th class="text-right">${__("待交")}</th>
-							<th class="text-right">${__("已预留")}</th>
-							<th class="text-right">${__("生产中")}</th>
-							<th class="text-right">${__("已完工")}</th>
-							<th class="text-right">${__("未覆盖")}</th>
-							<th>${__("原料")}</th>
-							<th>${__("状态")}</th>
-							<th>${__("下一步")}</th>
-						</tr>
-					</thead>
-					<tbody></tbody>
-				</table>
-			</div>
-		</div>
-	`);
-
-	const $root = page.main.find(".order-workbench");
-	const sales_order_field = frappe.ui.form.make_control({
-		parent: $root.find('[data-field="sales_order"]'),
-		df: {
-			fieldname: "sales_order",
-			fieldtype: "Link",
-			options: "Sales Order",
-			label: __("销售订单"),
-			change: () => load_workbench(),
+function overviewSummary(orders) {
+	return (orders || []).reduce(
+		(summary, order) => {
+			summary.total_orders += 1;
+			summary.overdue_orders += Number(order.delivery_timing === "overdue");
+			summary.due_within_7_days += Number(["today", "within_7_days"].includes(order.delivery_timing));
+			summary.needs_production_orders += Number(Boolean(order.needs_production));
+			summary.direct_ship_orders += Number(Boolean(order.direct_ship));
+			return summary;
 		},
-		render_input: true,
-	});
-	page.fields_dict = page.fields_dict || {};
-	page.fields_dict.sales_order = sales_order_field;
-
-	function route_sales_order() {
-		return frappe.get_route()[1] || (frappe.route_options && frappe.route_options.sales_order);
-	}
-
-	function fmt(value) {
-		return format_number(flt(value), null, 2);
-	}
-
-	function load_workbench() {
-		const sales_order = sales_order_field.get_value();
-		if (!sales_order) return;
-		frappe.call({
-			method: "process_simplification.api.workbench.get_order_workbench",
-			args: { sales_order },
-			freeze: true,
-			freeze_message: __("正在读取订单状态..."),
-		}).then((r) => render(r.message));
-	}
-
-	function render(data) {
-		const rows = data.rows || [];
-		$root.find(".workbench-summary").html(
-			`${__("客户")}: ${frappe.utils.escape_html(data.customer_name || data.customer || "")}`
-		);
-		$root.find("tbody").html(
-			rows.map((row) => {
-				const actions = (row.next_actions || [])
-					.map((item) => `<button class="btn btn-xs btn-default row-action" data-action="${item.action}" data-row="${row.sales_order_item}" ${item.enabled ? "" : "disabled"}>${__(item.label)}</button>`)
-					.join(" ");
-				return `
-					<tr class="${row.unsupported ? "text-muted" : ""}">
-						<td><input type="checkbox" class="row-select" data-row="${row.sales_order_item}" ${row.unsupported ? "disabled" : "checked"}></td>
-						<td><a href="/app/item/${encodeURIComponent(row.item_code)}">${frappe.utils.escape_html(row.item_code)}</a><br><small>${frappe.utils.escape_html(row.item_name || "")}</small></td>
-						<td class="text-right">${fmt(row.order_qty)}</td>
-						<td class="text-right">${fmt(row.delivered_qty)}</td>
-						<td class="text-right">${fmt(row.pending_qty)}</td>
-						<td class="text-right">${fmt(row.reserved_qty)}</td>
-						<td class="text-right">${fmt(row.active_work_order_qty)}</td>
-						<td class="text-right">${fmt(row.completed_qty)}</td>
-						<td class="text-right">${fmt(row.uncovered_qty)}</td>
-						<td>${frappe.utils.escape_html(row.material_status || "")}</td>
-						<td><span class="indicator-pill gray">${frappe.utils.escape_html(row.status || "")}</span>${row.unsupported_reason ? `<br><small>${frappe.utils.escape_html(row.unsupported_reason)}</small>` : ""}</td>
-						<td>${actions}</td>
-					</tr>
-				`;
-			}).join("")
-		);
-	}
-
-	function selected_rows() {
-		const sales_order = sales_order_field.get_value();
-		return $root.find(".row-select:checked").toArray().map((input) => ({
-			sales_order,
-			sales_order_item: $(input).data("row"),
-		}));
-	}
-
-	function run_row_action(action, sales_order_item) {
-		const sales_order = sales_order_field.get_value();
-		const method_map = {
-			reserve_stock: "process_simplification.api.actions.reserve_stock",
-			create_work_order: "process_simplification.api.actions.create_work_order",
-			reserve_completed_stock: "process_simplification.api.actions.reserve_completed_stock",
-			create_delivery_note: "process_simplification.api.actions.create_delivery_note",
-		};
-
-		if (action === "view_sales_order") {
-			frappe.set_route("Form", "Sales Order", sales_order);
-			return;
+		{
+			total_orders: 0,
+			overdue_orders: 0,
+			due_within_7_days: 0,
+			needs_production_orders: 0,
+			direct_ship_orders: 0,
 		}
-		if (action === "view_work_orders") {
-			frappe.call({
-				method: "process_simplification.api.workbench.get_work_order_details",
-				args: { sales_order, sales_order_item },
-			}).then((r) => show_work_orders(r.message.work_orders || []));
-			return;
-		}
+	);
+}
 
-		const method = method_map[action];
-		if (!method) return;
-		frappe.confirm(__("确认执行该操作？"), () => {
-			frappe.call({
-				method,
-				args: { sales_order, sales_order_item },
-				freeze: true,
-			}).then(() => {
-				frappe.show_alert({ message: __("操作完成"), indicator: "green" });
-				load_workbench();
-			});
-		});
-	}
-
-	function show_work_orders(work_orders) {
-		const html = work_orders.length
-			? work_orders.map((wo) => `
-				<div class="mb-3">
-					<div><b><a href="/app/work-order/${encodeURIComponent(wo.name)}">${wo.name}</a></b> ${frappe.utils.escape_html(wo.status || "")}</div>
-					<div class="text-muted">${__("数量")}: ${fmt(wo.qty)} / ${__("已生产")}: ${fmt(wo.produced_qty)}</div>
-					<div>${__("原料")}: ${(wo.required_items || []).map((item) => `${frappe.utils.escape_html(item.item_code)} ${fmt(item.required_qty)}`).join(", ") || __("无")}</div>
+function orderOverviewHtml(order, helpers) {
+	const t = helpers.translate;
+	const esc = helpers.escapeHtml;
+	const number = helpers.formatNumber;
+	const date = helpers.formatDate;
+	const actions = (row) =>
+		(row.next_actions || [])
+			.map(
+				(action) =>
+					`<button class="btn btn-xs btn-default row-action" data-action="${esc(action.action)}" data-sales-order="${esc(order.name)}" data-row="${esc(row.sales_order_item)}" ${action.enabled ? "" : "disabled"}>${esc(t(action.label))}</button>`
+			)
+			.join(" ");
+	const itemRows = (order.rows || [])
+		.map(
+			(row) => `
+				<tr class="${row.unsupported ? "text-muted" : ""}">
+					<td><a href="/app/item/${encodeURIComponent(row.item_code || "")}">${esc(row.item_code || "")}</a><br><small>${esc(row.item_name || "")}</small></td>
+					<td class="fulfillment-number">${number(row.order_qty)}</td>
+					<td class="fulfillment-number">${number(row.delivered_qty)}</td>
+					<td class="fulfillment-number">${number(row.pending_qty)}</td>
+					<td class="fulfillment-number">${number(row.reserved_qty)}</td>
+					<td class="fulfillment-number">${number(row.active_work_order_qty)}</td>
+					<td class="fulfillment-number">${number(row.uncovered_qty)}</td>
+					<td>${esc(row.material_status || "")}</td>
+					<td><span class="indicator-pill gray">${esc(row.status || "")}</span>${row.unsupported_reason ? `<br><small>${esc(row.unsupported_reason)}</small>` : ""}</td>
+					<td class="fulfillment-item-actions">${actions(row)}</td>
+				</tr>`
+		)
+		.join("");
+	return `
+		<details class="fulfillment-order fulfillment-risk-${esc(order.risk_level || "gray")}" data-sales-order="${esc(order.name)}">
+			<summary>
+				<div class="fulfillment-order-primary">
+					<strong>${esc(order.name)}</strong>
+					<span>${esc(order.customer_name || order.customer || "")}</span>
 				</div>
-			`).join("")
-			: __("暂无生产任务");
-		frappe.msgprint({ title: __("生产任务"), message: html, wide: true });
-	}
+				<div class="fulfillment-order-fact"><span>${esc(t("最早交期"))}</span><strong>${esc(date(order.delivery_date)) || esc(t("未设置"))}</strong></div>
+				<div class="fulfillment-order-fact fulfillment-number"><span>${esc(t("已发 / 订购"))}</span><strong>${number(order.delivered_qty)} / ${number(order.order_qty)}</strong></div>
+				<div class="fulfillment-order-fact fulfillment-number"><span>${esc(t("已预留 / 待交"))}</span><strong>${number(order.reserved_qty)} / ${number(order.pending_qty)}</strong></div>
+				<div class="fulfillment-order-fact fulfillment-number"><span>${esc(t("生产中 / 生产缺口"))}</span><strong>${number(order.active_work_order_qty)} / ${number(order.uncovered_qty)}</strong></div>
+				<div class="fulfillment-order-risk"><span class="indicator-pill ${esc(order.risk_level || "gray")}">${esc(order.risk_label || order.status_label || "")}</span></div>
+				<span class="fulfillment-toggle">${esc(t("查看并处理"))}</span>
+			</summary>
+			<div class="fulfillment-order-details">
+				<div class="fulfillment-order-actions">
+					<button class="btn btn-default btn-sm order-material-check" data-sales-order="${esc(order.name)}">${esc(t("检查缺料"))}</button>
+					<button class="btn btn-default btn-sm row-action" data-action="view_sales_order" data-sales-order="${esc(order.name)}">${esc(t("查看销售订单"))}</button>
+				</div>
+				<div class="fulfillment-item-table-wrap">
+					<table class="table table-bordered fulfillment-item-table">
+						<thead><tr><th>${esc(t("产品"))}</th><th>${esc(t("订购"))}</th><th>${esc(t("已发"))}</th><th>${esc(t("待交"))}</th><th>${esc(t("已预留"))}</th><th>${esc(t("生产中"))}</th><th>${esc(t("未覆盖"))}</th><th>${esc(t("原料"))}</th><th>${esc(t("状态"))}</th><th>${esc(t("下一步"))}</th></tr></thead>
+						<tbody>${itemRows}</tbody>
+					</table>
+				</div>
+			</div>
+		</details>`;
+}
 
-	$root.on("click", ".row-action", (event) => {
-		const $button = $(event.currentTarget);
-		run_row_action($button.data("action"), $button.data("row"));
-	});
-	$root.on("change", ".select-all", (event) => {
-		$root.find(".row-select:not(:disabled)").prop("checked", $(event.currentTarget).prop("checked"));
-	});
+const fulfillmentOverviewApi = { filterFulfillmentOrders, overviewSummary, orderOverviewHtml };
 
-	page.add_inner_button(__("检查缺料"), () => {
-		frappe.route_options = { selected_rows: selected_rows() };
-		frappe.set_route("shortage-purchase-planning");
-	});
-	page.add_inner_button(__("刷新"), load_workbench);
+if (typeof module !== "undefined" && module.exports) {
+	module.exports = fulfillmentOverviewApi;
+}
 
-	const initial = route_sales_order();
-	if (initial) {
-		sales_order_field.set_value(initial);
-	}
-};
+if (typeof frappe !== "undefined") {
+	frappe.pages["order-workbench"].on_page_load = function (wrapper) {
+		const page = frappe.ui.make_app_page({
+			parent: wrapper,
+			title: __("订单履约总览"),
+			single_column: true,
+		});
+		page.main.html(`
+			<div class="process-simplification-page order-workbench fulfillment-overview">
+				<div class="fulfillment-kpis"></div>
+				<div class="fulfillment-filter-bar">
+					<input class="form-control fulfillment-search" data-filter="search" placeholder="${__("搜索销售订单、客户或产品")}">
+					<select class="form-control" data-filter="deliveryWindow">
+						<option value="">${__("全部交期")}</option>
+						<option value="overdue">${__("已逾期")}</option>
+						<option value="today">${__("今日交期")}</option>
+						<option value="within_7_days">${__("7 天内交期")}</option>
+						<option value="later">${__("稍后交期")}</option>
+						<option value="missing">${__("未设置交期")}</option>
+					</select>
+					<select class="form-control" data-filter="status">
+						<option value="">${__("全部状态")}</option>
+						<option value="ready_to_ship">${__("可发货")}</option>
+						<option value="needs_production">${__("需生产")}</option>
+						<option value="awaiting_stock">${__("待预留")}</option>
+						<option value="awaiting_fulfillment">${__("待处理")}</option>
+					</select>
+					<label class="fulfillment-risk-filter"><input type="checkbox" data-filter="riskOnly"> ${__("仅看风险")}</label>
+					<button class="btn btn-default fulfillment-export">${__("导出当前可见 CSV")}</button>
+				</div>
+				<p class="text-muted fulfillment-sort-note">${__("默认排序：最早交期、最高风险、创建时间。")}</p>
+				<div class="fulfillment-order-list"></div>
+			</div>
+		`);
 
-frappe.pages["order-workbench"].refresh = function (wrapper) {
-	const route_so = frappe.get_route()[1];
-	if (route_so && wrapper.page && wrapper.page.fields_dict && wrapper.page.fields_dict.sales_order) {
-		wrapper.page.fields_dict.sales_order.set_value(route_so);
-	}
-};
+		const $root = page.main.find(".fulfillment-overview");
+		const state = { data: { orders: [] }, filters: {}, expandedOrders: new Set() };
+		page.fulfillment_overview = { state, loadOverview };
+
+		function routeSalesOrder() {
+			return frappe.get_route()[1] || (frappe.route_options && frappe.route_options.sales_order);
+		}
+
+		function browserHelpers() {
+			return {
+				translate: __,
+				escapeHtml: frappe.utils.escape_html,
+				formatNumber: (value) => format_number(flt(value), null, 2),
+				formatDate: (value) => (value ? frappe.datetime.str_to_user(value) : ""),
+			};
+		}
+
+		function renderKpis(summary) {
+			const cards = [
+				[__("当前订单"), summary.total_orders, "gray"],
+				[__("已逾期"), summary.overdue_orders, "red"],
+				[__("7 天内交期"), summary.due_within_7_days, "orange"],
+				[__("需生产"), summary.needs_production_orders, "blue"],
+				[__("可发货"), summary.direct_ship_orders, "green"],
+			];
+			$root.find(".fulfillment-kpis").html(
+				cards.map(([label, value, color]) => `<div class="fulfillment-kpi fulfillment-kpi-${color}"><span>${frappe.utils.escape_html(label)}</span><strong>${value}</strong></div>`).join("")
+			);
+		}
+
+		function visibleOrders() {
+			return filterFulfillmentOrders(state.data.orders || [], state.filters);
+		}
+
+		function render() {
+			const orders = visibleOrders();
+			renderKpis(overviewSummary(orders));
+			$root.find(".fulfillment-search").val(state.filters.search || "");
+			$root.find('[data-filter="deliveryWindow"]').val(state.filters.deliveryWindow || "");
+			$root.find('[data-filter="status"]').val(state.filters.status || "");
+			$root.find('[data-filter="riskOnly"]').prop("checked", Boolean(state.filters.riskOnly));
+			const html = orders.length
+				? orders.map((order) => orderOverviewHtml(order, browserHelpers())).join("")
+				: `<div class="text-muted fulfillment-empty">${frappe.utils.escape_html(__("没有符合当前筛选条件的订单。"))}</div>`;
+			$root.find(".fulfillment-order-list").html(html);
+			$root.find(".fulfillment-order").each((_, element) => {
+				const $order = $(element);
+				$order.prop("open", state.expandedOrders.has($order.data("sales-order")));
+				$order.on("toggle", () => {
+					const name = $order.data("sales-order");
+					if ($order.prop("open")) state.expandedOrders.add(name);
+					else state.expandedOrders.delete(name);
+				});
+			});
+		}
+
+		function loadOverview() {
+			return frappe.call({
+				method: "process_simplification.api.workbench.get_fulfillment_overview",
+				freeze: true,
+				freeze_message: __("正在读取订单履约总览..."),
+			}).then((response) => {
+				state.data = response.message || { orders: [] };
+				render();
+			});
+		}
+
+		function showWorkOrders(workOrders) {
+			const html = workOrders.length
+				? workOrders
+						.map(
+							(wo) => `<div class="mb-3"><div><b><a href="/app/work-order/${encodeURIComponent(wo.name)}">${frappe.utils.escape_html(wo.name)}</a></b> ${frappe.utils.escape_html(wo.status || "")}</div><div class="text-muted">${__("数量")}: ${format_number(flt(wo.qty), null, 2)} / ${__("已生产")}: ${format_number(flt(wo.produced_qty), null, 2)}</div><div>${__("原料")}: ${(wo.required_items || []).map((item) => `${frappe.utils.escape_html(item.item_code)} ${format_number(flt(item.required_qty), null, 2)}`).join(", ") || __("无")}</div></div>`
+						)
+						.join("")
+				: __("暂无生产任务");
+			frappe.msgprint({ title: __("生产任务"), message: html, wide: true });
+		}
+
+		function runRowAction(action, salesOrder, salesOrderItem) {
+			const methodMap = {
+				reserve_stock: "process_simplification.api.actions.reserve_stock",
+				create_work_order: "process_simplification.api.actions.create_work_order",
+				reserve_completed_stock: "process_simplification.api.actions.reserve_completed_stock",
+				create_delivery_note: "process_simplification.api.actions.create_delivery_note",
+			};
+			if (action === "view_sales_order") {
+				frappe.set_route("Form", "Sales Order", salesOrder);
+				return;
+			}
+			if (action === "view_work_orders") {
+				frappe.call({
+					method: "process_simplification.api.workbench.get_work_order_details",
+					args: { sales_order: salesOrder, sales_order_item: salesOrderItem },
+				}).then((response) => showWorkOrders((response.message || {}).work_orders || []));
+				return;
+			}
+			const method = methodMap[action];
+			if (!method) return;
+			frappe.confirm(__("确认执行该操作？"), () => {
+				frappe.call({ method, args: { sales_order: salesOrder, sales_order_item: salesOrderItem }, freeze: true }).then(() => {
+					frappe.show_alert({ message: __("操作完成"), indicator: "green" });
+					loadOverview();
+				});
+			});
+		}
+
+		function checkOrderMaterials(salesOrder) {
+			const order = (state.data.orders || []).find((candidate) => candidate.name === salesOrder);
+			const selectedRows = (order ? order.rows : [])
+				.filter((row) => !row.unsupported && flt(row.pending_qty) > 0 && row.sales_order_item)
+				.map((row) => ({ sales_order: salesOrder, sales_order_item: row.sales_order_item }));
+			if (!selectedRows.length) {
+				frappe.show_alert({ message: __("没有可检查的受支持待交产品。"), indicator: "orange" });
+				return;
+			}
+			frappe.route_options = { selected_rows: selectedRows };
+			frappe.set_route("shortage-purchase-planning");
+		}
+
+		function exportVisibleOrders() {
+			const quote = (value) => `"${String(value ?? "").replaceAll('"', '""')}"`;
+			const lines = [
+				["Sales Order", "Customer", "Earliest Delivery", "Ordered", "Delivered", "Pending", "Reserved", "In Production", "Uncovered", "Risk"],
+				...visibleOrders().map((order) => [order.name, order.customer_name || order.customer, order.delivery_date, order.order_qty, order.delivered_qty, order.pending_qty, order.reserved_qty, order.active_work_order_qty, order.uncovered_qty, order.risk_label]),
+			].map((row) => row.map(quote).join(","));
+			const link = document.createElement("a");
+			link.href = URL.createObjectURL(new Blob(["\uFEFF" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" }));
+			link.download = "order-fulfillment-overview.csv";
+			link.click();
+			URL.revokeObjectURL(link.href);
+		}
+
+		$root.on("input change", "[data-filter]", (event) => {
+			const $input = $(event.currentTarget);
+			state.filters[$input.data("filter")] = $input.is(":checkbox") ? $input.prop("checked") : $input.val();
+			render();
+		});
+		$root.on("click", ".row-action", (event) => {
+			const $button = $(event.currentTarget);
+			runRowAction($button.data("action"), $button.data("sales-order"), $button.data("row"));
+		});
+		$root.on("click", ".order-material-check", (event) => checkOrderMaterials($(event.currentTarget).data("sales-order")));
+		$root.on("click", ".fulfillment-export", exportVisibleOrders);
+		page.add_inner_button(__("刷新"), loadOverview);
+
+		const initialSalesOrder = routeSalesOrder();
+		if (initialSalesOrder) {
+			state.filters.search = initialSalesOrder;
+			state.expandedOrders.add(initialSalesOrder);
+		}
+		loadOverview();
+	};
+
+	frappe.pages["order-workbench"].refresh = function (wrapper) {
+		const page = wrapper.page;
+		const routeSalesOrder = frappe.get_route()[1];
+		if (routeSalesOrder && page && page.fulfillment_overview) {
+			page.fulfillment_overview.state.filters.search = routeSalesOrder;
+			page.fulfillment_overview.state.expandedOrders.add(routeSalesOrder);
+			page.fulfillment_overview.loadOverview();
+		}
+	};
+}
