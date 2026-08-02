@@ -102,6 +102,8 @@ def get_work_orders(sales_order: str, sales_order_item: str, item_code: str | No
 			"source_warehouse",
 			"wip_warehouse",
 			"fg_warehouse",
+			"planned_start_date",
+			"expected_delivery_date",
 		],
 		order_by="creation asc",
 	)
@@ -393,9 +395,11 @@ def build_fulfillment_order(order, rows, today=None) -> dict:
 
 	return {
 		"name": order.get("name"),
+		"company": order.get("company"),
 		"customer": order.get("customer"),
 		"customer_name": order.get("customer_name"),
 		"transaction_date": str(order.get("transaction_date")) if order.get("transaction_date") else None,
+		"creation": str(order.get("creation") or ""),
 		"delivery_date": str(delivery_date) if delivery_date else None,
 		"has_multiple_delivery_dates": len(set(delivery_dates)) > 1,
 		"item_count": len(rows),
@@ -449,7 +453,7 @@ def get_fulfillment_overview():
 				"status": ["not in", ["Closed", "Completed"]],
 				"per_delivered": ["<", 100],
 			},
-			fields=["name", "customer", "customer_name", "transaction_date", "delivery_date", "creation"],
+			fields=["name", "company", "customer", "customer_name", "transaction_date", "delivery_date", "creation"],
 			order_by="creation asc, name asc",
 			limit_start=limit_start,
 			limit_page_length=page_length,

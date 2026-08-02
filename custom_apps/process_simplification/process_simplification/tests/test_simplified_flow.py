@@ -379,6 +379,26 @@ class TestSimplifiedFlow(UnitTestCase):
 
 		row_from_workbench.assert_called_once_with("SO-TEST", "SO-ITEM-TEST")
 
+	@patch("process_simplification.api.actions.get_allocated_production_row")
+	@patch("process_simplification.api.actions.frappe.has_permission")
+	@patch("process_simplification.api.actions._row_from_workbench")
+	def test_create_work_order_rechecks_cross_order_finished_stock_allocation(
+		self,
+		row_from_workbench,
+		has_permission,
+		get_allocated_production_row,
+	):
+		from process_simplification.api.actions import create_work_order
+
+		has_permission.return_value = True
+		row_from_workbench.return_value = frappe._dict({"unplanned_production_qty": 5})
+		get_allocated_production_row.return_value = None
+
+		with self.assertRaises(SimplifiedFlowError):
+			create_work_order("SO-LATE", "SO-LATE-ITEM")
+
+		get_allocated_production_row.assert_called_once_with("SO-LATE", "SO-LATE-ITEM")
+
 	@patch("process_simplification.api.actions.frappe.has_permission")
 	@patch("process_simplification.api.actions._row_from_workbench")
 	def test_create_delivery_note_requires_effective_reservation(self, row_from_workbench, has_permission):

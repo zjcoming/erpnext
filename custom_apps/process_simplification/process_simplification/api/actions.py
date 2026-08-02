@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import frappe
 from frappe import _
-from frappe.utils import now_datetime, parse_json
+from frappe.utils import flt, now_datetime, parse_json
 
 from erpnext.manufacturing.doctype.work_order.mapper import make_work_order
 from erpnext.selling.doctype.sales_order.mapper import make_delivery_note
@@ -15,6 +15,7 @@ from process_simplification.api.setup import (
 	get_default_bom,
 	resolve_production_source_warehouse,
 )
+from process_simplification.api.production import get_allocated_production_row
 from process_simplification.api.utils import (
 	delivered_stock_qty,
 	get_item_uom_details,
@@ -125,6 +126,10 @@ def create_work_order(sales_order: str, sales_order_item: str, qty: float | None
 		unplanned_qty = row.get("uncovered_qty")
 	if not unplanned_qty or unplanned_qty <= 0:
 		throw_chinese("该订单行已经被库存预留或生产任务覆盖，不能重复创建生产任务。")
+	allocated_row = get_allocated_production_row(sales_order, sales_order_item)
+	unplanned_qty = flt(allocated_row.get("unplanned_production_qty")) if allocated_row else 0
+	if unplanned_qty <= 0:
+		throw_chinese("按订单交期分配当前成品库存后，该订单行已无需新增生产任务。")
 
 	item = get_sales_order_item(sales_order_item)
 	so = frappe.get_doc("Sales Order", sales_order)
