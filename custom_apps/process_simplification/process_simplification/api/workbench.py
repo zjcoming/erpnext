@@ -4,7 +4,7 @@ from collections import Counter, defaultdict
 
 import frappe
 from frappe import _
-from frappe.utils import flt
+from frappe.utils import flt, getdate, now_datetime
 
 from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
 	get_available_qty_to_reserve,
@@ -220,6 +220,164 @@ def get_order_workbench(sales_order: str):
 		"transaction_date": str(so.transaction_date) if so.transaction_date else None,
 		"delivery_date": str(so.delivery_date) if so.delivery_date else None,
 		"rows": rows,
+	}
+
+
+def _positive_qty(row, fieldname: str) -> float:
+	return max(flt(row.get(fieldname) or 0), 0)
+
+
+def _has_action(row, action_name: str) -> bool:
+	return any(action_row.get("action") == action_name for action_row in row.get("next_actions") or [])
+
+
+def _delivery_values(rows):
+	return [getdate(row.get("delivery_date")) for row in rows if row.get("delivery_date")]
+
+
+def _delivery_timing(delivery_date, today):
+	if not delivery_date:
+		return "missing", None
+
+	days_to_delivery = (delivery_date - today).days
+	if days_to_delivery < 0:
+		return "overdue", days_to_delivery
+	if days_to_delivery == 0:
+		return "today", days_to_delivery
+	if days_to_delivery <= 7:
+		return "within_7_days", days_to_delivery
+	return "later", days_to_delivery
+
+
+def _fulfillment_status(direct_ship: bool, needs_production: bool, uncovered_qty: float):
+	if direct_ship:
+		return "ready_to_ship", _("可发货")
+	if needs_production:
+		return "needs_production", _("需生产")
+	if uncovered_qty > 0:
+		return "awaiting_stock", _("待预留")
+	return "awaiting_fulfillment", _("待处理")
+
+
+def _fulfillment_risk(delivery_timing: str, direct_ship: bool, needs_production: bool, uncovered_qty: float):
+	if delivery_timing == "overdue":
+		return "red", 100, _("已逾期")
+	if delivery_timing == "missing":
+		return "gray", 0, _("未设置交期")
+	if uncovered_qty > 0:
+		return "orange", 80, _("待处理")
+	if needs_production:
+		return "blue", 60, _("生产中")
+	if direct_ship:
+		return "green", 20, _("可发货")
+	return "gray", 0, _("待确认")
+
+
+def build_fulfillment_order(order, rows, today=None) -> dict:
+	"""Return a read-only, order-level summary of existing workbench rows."""
+	today = getdate(today or now_datetime())
+	rows = list(rows or [])
+	pending_rows = [row for row in rows if _positive_qty(row, "pending_qty") > 0]
+	delivery_dates = _delivery_values(pending_rows)
+	delivery_date = min(delivery_dates) if delivery_dates else None
+	delivery_timing, days_to_delivery = _delivery_timing(delivery_date, today)
+
+	pending_qty = sum(_positive_qty(row, "pending_qty") for row in pending_rows)
+	reserved_qty = sum(
+		min(_positive_qty(row, "reserved_qty"), _positive_qty(row, "pending_qty")) for row in pending_rows
+	)
+	active_work_order_qty = sum(_positive_qty(row, "active_work_order_qty") for row in pending_rows)
+	uncovered_qty = sum(
+		remaining_qty(
+			_positive_qty(row, "pending_qty"),
+			min(_positive_qty(row, "reserved_qty"), _positive_qty(row, "pending_qty")),
+			_positive_qty(row, "active_work_order_qty"),
+		)
+		for row in pending_rows
+	)
+	needs_production = any(
+		_positive_qty(row, "active_work_order_qty") > 0 or _has_action(row, "create_work_order") for row in pending_rows
+	)
+	direct_ship = bool(pending_rows) and reserved_qty == pending_qty and not needs_production
+	status_code, status_label = _fulfillment_status(direct_ship, needs_production, uncovered_qty)
+	risk_level, risk_score, risk_label = _fulfillment_risk(
+		delivery_timing, direct_ship, needs_production, uncovered_qty
+	)
+
+	return {
+		"name": order.get("name"),
+		"customer": order.get("customer"),
+		"customer_name": order.get("customer_name"),
+		"transaction_date": str(order.get("transaction_date")) if order.get("transaction_date") else None,
+		"delivery_date": str(delivery_date) if delivery_date else None,
+		"has_multiple_delivery_dates": len(set(delivery_dates)) > 1,
+		"item_count": len(rows),
+		"order_qty": sum(flt(row.get("order_qty") or 0) for row in rows),
+		"delivered_qty": sum(flt(row.get("delivered_qty") or 0) for row in rows),
+		"pending_qty": pending_qty,
+		"reserved_qty": reserved_qty,
+		"active_work_order_qty": active_work_order_qty,
+		"completed_qty": sum(flt(row.get("completed_qty") or 0) for row in rows),
+		"uncovered_qty": uncovered_qty,
+		"delivery_timing": delivery_timing,
+		"days_to_delivery": days_to_delivery,
+		"status_code": status_code,
+		"status_label": status_label,
+		"risk_level": risk_level,
+		"risk_score": risk_score,
+		"risk_label": risk_label,
+		"direct_ship": direct_ship,
+		"needs_production": needs_production,
+		"rows": rows,
+	}
+
+
+def _fulfillment_sort_key(order, fulfillment_order):
+	return (
+		fulfillment_order["delivery_date"] is None,
+		fulfillment_order["delivery_date"] or "9999-12-31",
+		-fulfillment_order["risk_score"],
+		str(order.get("creation") or ""),
+		fulfillment_order["name"],
+	)
+
+
+@frappe.whitelist()
+def get_fulfillment_overview():
+	"""Return readable unfinished Sales Orders recalculated through the item workbench."""
+	frappe.has_permission("Sales Order", "read", throw=True)
+	checked_at = now_datetime()
+	orders = frappe.get_list(
+		"Sales Order",
+		filters={
+			"docstatus": 1,
+			"status": ["not in", ["Closed", "Completed"]],
+			"per_delivered": ["<", 100],
+		},
+		fields=["name", "customer", "customer_name", "transaction_date", "delivery_date", "creation"],
+	)
+	fulfillment_orders = []
+	for order in orders:
+		rows = get_order_workbench(order.name).get("rows") or []
+		fulfillment_order = build_fulfillment_order(order, rows, today=checked_at)
+		if fulfillment_order["pending_qty"] <= 0:
+			continue
+		fulfillment_orders.append((order, fulfillment_order))
+
+	fulfillment_orders.sort(key=lambda result: _fulfillment_sort_key(*result))
+	ordered_results = [result for _, result in fulfillment_orders]
+	return {
+		"checked_at": checked_at,
+		"summary": {
+			"total_orders": len(ordered_results),
+			"overdue_orders": sum(order["delivery_timing"] == "overdue" for order in ordered_results),
+			"due_within_7_days": sum(
+				order["delivery_timing"] in {"today", "within_7_days"} for order in ordered_results
+			),
+			"needs_production_orders": sum(order["needs_production"] for order in ordered_results),
+			"direct_ship_orders": sum(order["direct_ship"] for order in ordered_results),
+		},
+		"orders": ordered_results,
 	}
 
 

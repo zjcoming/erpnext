@@ -9,6 +9,157 @@ from process_simplification.api.workbench import _remaining_reserved_qty, get_ac
 
 
 class TestSimplifiedFlow(UnitTestCase):
+	def test_direct_stock_order_is_included_and_marked_ready_to_ship(self):
+		from process_simplification.api.workbench import build_fulfillment_order
+
+		order = frappe._dict(name="SO-READY", customer="C1", customer_name="C1", creation="2026-08-01")
+		rows = [
+			{
+				"pending_qty": 10,
+				"reserved_qty": 10,
+				"uncovered_qty": 0,
+				"active_work_order_qty": 0,
+				"delivered_qty": 0,
+				"order_qty": 10,
+				"delivery_date": "2026-08-06",
+				"next_actions": [],
+			}
+		]
+
+		result = build_fulfillment_order(order, rows, today="2026-08-02")
+
+		self.assertEqual(result["status_code"], "ready_to_ship")
+		self.assertTrue(result["direct_ship"])
+		self.assertEqual(result["risk_level"], "green")
+
+	def test_fulfillment_order_uses_only_pending_rows_for_delivery_and_coverage(self):
+		from process_simplification.api.workbench import build_fulfillment_order
+
+		order = frappe._dict(name="SO-MIXED", customer="C1", customer_name="Customer 1", creation="2026-08-01")
+		rows = [
+			{
+				"pending_qty": 0,
+				"reserved_qty": 99,
+				"active_work_order_qty": 0,
+				"completed_qty": 9,
+				"delivered_qty": 9,
+				"order_qty": 9,
+				"delivery_date": "2026-08-03",
+				"next_actions": [],
+			},
+			{
+				"pending_qty": 5,
+				"reserved_qty": 8,
+				"active_work_order_qty": 0,
+				"completed_qty": 4,
+				"delivered_qty": 0,
+				"order_qty": 5,
+				"delivery_date": "2026-08-08",
+				"next_actions": [],
+			},
+			{
+				"pending_qty": 2,
+				"reserved_qty": 0,
+				"active_work_order_qty": 0,
+				"completed_qty": 2,
+				"delivered_qty": 0,
+				"order_qty": 2,
+				"delivery_date": "2026-08-04",
+				"next_actions": [{"action": "create_work_order"}],
+			},
+		]
+
+		result = build_fulfillment_order(order, rows, today="2026-08-02")
+
+		self.assertEqual(result["delivery_date"], "2026-08-04")
+		self.assertTrue(result["has_multiple_delivery_dates"])
+		self.assertEqual(result["item_count"], 3)
+		self.assertEqual(result["order_qty"], 16)
+		self.assertEqual(result["delivered_qty"], 9)
+		self.assertEqual(result["pending_qty"], 7)
+		self.assertEqual(result["reserved_qty"], 5)
+		self.assertEqual(result["uncovered_qty"], 2)
+		self.assertTrue(result["needs_production"])
+		self.assertFalse(result["direct_ship"])
+
+	def test_fulfillment_order_marks_missing_pending_delivery_date(self):
+		from process_simplification.api.workbench import build_fulfillment_order
+
+		result = build_fulfillment_order(
+			frappe._dict(name="SO-NO-DATE", creation="2026-08-01"),
+			[
+				{
+					"pending_qty": 1,
+					"reserved_qty": 1,
+					"active_work_order_qty": 0,
+					"delivery_date": None,
+					"next_actions": [],
+				}
+			],
+			today="2026-08-02",
+		)
+
+		self.assertEqual(result["delivery_timing"], "missing")
+		self.assertIsNone(result["days_to_delivery"])
+		self.assertEqual(result["risk_level"], "gray")
+
+	@patch("process_simplification.api.workbench.now_datetime")
+	@patch("process_simplification.api.workbench.get_order_workbench")
+	@patch("process_simplification.api.workbench.frappe.get_list")
+	@patch("process_simplification.api.workbench.frappe.has_permission")
+	def test_fulfillment_overview_sorts_orders_and_counts_orders_not_items(
+		self, has_permission, get_list, get_order_workbench, now_datetime
+	):
+		from process_simplification.api.workbench import get_fulfillment_overview
+
+		has_permission.return_value = True
+		now_datetime.return_value = frappe.utils.get_datetime("2026-08-02 09:00:00")
+		get_list.return_value = [
+			frappe._dict(name="SO-LATER", customer="C1", customer_name="C1", creation="2026-08-01"),
+			frappe._dict(name="SO-GREEN", customer="C1", customer_name="C1", creation="2026-08-02"),
+			frappe._dict(name="SO-BLOCKED", customer="C1", customer_name="C1", creation="2026-08-03"),
+			frappe._dict(name="SO-OVERDUE", customer="C1", customer_name="C1", creation="2026-08-04"),
+			frappe._dict(name="SO-TODAY", customer="C1", customer_name="C1", creation="2026-08-05"),
+			frappe._dict(name="SO-MISSING", customer="C1", customer_name="C1", creation="2026-08-05"),
+		]
+		get_order_workbench.side_effect = lambda name: {
+			"rows": {
+				"SO-LATER": [
+					{"pending_qty": 2, "reserved_qty": 2, "delivery_date": "2026-08-08", "next_actions": []}
+				],
+				"SO-GREEN": [
+					{"pending_qty": 3, "reserved_qty": 3, "delivery_date": "2026-08-04", "next_actions": []}
+				],
+				"SO-BLOCKED": [
+					{"pending_qty": 1, "reserved_qty": 0, "delivery_date": "2026-08-04", "next_actions": []},
+					{"pending_qty": 4, "reserved_qty": 0, "delivery_date": "2026-08-04", "next_actions": []},
+				],
+				"SO-OVERDUE": [
+					{"pending_qty": 1, "reserved_qty": 1, "delivery_date": "2026-08-01", "next_actions": []}
+				],
+				"SO-TODAY": [
+					{"pending_qty": 1, "reserved_qty": 1, "delivery_date": "2026-08-02", "next_actions": []}
+				],
+				"SO-MISSING": [{"pending_qty": 1, "reserved_qty": 1, "delivery_date": None, "next_actions": []}],
+			}[name]
+		}
+
+		result = get_fulfillment_overview()
+
+		self.assertEqual(
+			[order["name"] for order in result["orders"]],
+			["SO-OVERDUE", "SO-TODAY", "SO-BLOCKED", "SO-GREEN", "SO-LATER", "SO-MISSING"],
+		)
+		self.assertEqual(
+			result["summary"],
+			{
+				"total_orders": 6,
+				"overdue_orders": 1,
+				"due_within_7_days": 4,
+				"needs_production_orders": 0,
+				"direct_ship_orders": 5,
+			},
+		)
 	def test_quick_order_rejects_duplicate_finished_goods(self):
 		items = [
 			frappe._dict({"item_code": "FG-001"}),
