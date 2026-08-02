@@ -197,6 +197,19 @@ test("explains shared inventory once at order level and expands only shortage pr
 	assert.match(html, /查看完整用料/);
 });
 
+test("product cards distinguish this-product demand from every order-level coverage figure", () => {
+	const html = materialRiskHtml(buildMaterialRiskView(fixtureWithSharedMaterial), helpers);
+
+	assert.match(html, /BOM 单耗\/本产品贡献需求/);
+	assert.match(
+		html,
+		/除“本产品贡献需求”外，库存、采购申请、按时在途、缺口和结论均为全单汇总；采购判断以下方全单汇总为准。/
+	);
+	assert.match(html, /全单汇总·账面/);
+	assert.match(html, /全单汇总·采购申请/);
+	assert.match(html, /全单汇总·建议新增申请/);
+});
+
 test("renders explicit zero-production copy instead of an empty material table", () => {
 	const view = buildMaterialRiskView({
 		checked_at: "2026-08-02 11:00:00",

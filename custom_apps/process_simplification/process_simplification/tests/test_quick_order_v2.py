@@ -350,6 +350,8 @@ class TestQuickOrderV2(UnitTestCase):
 		self.assertEqual(result["material_groups"][0]["bom_no"], "BOM-_Test Item-001")
 		self.assertEqual(result["material_groups"][0]["materials"][0]["required_qty"], 20)
 		self.assertEqual(result["material_coverage"][0]["shortage_qty"], 5)
+		coverage_demand = material_coverage.call_args.args[0][0]
+		self.assertEqual(coverage_demand["source"]["sales_order_item_warehouse"], "Finished Goods - TC")
 
 	@patch("process_simplification.api.quick_order._validate_commercial_rules", return_value=[])
 	@patch("process_simplification.api.quick_order._build_sales_order")
@@ -835,9 +837,10 @@ class TestQuickOrderV2(UnitTestCase):
 		get_bom_items.return_value = {
 			"RM-001": frappe._dict(
 				{
+					"item_code": "RM-001",
 					"item_name": "Raw Material",
 					"stock_uom": "Nos",
-					"source_warehouse": "Stores - TC",
+					"source_warehouse": "_Test Warehouse - _TC",
 					"qty": 10,
 				}
 			)
@@ -847,8 +850,8 @@ class TestQuickOrderV2(UnitTestCase):
 		)
 		result = calculate_material_shortages(
 			[{"bom_no": "BOM-FG-001", "qty": 2}],
-			"Test Company",
-			frappe._dict({"source_warehouse": "Stores - TC"}),
+			"_Test Company",
+			frappe._dict({"source_warehouse": "_Test Warehouse - _TC"}),
 		)
 
 		self.assertEqual(result[0]["required_qty"], 10)
@@ -910,10 +913,22 @@ class TestQuickOrderV2(UnitTestCase):
 
 		get_bom_items.return_value = {
 			"RM-ENOUGH": frappe._dict(
-				{"item_name": "Enough", "stock_uom": "Nos", "source_warehouse": "Stores - TC", "qty": 4}
+				{
+					"item_code": "RM-ENOUGH",
+					"item_name": "Enough",
+					"stock_uom": "Nos",
+					"source_warehouse": "_Test Warehouse - _TC",
+					"qty": 4,
+				}
 			),
 			"RM-SHORT": frappe._dict(
-				{"item_name": "Short", "stock_uom": "Nos", "source_warehouse": "Stores - TC", "qty": 8}
+				{
+					"item_code": "RM-SHORT",
+					"item_name": "Short",
+					"stock_uom": "Nos",
+					"source_warehouse": "_Test Warehouse - _TC",
+					"qty": 8,
+				}
 			),
 		}
 		stock_snapshot.side_effect = lambda item_code, warehouse: frappe._dict(
@@ -929,7 +944,7 @@ class TestQuickOrderV2(UnitTestCase):
 			[{"bom_no": "BOM-FG-001", "qty": 10, "source": {"row": 1, "finished_item": "FG-001"}}],
 			"_Test Company",
 			need_by_date="2099-01-10",
-			defaults=frappe._dict({"source_warehouse": "Stores - TC"}),
+			defaults=frappe._dict({"source_warehouse": "_Test Warehouse - _TC"}),
 		)
 
 		self.assertEqual([row["item_code"] for row in result.materials], ["RM-ENOUGH", "RM-SHORT"])
@@ -949,7 +964,9 @@ class TestQuickOrderV2(UnitTestCase):
 		from process_simplification.api.shortage import calculate_material_coverage
 
 		get_bom_items.return_value = {
-			"RM-001": frappe._dict({"source_warehouse": "Stores - TC", "qty": 10})
+			"RM-001": frappe._dict(
+				{"item_code": "RM-001", "source_warehouse": "_Test Warehouse - _TC", "qty": 10}
+			)
 		}
 		stock_snapshot.return_value = frappe._dict(
 			{"can_calculate": True, "actual_qty": 2, "committed_qty": 0, "available_qty": 2}
@@ -959,7 +976,7 @@ class TestQuickOrderV2(UnitTestCase):
 			[{"bom_no": "BOM-FG-001", "qty": 1}],
 			"_Test Company",
 			need_by_date="2099-01-10",
-			defaults=frappe._dict({"source_warehouse": "Stores - TC"}),
+			defaults=frappe._dict({"source_warehouse": "_Test Warehouse - _TC"}),
 		)
 
 		self.assertEqual(result.materials[0]["status"], "awaiting_purchase_receipt")
@@ -975,7 +992,9 @@ class TestQuickOrderV2(UnitTestCase):
 		from process_simplification.api.shortage import calculate_material_coverage
 
 		get_bom_items.return_value = {
-			"RM-001": frappe._dict({"source_warehouse": "Stores - TC", "qty": 10})
+			"RM-001": frappe._dict(
+				{"item_code": "RM-001", "source_warehouse": "_Test Warehouse - _TC", "qty": 10}
+			)
 		}
 		stock_snapshot.return_value = frappe._dict(
 			{"can_calculate": True, "actual_qty": 2, "committed_qty": 0, "available_qty": 2}
@@ -985,7 +1004,7 @@ class TestQuickOrderV2(UnitTestCase):
 			[{"bom_no": "BOM-FG-001", "qty": 1}],
 			"_Test Company",
 			need_by_date="2099-01-10",
-			defaults=frappe._dict({"source_warehouse": "Stores - TC"}),
+			defaults=frappe._dict({"source_warehouse": "_Test Warehouse - _TC"}),
 		)
 
 		self.assertEqual(result.materials[0]["status"], "purchase_request_pending")
@@ -1002,7 +1021,9 @@ class TestQuickOrderV2(UnitTestCase):
 		from process_simplification.api.shortage import calculate_material_coverage
 
 		get_bom_items.return_value = {
-			"RM-001": frappe._dict({"source_warehouse": "Stores - TC", "qty": 10})
+			"RM-001": frappe._dict(
+				{"item_code": "RM-001", "source_warehouse": "_Test Warehouse - _TC", "qty": 10}
+			)
 		}
 		stock_snapshot.return_value = frappe._dict(
 			{"can_calculate": True, "actual_qty": 2, "committed_qty": 0, "available_qty": 2}
@@ -1012,7 +1033,7 @@ class TestQuickOrderV2(UnitTestCase):
 			[{"bom_no": "BOM-FG-001", "qty": 1}],
 			"_Test Company",
 			need_by_date="2099-01-10",
-			defaults=frappe._dict({"source_warehouse": "Stores - TC"}),
+			defaults=frappe._dict({"source_warehouse": "_Test Warehouse - _TC"}),
 		)
 
 		self.assertEqual(result.materials[0]["status"], "new_purchase_required")
@@ -1028,8 +1049,16 @@ class TestQuickOrderV2(UnitTestCase):
 		from process_simplification.api.shortage import calculate_material_coverage
 
 		get_bom_items.side_effect = [
-			{"RM-SHARED": frappe._dict({"source_warehouse": "Stores - TC", "qty": 4})},
-			{"RM-SHARED": frappe._dict({"source_warehouse": "Stores - TC", "qty": 6})},
+			{
+				"RM-SHARED": frappe._dict(
+					{"item_code": "RM-SHARED", "source_warehouse": "_Test Warehouse - _TC", "qty": 4}
+				)
+			},
+			{
+				"RM-SHARED": frappe._dict(
+					{"item_code": "RM-SHARED", "source_warehouse": "_Test Warehouse - _TC", "qty": 6}
+				)
+			},
 		]
 		stock_snapshot.return_value = frappe._dict(
 			{"can_calculate": True, "actual_qty": 3, "committed_qty": 0, "available_qty": 3}
@@ -1041,20 +1070,22 @@ class TestQuickOrderV2(UnitTestCase):
 				{"bom_no": "BOM-FG-002", "qty": 3, "source": {"row": 2, "finished_item": "FG-002", "qty": 3}},
 			],
 			"_Test Company",
-			defaults=frappe._dict({"source_warehouse": "Stores - TC"}),
+			defaults=frappe._dict({"source_warehouse": "_Test Warehouse - _TC"}),
 		)
 
 		self.assertEqual(len(result.materials), 1)
 		self.assertEqual(result.materials[0]["required_qty"], 10)
 		self.assertEqual([source["required_qty"] for source in result.materials[0]["sources"]], [4, 6])
 		self.assertEqual([source["bom_qty_per_unit"] for source in result.materials[0]["sources"]], [2, 2])
-		stock_snapshot.assert_called_once_with("RM-SHARED", "Stores - TC")
+		stock_snapshot.assert_called_once_with("RM-SHARED", "_Test Warehouse - _TC")
 
 	@patch("process_simplification.api.shortage.get_bom_items_as_dict")
 	def test_material_coverage_blocks_missing_source_warehouse(self, get_bom_items):
 		from process_simplification.api.shortage import calculate_material_coverage
 
-		get_bom_items.return_value = {"RM-001": frappe._dict({"qty": 1})}
+		get_bom_items.return_value = {
+			"RM-001": frappe._dict({"item_code": "RM-001", "qty": 1})
+		}
 
 		result = calculate_material_coverage(
 			[{"bom_no": "BOM-FG-001", "qty": 1}],
@@ -1066,7 +1097,42 @@ class TestQuickOrderV2(UnitTestCase):
 		self.assertTrue(result.materials[0]["blocked"])
 		self.assertEqual(result.shortages, [])
 
+	@patch(
+		"process_simplification.api.shortage.resolve_production_source_warehouse",
+		return_value=frappe._dict(
+			{"warehouse": "Invalid Stores - TC", "can_use": False, "reason": "warehouse_disabled"}
+		),
+	)
+	@patch("process_simplification.api.shortage.get_material_stock_snapshot")
+	@patch("process_simplification.api.shortage.get_bom_items_as_dict")
+	def test_material_coverage_blocks_an_unusable_resolved_work_order_warehouse(
+		self, get_bom_items, stock_snapshot, resolve_source_warehouse
+	):
+		from process_simplification.api.shortage import calculate_material_coverage
+
+		get_bom_items.return_value = {
+			"RM-001": frappe._dict({"item_code": "RM-001", "qty": 1})
+		}
+		result = calculate_material_coverage(
+			[
+				{
+					"bom_no": "BOM-FG-001",
+					"qty": 1,
+					"source": {"sales_order_item_warehouse": "Finished Goods - TC"},
+				}
+			],
+			"_Test Company",
+			defaults=frappe._dict({"source_warehouse": "Invalid Stores - TC"}),
+		)
+
+		self.assertEqual(result.materials[0]["warehouse"], "Invalid Stores - TC")
+		self.assertEqual(result.materials[0]["status"], "cannot_calculate")
+		self.assertTrue(result.materials[0]["blocked"])
+		self.assertEqual(result.shortages, [])
+		stock_snapshot.assert_not_called()
+
 	@patch("process_simplification.api.actions.make_work_order")
+	@patch("process_simplification.api.actions.resolve_production_source_warehouse")
 	@patch("process_simplification.api.actions.get_default_bom")
 	@patch("process_simplification.api.actions.get_company_defaults")
 	@patch("process_simplification.api.actions.frappe.get_doc")
@@ -1081,6 +1147,7 @@ class TestQuickOrderV2(UnitTestCase):
 		get_doc,
 		get_company_defaults,
 		get_default_bom,
+		resolve_source_warehouse,
 		make_work_order,
 	):
 		from process_simplification.api.actions import create_work_order
@@ -1103,10 +1170,14 @@ class TestQuickOrderV2(UnitTestCase):
 				"fg_warehouse": "Finished Goods - TC",
 			}
 		)
+		resolve_source_warehouse.return_value = frappe._dict(
+			{"warehouse": "Stores - TC", "can_use": True, "reason": None}
+		)
 		work_order = MagicMock()
 		make_work_order.return_value = work_order
 
 		create_work_order("SO-001", "SOI-001", 4)
 
 		self.assertEqual(make_work_order.call_args.kwargs["bom_no"], "BOM-FG-001-OLD")
+		self.assertEqual(work_order.source_warehouse, "Stores - TC")
 		get_default_bom.assert_not_called()

@@ -126,18 +126,25 @@ function materialRiskHtml(view, helpers) {
 							group.has_shortage ? translate("收起用料") : translate("查看完整用料")
 						)}</span>
 					</summary>
+					<p class="quick-material-scope-note">${escape(
+						translate(
+							"除“本产品贡献需求”外，库存、采购申请、按时在途、缺口和结论均为全单汇总；采购判断以下方全单汇总为准。"
+						)
+					)}</p>
 					<div class="quick-material-table-wrap">
 						<table class="table quick-material-table">
 							<thead><tr>
-								<th>${escape(translate("物料"))}</th><th>${escape(translate("BOM 单耗/本次需求"))}</th><th>${escape(
+				<th>${escape(translate("物料"))}</th><th>${escape(translate("BOM 单耗/本产品贡献需求"))}</th><th>${escape(
 				translate("来源仓库")
-			)}</th><th>${escape(translate("账面"))}</th><th>${escape(translate("已占用"))}</th><th>${escape(
-				translate("本单可用")
-			)}</th><th>${escape(translate("采购申请"))}</th><th>${escape(
-				translate("按时在途")
-			)}</th><th>${escape(translate("当前生产缺口"))}</th><th>${escape(
-				translate("建议新增申请")
-			)}</th><th>${escape(translate("结论"))}</th>
+			)}</th><th>${escape(translate("全单汇总·账面"))}</th><th>${escape(
+				translate("全单汇总·已占用")
+			)}</th><th>${escape(translate("全单汇总·可用"))}</th><th>${escape(
+				translate("全单汇总·采购申请")
+			)}</th><th>${escape(translate("全单汇总·按时在途"))}</th><th>${escape(
+				translate("全单汇总·当前生产缺口")
+			)}</th><th>${escape(translate("全单汇总·建议新增申请"))}</th><th>${escape(
+				translate("全单汇总·结论")
+			)}</th>
 							</tr></thead>
 							<tbody>${rows}</tbody>
 						</table>

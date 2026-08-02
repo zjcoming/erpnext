@@ -354,6 +354,15 @@
 	font-weight: 600;
 }
 
+.quick-material-scope-note {
+	margin: 0;
+	padding: 8px 14px;
+	border-top: 1px solid var(--border-color);
+	background: var(--subtle-fg);
+	color: var(--text-muted);
+	font-size: var(--text-xs);
+}
+
 .quick-material-table-wrap {
 	max-width: 100%;
 	overflow-x: auto;

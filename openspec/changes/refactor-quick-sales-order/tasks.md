@@ -43,5 +43,5 @@
 - [x] 6.2 Verify created Sales Orders against the standard ERPNext form for company, customer, currency, dates, pricing, UOM, warehouse, BOM snapshot, totals, PO number, remark, docstatus, and permissions.
 - [x] 6.3 Add a site-level rollout switch, enable it for a pilot site, and document activation, rollback, idempotency retention, and master-data prerequisites.
 - [ ] 6.4 Run the custom app test suite, relevant ERPNext Sales Order/reservation tests, frontend lint/format checks, and `openspec validate refactor-quick-sales-order --strict` before implementation handoff.
-- [x] 6.5 Review the implemented page against `open-design/quick-sales-order/index.html` for default, loading, stale, blocker, warning, confirmation, narrow-screen, and keyboard states.
+- [ ] 6.5 Review the implemented page against `open-design/quick-sales-order/index.html` for default, loading, stale, blocker, warning, confirmation, narrow-screen, and keyboard states. Automated rendering checks pass, but live browser verification is still pending.
 - [x] 6.6 Add a production-required integration test proving real submitted BOM material detail, raw-material shortage quantities, warning-only submission eligibility, and zero Work Order, Material Request, Purchase Order, or Stock Reservation Entry creation during preflight.

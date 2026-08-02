@@ -10,7 +10,11 @@ from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry impor
 	get_available_qty_to_reserve,
 )
 
-from process_simplification.api.setup import get_company_defaults, get_default_bom
+from process_simplification.api.setup import (
+	get_company_defaults,
+	get_default_bom,
+	resolve_production_source_warehouse,
+)
 from process_simplification.api.utils import (
 	delivered_stock_qty,
 	get_item_uom_details,
@@ -126,6 +130,11 @@ def create_work_order(sales_order: str, sales_order_item: str, qty: float | None
 		throw_chinese("产品 {0} 没有已提交、启用的默认 BOM。".format(item.item_code))
 
 	defaults = get_company_defaults(so.company)
+	resolved_source = resolve_production_source_warehouse(
+		so.company,
+		defaults=defaults,
+		sales_order_item_warehouse=item.warehouse,
+	)
 	work_order_qty = normalize_qty(qty) if qty else row.uncovered_qty
 	if work_order_qty <= 0 or work_order_qty > row.uncovered_qty:
 		throw_chinese("本次生产数量不能超过当前尚未覆盖数量。")
@@ -139,13 +148,13 @@ def create_work_order(sales_order: str, sales_order_item: str, qty: float | None
 	)
 	wo.sales_order = sales_order
 	wo.sales_order_item = sales_order_item
-	wo.source_warehouse = defaults.source_warehouse or item.warehouse
+	wo.source_warehouse = resolved_source.warehouse
 	wo.wip_warehouse = defaults.wip_warehouse
 	wo.fg_warehouse = item.warehouse or defaults.fg_warehouse
 	wo.expected_delivery_date = item.delivery_date
 	wo.planned_start_date = now_datetime()
-	if not wo.source_warehouse:
-		throw_chinese("缺少原料仓，请在 Stock Settings 或订单行中设置仓库。")
+	if not resolved_source.can_use:
+		throw_chinese("原料仓不可用，请确认仓库存在、启用、非分组且属于订单公司。")
 	if not wo.wip_warehouse:
 		throw_chinese("缺少 WIP 仓，请在 Company 中设置 Default WIP Warehouse。")
 	if not wo.fg_warehouse:

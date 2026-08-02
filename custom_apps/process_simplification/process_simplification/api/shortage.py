@@ -5,7 +5,11 @@ from frappe.utils import add_days, nowdate, parse_json
 
 from erpnext.manufacturing.doctype.bom.bom import get_bom_items_as_dict
 
-from process_simplification.api.setup import get_company_defaults, get_default_bom
+from process_simplification.api.setup import (
+	get_company_defaults,
+	get_default_bom,
+	resolve_production_source_warehouse,
+)
 from process_simplification.api.utils import normalize_qty, throw_chinese
 from process_simplification.api.workbench import get_order_workbench
 
@@ -117,7 +121,7 @@ def _po_outstanding(item_code: str, warehouse: str | None, company: str, need_by
 		frappe.qb.from_(poi)
 		.join(po)
 		.on(poi.parent == po.name)
-		.select(poi.stock_qty, poi.received_qty)
+		.select(poi.stock_qty, poi.received_qty, poi.conversion_factor)
 		.where(
 			(poi.item_code == item_code)
 			& (poi.warehouse == warehouse)
@@ -129,7 +133,7 @@ def _po_outstanding(item_code: str, warehouse: str | None, company: str, need_by
 	if need_by_date:
 		query = query.where(poi.schedule_date <= need_by_date)
 	return sum(
-		max(normalize_qty(row[0]) - normalize_qty(row[1]), 0)
+		max(normalize_qty(row[0]) - normalize_qty(row[1]) * normalize_qty(row[2] or 1), 0)
 		for row in query.run()
 	)
 
@@ -160,8 +164,16 @@ def calculate_material_coverage(demands, company: str, need_by_date: str | None 
 			bom_items = get_bom_items_as_dict(demand.bom_no, company, qty=qty, fetch_exploded=1)
 		except Exception as exc:
 			raise MaterialCoverageBomExpansionError(demand.bom_no) from exc
-		for item_code, bom_item in bom_items.items():
-			warehouse = bom_item.get("source_warehouse") or bom_item.get("default_warehouse") or defaults.source_warehouse
+		resolved_source = resolve_production_source_warehouse(
+			company,
+			defaults=defaults,
+			sales_order_item_warehouse=(demand.get("source") or {}).get(
+				"sales_order_item_warehouse"
+			),
+		)
+		for bom_item in bom_items.values():
+			item_code = bom_item.get("item_code")
+			warehouse = resolved_source.warehouse
 			key = (item_code, warehouse)
 			if key not in materials:
 				materials[key] = {
@@ -179,8 +191,13 @@ def calculate_material_coverage(demands, company: str, need_by_date: str | None 
 					"shortage_qty": 0,
 					"status": "cannot_calculate",
 					"blocked": False,
+					"warehouse_can_use": bool(resolved_source.can_use),
 					"sources": [],
 				}
+			else:
+				materials[key]["warehouse_can_use"] = bool(
+					materials[key]["warehouse_can_use"] and resolved_source.can_use
+				)
 			contribution_qty = normalize_qty(bom_item.get("qty"))
 			materials[key]["required_qty"] += contribution_qty
 			source = dict(demand.get("source") or {})
@@ -189,6 +206,10 @@ def calculate_material_coverage(demands, company: str, need_by_date: str | None 
 			materials[key]["sources"].append(source)
 
 	for material in materials.values():
+		warehouse_can_use = material.pop("warehouse_can_use")
+		if not warehouse_can_use:
+			material["blocked"] = True
+			continue
 		snapshot = get_material_stock_snapshot(material["item_code"], material["warehouse"])
 		material["actual_qty"] = normalize_qty(snapshot.get("actual_qty"))
 		material["committed_qty"] = normalize_qty(snapshot.get("committed_qty"))
@@ -276,6 +297,7 @@ def check_shortage(selected_rows, company: str | None = None):
 					"sales_order_item": selected.sales_order_item,
 					"finished_item": workbench_row.item_code,
 					"qty": demand_qty,
+					"sales_order_item_warehouse": workbench_row.get("warehouse"),
 				},
 			}
 		)

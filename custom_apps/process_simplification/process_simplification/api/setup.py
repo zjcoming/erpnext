@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import frappe
 from frappe import _
-from frappe.utils import parse_json
+from frappe.utils import cint, parse_json
 
 from process_simplification.defaults import get_company_manufacturing_defaults
 
@@ -18,6 +18,40 @@ def _message(status: str, label: str, detail: str, fieldname: str | None = None)
 
 def get_company_defaults(company: str | None = None):
 	return get_company_manufacturing_defaults(company)
+
+
+def resolve_production_source_warehouse(
+	company: str,
+	*,
+	defaults=None,
+	sales_order_item_warehouse: str | None = None,
+):
+	"""Resolve the exact warehouse used on guided Work Orders and validate it."""
+	defaults = defaults or get_company_defaults(company)
+	warehouse = defaults.get("source_warehouse") or sales_order_item_warehouse
+	if not warehouse:
+		return frappe._dict({"warehouse": None, "can_use": False, "reason": "warehouse_missing"})
+
+	warehouse_row = frappe._dict(
+		frappe.db.get_value(
+			"Warehouse",
+			warehouse,
+			["company", "is_group", "disabled"],
+			as_dict=True,
+		)
+		or {}
+	)
+	reason = None
+	if not warehouse_row:
+		reason = "warehouse_missing"
+	elif warehouse_row.get("company") != company:
+		reason = "warehouse_company_mismatch"
+	elif cint(warehouse_row.get("is_group")):
+		reason = "warehouse_is_group"
+	elif cint(warehouse_row.get("disabled")):
+		reason = "warehouse_disabled"
+
+	return frappe._dict({"warehouse": warehouse, "can_use": not reason, "reason": reason})
 
 
 def get_default_bom(item_code: str) -> str | None:

@@ -125,6 +125,35 @@ class TestSimplifiedFlow(UnitTestCase):
 		result = check_shortage([{"sales_order": "SO-TEST", "sales_order_item": "SO-ITEM-TEST"}], company="_Test Company")
 		self.assertEqual(result["shortages"], [])
 
+	@patch("process_simplification.api.shortage.calculate_material_shortages", return_value=[])
+	@patch("process_simplification.api.shortage.get_default_bom", return_value="BOM-FG-001")
+	@patch("process_simplification.api.shortage.get_order_workbench")
+	def test_shortage_demand_carries_the_sales_order_item_warehouse_used_by_work_orders(
+		self, get_order_workbench, get_default_bom, calculate_shortages
+	):
+		from process_simplification.api.shortage import check_shortage
+
+		get_order_workbench.return_value = {
+			"rows": [
+				{
+					"sales_order_item": "SO-ITEM-TEST",
+					"unsupported": False,
+					"uncovered_qty": 2,
+					"active_work_order_qty": 0,
+					"item_code": "FG-001",
+					"warehouse": "Finished Goods - TC",
+				}
+			]
+		}
+
+		check_shortage(
+			[{"sales_order": "SO-TEST", "sales_order_item": "SO-ITEM-TEST"}],
+			company="_Test Company",
+		)
+
+		demand = calculate_shortages.call_args.args[0][0]
+		self.assertEqual(demand["source"]["sales_order_item_warehouse"], "Finished Goods - TC")
+
 	def test_workbench_row_serializes_actions(self):
 		row = WorkbenchRow(
 			sales_order="SO-TEST",

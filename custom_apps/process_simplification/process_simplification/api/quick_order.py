@@ -559,6 +559,7 @@ def _evaluate_quick_order(payload):
 				"finished_item": row.get("item_code"),
 				"production_qty": row.get("production_required"),
 				"bom_no": row.get("bom_no"),
+				"sales_order_item_warehouse": row.get("warehouse"),
 			},
 		}
 		for row in preview["rows"]
