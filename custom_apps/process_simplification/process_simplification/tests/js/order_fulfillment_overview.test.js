@@ -164,6 +164,29 @@ test("expanded product rows show their own delivery date", () => {
 	assert.match(html, /2026-08-09/);
 });
 
+test("expanded product rows expose labels for the mobile card layout", () => {
+	const html = orderOverviewHtml(order("SO-MOBILE"), helpers);
+
+	for (const label of [
+		"产品",
+		"交期",
+		"订购",
+		"已发",
+		"待交",
+		"已预留",
+		"生产中",
+		"已完工",
+		"未覆盖",
+		"原料",
+		"状态",
+		"下一步",
+	]) {
+		assert.match(html, new RegExp(`data-label="${label}"`));
+	}
+	assert.match(html, /class="fulfillment-order-actions" aria-label="订单操作"/);
+	assert.match(html, /class="fulfillment-order-actions-title">订单操作</);
+});
+
 test("CSV uses Chinese headers and filename", () => {
 	const csv = fulfillmentCsv([order("SO-CSV")]);
 

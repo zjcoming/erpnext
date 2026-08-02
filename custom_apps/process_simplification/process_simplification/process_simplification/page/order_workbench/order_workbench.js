@@ -87,18 +87,18 @@ function orderOverviewHtml(order, helpers) {
 		.map(
 			(row) => `
 				<tr class="${row.unsupported ? "text-muted" : ""}">
-					<td><a href="/app/item/${encodeURIComponent(row.item_code || "")}">${esc(row.item_code || "")}</a><br><small>${esc(row.item_name || "")}</small></td>
-					<td>${esc(date(row.delivery_date)) || esc(t("未设置"))}</td>
-					<td class="fulfillment-number">${number(row.order_qty)}</td>
-					<td class="fulfillment-number">${number(row.delivered_qty)}</td>
-					<td class="fulfillment-number">${number(row.pending_qty)}</td>
-					<td class="fulfillment-number">${number(row.reserved_qty)}</td>
-					<td class="fulfillment-number">${number(row.active_work_order_qty)}</td>
-					<td class="fulfillment-number">${number(row.completed_qty)}</td>
-					<td class="fulfillment-number">${number(row.uncovered_qty)}</td>
-					<td>${esc(row.material_status || "")}</td>
-					<td><span class="indicator-pill gray">${esc(row.status || "")}</span>${row.unsupported_reason ? `<br><small>${esc(row.unsupported_reason)}</small>` : ""}</td>
-					<td class="fulfillment-item-actions">${actions(row)}</td>
+					<td data-label="${esc(t("产品"))}"><a href="/app/item/${encodeURIComponent(row.item_code || "")}">${esc(row.item_code || "")}</a><br><small>${esc(row.item_name || "")}</small></td>
+					<td data-label="${esc(t("交期"))}">${esc(date(row.delivery_date)) || esc(t("未设置"))}</td>
+					<td class="fulfillment-number" data-label="${esc(t("订购"))}">${number(row.order_qty)}</td>
+					<td class="fulfillment-number" data-label="${esc(t("已发"))}">${number(row.delivered_qty)}</td>
+					<td class="fulfillment-number" data-label="${esc(t("待交"))}">${number(row.pending_qty)}</td>
+					<td class="fulfillment-number" data-label="${esc(t("已预留"))}">${number(row.reserved_qty)}</td>
+					<td class="fulfillment-number" data-label="${esc(t("生产中"))}">${number(row.active_work_order_qty)}</td>
+					<td class="fulfillment-number" data-label="${esc(t("已完工"))}">${number(row.completed_qty)}</td>
+					<td class="fulfillment-number" data-label="${esc(t("未覆盖"))}">${number(row.uncovered_qty)}</td>
+					<td data-label="${esc(t("原料"))}">${esc(row.material_status || "")}</td>
+					<td data-label="${esc(t("状态"))}"><span class="indicator-pill gray">${esc(row.status || "")}</span>${row.unsupported_reason ? `<br><small>${esc(row.unsupported_reason)}</small>` : ""}</td>
+					<td class="fulfillment-item-actions" data-label="${esc(t("下一步"))}">${actions(row)}</td>
 				</tr>`
 		)
 		.join("");
@@ -117,7 +117,8 @@ function orderOverviewHtml(order, helpers) {
 				<span class="fulfillment-toggle">${esc(t("查看并处理"))}</span>
 			</summary>
 			<div class="fulfillment-order-details">
-				<div class="fulfillment-order-actions">
+				<div class="fulfillment-order-actions" aria-label="${esc(t("订单操作"))}">
+					<strong class="fulfillment-order-actions-title">${esc(t("订单操作"))}</strong>
 					<button class="btn btn-default btn-sm order-material-check" data-sales-order="${esc(order.name)}">${esc(t("检查缺料"))}</button>
 					<button class="btn btn-default btn-sm row-action" data-action="view_sales_order" data-sales-order="${esc(order.name)}">${esc(t("查看销售订单"))}</button>
 				</div>

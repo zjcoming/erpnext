@@ -746,6 +746,11 @@
 	padding: 12px 0;
 }
 
+.fulfillment-order-actions-title {
+	align-self: center;
+	margin-right: auto;
+}
+
 .fulfillment-item-table-wrap {
 	max-width: 100%;
 	overflow-x: auto;
@@ -932,5 +937,88 @@
 	.fulfillment-order-actions {
 		align-items: stretch;
 		flex-direction: column;
+	}
+
+	.fulfillment-order-list,
+	.fulfillment-order,
+	.fulfillment-order-details,
+	.fulfillment-item-table-wrap {
+		width: 100%;
+		min-width: 0;
+		max-width: 100%;
+	}
+
+	.fulfillment-order-actions .btn {
+		width: 100%;
+		min-height: 40px;
+		white-space: normal;
+	}
+
+	.fulfillment-order-actions-title {
+		align-self: stretch;
+		margin-right: 0;
+	}
+
+	.fulfillment-item-table-wrap {
+		overflow: visible;
+		border: 0;
+	}
+
+	.process-simplification-page .fulfillment-item-table {
+		display: block;
+		width: 100%;
+		min-width: 0;
+	}
+
+	.fulfillment-item-table thead {
+		display: none;
+	}
+
+	.fulfillment-item-table tbody {
+		display: grid;
+		gap: 12px;
+	}
+
+	.fulfillment-item-table tbody tr {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 12px 16px;
+		width: 100%;
+		padding: 12px;
+		border: 1px solid var(--border-color);
+		border-radius: var(--border-radius);
+		background: var(--card-bg);
+	}
+
+	.fulfillment-item-table tbody td {
+		display: grid;
+		min-width: 0;
+		gap: 3px;
+		padding: 0;
+		border: 0;
+		text-align: left;
+		overflow-wrap: anywhere;
+	}
+
+	.fulfillment-item-table tbody td::before {
+		content: attr(data-label);
+		color: var(--text-muted);
+		font-size: var(--text-xs);
+		font-weight: 500;
+	}
+
+	.fulfillment-item-table tbody td:first-child,
+	.fulfillment-item-table .fulfillment-item-actions {
+		grid-column: 1 / -1;
+	}
+
+	.fulfillment-item-table .fulfillment-item-actions {
+		min-width: 0;
+	}
+
+	.fulfillment-item-actions .btn {
+		width: 100%;
+		min-height: 40px;
+		white-space: normal;
 	}
 }
