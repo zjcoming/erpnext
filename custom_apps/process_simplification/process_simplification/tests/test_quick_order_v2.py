@@ -429,6 +429,7 @@ class TestQuickOrderV2(UnitTestCase):
 		material_coverage,
 	):
 		from process_simplification.api.quick_order import _evaluate_quick_order
+		from process_simplification.api.shortage import MaterialCoverageBomExpansionError
 
 		get_company_defaults.return_value = frappe._dict({"company": "_Test Company"})
 		preview.return_value = {
@@ -457,7 +458,7 @@ class TestQuickOrderV2(UnitTestCase):
 			"available_to_reserve": 0,
 			"production_required": 3,
 		}
-		material_coverage.side_effect = frappe.ValidationError("BOM explosion failed")
+		material_coverage.side_effect = MaterialCoverageBomExpansionError("BOM explosion failed")
 
 		result = _evaluate_quick_order(self._normalized_order())
 
@@ -473,6 +474,64 @@ class TestQuickOrderV2(UnitTestCase):
 				("BOM_EXPLOSION_FAILED", "line", 2),
 			},
 		)
+
+	@patch("process_simplification.api.quick_order.calculate_material_coverage")
+	@patch("process_simplification.api.quick_order.preview_quick_order_items")
+	@patch("process_simplification.api.quick_order._customer_po_issue", return_value=None)
+	@patch("process_simplification.api.quick_order._validate_customer", return_value=[])
+	@patch("process_simplification.api.quick_order.get_company_defaults")
+	@patch("process_simplification.api.quick_order.frappe.has_permission")
+	def test_non_bom_material_coverage_error_is_not_mislabeled_as_bom_failure(
+		self,
+		has_permission,
+		get_company_defaults,
+		validate_customer,
+		customer_po_issue,
+		preview,
+		material_coverage,
+	):
+		from process_simplification.api.quick_order import _evaluate_quick_order
+
+		get_company_defaults.return_value = frappe._dict({"company": "_Test Company"})
+		preview.return_value = {
+			"rows": [
+				{
+					"row": 1,
+					"item_code": "FG-001",
+					"qty": 1,
+					"warehouse": "Finished Goods - TC",
+					"available_to_reserve": 0,
+					"production_required": 1,
+					"bom_no": "BOM-FG-001",
+					"issues": [],
+				}
+			],
+			"available_to_reserve": 0,
+			"production_required": 1,
+		}
+		material_coverage.side_effect = RuntimeError("stock snapshot failed")
+
+		with self.assertRaisesRegex(RuntimeError, "stock snapshot failed"):
+			_evaluate_quick_order(self._normalized_order())
+
+	@patch(
+		"process_simplification.api.shortage.get_bom_items_as_dict",
+		side_effect=frappe.ValidationError("BOM explosion failed"),
+	)
+	def test_material_coverage_marks_only_bom_expansion_errors_for_preflight(self, get_bom_items):
+		from process_simplification.api.shortage import (
+			MaterialCoverageBomExpansionError,
+			calculate_material_coverage,
+		)
+
+		with self.assertRaises(MaterialCoverageBomExpansionError) as raised:
+			calculate_material_coverage(
+				[{"bom_no": "BOM-FG-001", "qty": 1}],
+				"_Test Company",
+				defaults=frappe._dict({"source_warehouse": "Stores - TC"}),
+			)
+
+		self.assertIsInstance(raised.exception.__cause__, frappe.ValidationError)
 
 	def test_review_fingerprint_ignores_check_time_but_detects_material_change(self):
 		from process_simplification.api.quick_order import quick_order_review_fingerprint

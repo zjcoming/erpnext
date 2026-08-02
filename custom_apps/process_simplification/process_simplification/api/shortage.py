@@ -10,6 +10,10 @@ from process_simplification.api.utils import normalize_qty, throw_chinese
 from process_simplification.api.workbench import get_order_workbench
 
 
+class MaterialCoverageBomExpansionError(Exception):
+	"""The requested BOM could not be expanded for material coverage."""
+
+
 def _parse(value):
 	if isinstance(value, str):
 		return parse_json(value)
@@ -152,7 +156,10 @@ def calculate_material_coverage(demands, company: str, need_by_date: str | None 
 		if not demand.get("bom_no") or qty <= 0:
 			continue
 
-		bom_items = get_bom_items_as_dict(demand.bom_no, company, qty=qty, fetch_exploded=1)
+		try:
+			bom_items = get_bom_items_as_dict(demand.bom_no, company, qty=qty, fetch_exploded=1)
+		except Exception as exc:
+			raise MaterialCoverageBomExpansionError(demand.bom_no) from exc
 		for item_code, bom_item in bom_items.items():
 			warehouse = bom_item.get("source_warehouse") or bom_item.get("default_warehouse") or defaults.source_warehouse
 			key = (item_code, warehouse)

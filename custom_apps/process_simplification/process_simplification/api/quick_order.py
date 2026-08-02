@@ -13,7 +13,10 @@ from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry impor
 )
 
 from process_simplification.api.setup import get_company_defaults, get_default_bom
-from process_simplification.api.shortage import calculate_material_coverage
+from process_simplification.api.shortage import (
+	MaterialCoverageBomExpansionError,
+	calculate_material_coverage,
+)
 from process_simplification.api.utils import SimplifiedFlowError, normalize_qty, throw_chinese
 
 
@@ -570,7 +573,7 @@ def _evaluate_quick_order(payload):
 				need_by_date=data.delivery_date,
 				defaults=defaults,
 			)
-		except Exception:
+		except MaterialCoverageBomExpansionError:
 			for demand in demands:
 				blockers.append(
 					_issue(
