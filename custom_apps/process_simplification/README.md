@@ -21,6 +21,20 @@ The lightweight preview is informative only. `确认下单` always runs a comple
 repeats mutable checks. A change in stock, BOM, shortage or commercial validation requires confirmation again.
 Submitting the Sales Order does not reserve stock and does not create Work Orders or purchase documents.
 
+Detailed BOM material risk appears only after `检查库存与缺料`, during confirmation preflight, or during the
+final submit recheck. The result is a timestamped snapshot for decision support; viewing it does not reserve
+finished goods or raw materials and does not create production or purchasing documents. Each product/BOM card
+keeps these quantities separate:
+
+- `当前生产缺口`: finished-goods demand that must be produced after reservable finished-goods stock is applied.
+- `已提采购申请`: on-time, unconverted Purchase Material Request balance, which avoids proposing a duplicate request.
+- `按时在途`: outstanding Purchase Order quantity due by the order's delivery date.
+- `建议新增采购申请`: raw-material gap left after available stock, open purchase requests and on-time purchase
+  orders are applied.
+
+The quick page explains the risk before the owner confirms the Sales Order. Actual procurement remains a later
+action in the order workbench and shortage-purchase flow after the standard Sales Order has been created.
+
 The removed “允许分批发货” checkbox is not replaced by a custom policy. Standard ERPNext fulfillment behavior
 continues to apply; no partial-delivery text is written into terms.
 
