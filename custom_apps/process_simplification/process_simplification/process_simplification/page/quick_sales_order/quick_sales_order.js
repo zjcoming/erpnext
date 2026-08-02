@@ -1,3 +1,250 @@
+function materialStatusMeta(status, translate = (message) => message) {
+	const materialStatusCopy = {
+		ready_now: { label: translate("当前可生产"), indicator: "green" },
+		awaiting_purchase_receipt: { label: translate("待采购到货"), indicator: "blue" },
+		purchase_request_pending: { label: translate("已提采购申请"), indicator: "orange" },
+		new_purchase_required: { label: translate("需新增采购"), indicator: "red" },
+		cannot_calculate: { label: translate("无法判断"), indicator: "gray" },
+	};
+	return materialStatusCopy[status] || materialStatusCopy.cannot_calculate;
+}
+
+function buildMaterialRiskView(result = {}) {
+	const summary = Array.isArray(result.material_coverage) ? result.material_coverage : [];
+	const summaryByMaterial = new Map(
+		summary.map((material) => [`${material.item_code || ""}\u0000${material.warehouse || ""}`, material])
+	);
+	const groups = (Array.isArray(result.material_groups) ? result.material_groups : []).map((group) => {
+		const materials = (Array.isArray(group.materials) ? group.materials : []).map((material) => {
+			const aggregate = summaryByMaterial.get(
+				`${material.item_code || ""}\u0000${material.warehouse || ""}`
+			);
+			return {
+				...material,
+				shared_inventory: Boolean(aggregate && (aggregate.sources || []).length > 1),
+			};
+		});
+		return {
+			...group,
+			materials,
+			has_shortage: materials.some((material) => material.status === "new_purchase_required"),
+		};
+	});
+	return {
+		groups,
+		summary,
+		shortages: Array.isArray(result.shortages) ? result.shortages : [],
+		blockers: Array.isArray(result.blockers) ? result.blockers : [],
+		checked_at: result.checked_at || "",
+		zero_production: Number(result.production_required || 0) <= 0,
+	};
+}
+
+function materialRiskHtml(view, helpers) {
+	const translate = helpers.translate;
+	const escape = (value) => helpers.escapeHtml(String(value ?? ""));
+	const number = (value) => escape(helpers.formatNumber(Number(value || 0)));
+	const label = (code, name) => {
+		const safeCode = escape(code);
+		const safeName = escape(name);
+		return safeName && safeName !== safeCode
+			? `<strong>${safeCode}</strong><small>${safeName}</small>`
+			: `<strong>${safeCode}</strong>`;
+	};
+	const unit = (material) => (material.stock_uom ? ` <small>${escape(material.stock_uom)}</small>` : "");
+	const statusPill = (status) => {
+		const meta = materialStatusMeta(status, translate);
+		return `<span class="indicator-pill ${meta.indicator}">${escape(meta.label)}</span>`;
+	};
+	const banner = view.stale
+		? `<div class="quick-material-risk-banner is-stale" role="status">${escape(
+				translate("订单已修改，以下结果仅供参考，请重新检查")
+		  )}</div>`
+		: view.checking
+		? `<div class="quick-material-risk-banner is-checking" role="status">${escape(
+				translate("正在重新检查")
+		  )}</div>`
+		: "";
+	const blockers = view.blockers.length
+		? `<div class="quick-material-risk-blockers" role="alert"><strong>${escape(
+				translate("当前存在阻止下单的问题")
+		  )}</strong><ul>${view.blockers
+				.map((issue) => `<li>${escape(issue.message)}</li>`)
+				.join("")}</ul></div>`
+		: "";
+	if (view.zero_production) {
+		return `${banner}${blockers}<div class="quick-material-risk-zero">${escape(
+			translate("当前成品库存可覆盖，本单无需展开生产物料")
+		)}</div>`;
+	}
+
+	const groupCards = view.groups
+		.filter((group) => Number(group.production_required || 0) > 0)
+		.map((group) => {
+			const rows = group.materials
+				.map(
+					(material) => `
+						<tr>
+							<td class="quick-material-name">${label(material.item_code, material.item_name)}</td>
+							<td class="quick-material-number">${number(material.bom_qty_per_unit)} / ${number(
+						material.required_qty
+					)}${unit(material)}</td>
+							<td>${escape(material.warehouse || translate("未设置"))}</td>
+							<td class="quick-material-number">${number(material.actual_qty)}</td>
+							<td class="quick-material-number">${number(material.committed_qty)}</td>
+							<td class="quick-material-number">${number(material.available_qty)}${
+						material.shared_inventory
+							? `<small class="quick-shared-stock">${escape(translate("本单汇总库存"))}</small>`
+							: ""
+					}</td>
+							<td class="quick-material-number">${number(material.open_material_request_qty)}</td>
+							<td class="quick-material-number">${number(material.open_purchase_order_qty)}</td>
+							<td class="quick-material-number">${number(material.current_gap_qty)}</td>
+							<td class="quick-material-number">${number(material.shortage_qty)}</td>
+							<td>${statusPill(material.status)}</td>
+						</tr>`
+				)
+				.join("");
+			return `
+				<details class="quick-material-group${
+					group.has_shortage ? " has-shortage" : ""
+				}" data-material-group="${escape(group.row)}"${group.has_shortage ? " open" : ""}>
+					<summary>
+						<div class="quick-material-product">${label(group.item_code, group.item_name)}</div>
+						<div class="quick-material-product-facts">
+							<span>${escape(translate("订单数量"))} <strong>${number(group.qty)}</strong></span>
+							<span>${escape(translate("可预留成品"))} <strong>${number(group.available_to_reserve)}</strong></span>
+							<span>${escape(translate("需生产"))} <strong>${number(group.production_required)}</strong></span>
+							<span>${escape(translate("成品仓"))} <strong>${escape(group.warehouse || translate("未设置"))}</strong></span>
+							<span>${escape(translate("BOM"))} <strong>${escape(group.bom_no || translate("未设置"))}</strong></span>
+						</div>
+						<span class="quick-material-toggle">${escape(
+							group.has_shortage ? translate("收起用料") : translate("查看完整用料")
+						)}</span>
+					</summary>
+					<div class="quick-material-table-wrap">
+						<table class="table quick-material-table">
+							<thead><tr>
+								<th>${escape(translate("物料"))}</th><th>${escape(translate("BOM 单耗/本次需求"))}</th><th>${escape(
+				translate("来源仓库")
+			)}</th><th>${escape(translate("账面"))}</th><th>${escape(translate("已占用"))}</th><th>${escape(
+				translate("本单可用")
+			)}</th><th>${escape(translate("采购申请"))}</th><th>${escape(
+				translate("按时在途")
+			)}</th><th>${escape(translate("当前生产缺口"))}</th><th>${escape(
+				translate("建议新增申请")
+			)}</th><th>${escape(translate("结论"))}</th>
+							</tr></thead>
+							<tbody>${rows}</tbody>
+						</table>
+					</div>
+				</details>`;
+		})
+		.join("");
+
+	const summaryRows = view.summary
+		.map(
+			(material) => `
+				<tr>
+					<td class="quick-material-name">${label(material.item_code, material.item_name)}</td>
+					<td>${escape(material.warehouse || translate("未设置"))}</td>
+					<td class="quick-material-number">${number(material.required_qty)}${unit(material)}</td>
+					<td class="quick-material-number">${number(material.actual_qty)}</td>
+					<td class="quick-material-number">${number(material.committed_qty)}</td>
+					<td class="quick-material-number">${number(material.available_qty)}</td>
+					<td class="quick-material-number">${number(material.open_material_request_qty)}</td>
+					<td class="quick-material-number">${number(material.open_purchase_order_qty)}</td>
+					<td class="quick-material-number">${number(material.current_gap_qty)}</td>
+					<td class="quick-material-number">${number(material.shortage_qty)}</td>
+					<td>${statusPill(material.status)}</td>
+				</tr>`
+		)
+		.join("");
+	const summary = view.summary.length
+		? `<section class="quick-material-procurement" aria-labelledby="quick-material-procurement-title">
+			<div class="quick-material-summary-heading">
+				<h4 id="quick-material-procurement-title">${escape(translate("全单原料与采购汇总"))}</h4>
+				<strong>${escape(translate("预计需新增采购 {0} 项", [view.shortages.length]))}</strong>
+			</div>
+			<p class="text-muted">${escape(translate("共享原料按物料和仓库合并计算，本单汇总库存仅展示一次。"))}</p>
+			<div class="quick-material-table-wrap"><table class="table quick-material-table quick-material-summary-table">
+				<thead><tr><th>${escape(translate("物料"))}</th><th>${escape(translate("来源仓库"))}</th><th>${escape(
+				translate("本单需求")
+		  )}</th><th>${escape(translate("账面"))}</th><th>${escape(translate("已占用"))}</th><th>${escape(
+				translate("本单可用")
+		  )}</th><th>${escape(translate("采购申请"))}</th><th>${escape(
+				translate("按时在途")
+		  )}</th><th>${escape(translate("当前生产缺口"))}</th><th>${escape(
+				translate("建议新增申请")
+		  )}</th><th>${escape(translate("结论"))}</th></tr></thead>
+				<tbody>${summaryRows}</tbody>
+			</table></div>
+		</section>`
+		: `<div class="quick-material-risk-empty">${escape(translate("尚无可用的物料检查结果"))}</div>`;
+
+	return `${banner}${blockers}<div class="quick-material-groups">${groupCards}</div>${summary}`;
+}
+
+function confirmationHtml(result, helpers) {
+	const translate = helpers.translate;
+	const escape = (value) => helpers.escapeHtml(String(value ?? ""));
+	const number = (value) => escape(helpers.formatNumber(Number(value || 0)));
+	const shortages = Array.isArray(result.shortages) ? result.shortages : [];
+	const shortageRows = shortages
+		.slice(0, 5)
+		.map((material) => {
+			const procurementCoverage =
+				Number(material.open_material_request_qty || 0) +
+				Number(material.open_purchase_order_qty || 0);
+			return `<tr><td>${escape(material.item_code)}${
+				material.item_name ? `<small>${escape(material.item_name)}</small>` : ""
+			}</td><td>${escape(material.warehouse || translate("未设置"))}</td><td>${number(
+				material.current_gap_qty
+			)}</td><td>${number(procurementCoverage)}</td><td>${number(material.shortage_qty)}</td></tr>`;
+		})
+		.join("");
+	const extraShortages = Math.max(shortages.length - 5, 0);
+	const shortageDetail = shortageRows
+		? `<div class="quick-confirm-shortages"><strong>${escape(translate("采购缺口明细"))}</strong>
+			<div class="quick-material-table-wrap"><table class="table"><thead><tr><th>${escape(
+				translate("物料")
+			)}</th><th>${escape(translate("来源仓库"))}</th><th>${escape(
+				translate("当前生产缺口")
+		  )}</th><th>${escape(translate("现有采购覆盖"))}</th><th>${escape(
+				translate("建议新增申请")
+		  )}</th></tr></thead><tbody>${shortageRows}</tbody></table></div>
+			${
+				extraShortages
+					? `<p>${escape(translate("另有 {0} 项，请查看页面下方明细", [extraShortages]))}</p>`
+					: ""
+			}</div>`
+		: "";
+	const issues = (result.warnings || []).map((issue) => `<li>${escape(issue.message)}</li>`).join("");
+	return `
+		<div class="quick-confirm-summary">
+			<div><span>${escape(translate("客户"))}</span><strong>${escape(result.customer)}</strong></div>
+			<div><span>${escape(translate("交付日期"))}</span><strong>${escape(result.delivery_date)}</strong></div>
+			<div><span>${escape(translate("订单金额"))}</span><strong>${escape(
+		helpers.formatCurrency(result.grand_total, result.currency)
+	)}</strong></div>
+			<div><span>${escape(translate("可预留 / 需生产"))}</span><strong>${number(
+		result.available_to_reserve
+	)} / ${number(result.production_required)}</strong></div>
+			<div><span>${escape(translate("原料缺料"))}</span><strong>${number(result.shortage_item_count)} ${escape(
+		translate("项")
+	)}</strong></div>
+		</div>
+		${shortageDetail}
+		${
+			issues
+				? `<div class="quick-confirm-warning"><strong>${escape(
+						translate("可以下单，但请留意")
+				  )}</strong><ul class="quick-confirm-issues">${issues}</ul></div>`
+				: ""
+		}
+		<p class="text-muted">${escape(translate("销售订单提交不会自动预留库存、创建生产任务或采购申请。"))}</p>`;
+}
+
 frappe.pages["quick-sales-order"].on_page_load = function (wrapper) {
 	const page = frappe.ui.make_app_page({
 		parent: wrapper,
@@ -52,6 +299,17 @@ frappe.pages["quick-sales-order"].on_page_load = function (wrapper) {
 				<button class="btn btn-link btn-sm add-row add-row-inline">＋ ${__("添加一行")}</button>
 			</section>
 
+			<section class="quick-material-risk" aria-labelledby="quick-material-risk-title" tabindex="-1">
+				<div class="quick-material-risk-heading">
+					<div>
+						<h3 id="quick-material-risk-title">${__("生产与物料风险")}</h3>
+						<p>${__("完成库存与缺料检查后，将按产品 BOM 显示本单用料。")}</p>
+					</div>
+					<span class="quick-material-risk-time">${__("尚未检查")}</span>
+				</div>
+				<div class="quick-material-risk-body quick-material-risk-empty">${__("尚无可用的物料检查结果")}</div>
+			</section>
+
 			<section class="quick-order-guidance" aria-label="${__("快速开单适用范围")}">
 				<strong>${__("什么时候使用标准销售订单？")}</strong>
 				<span>${__("多个交期、同产品分行定价、外币或特殊税费、产品组合、委外、客户供料、序列号或批次等情况。")}</span>
@@ -63,7 +321,11 @@ frappe.pages["quick-sales-order"].on_page_load = function (wrapper) {
 					<div><span>${__("订单金额")}</span><strong data-summary="total">0.00</strong></div>
 					<div><span>${__("可预留成品")}</span><strong data-summary="available">0</strong></div>
 					<div><span>${__("需生产")}</span><strong data-summary="production">0</strong></div>
-					<div><span>${__("缺料项")}</span><strong data-summary="shortage">${__("待检查")}</strong></div>
+					<div><span>${__(
+						"缺料项"
+					)}</span><button type="button" class="quick-summary-shortage-link" data-summary="shortage">${__(
+		"待检查"
+	)}</button></div>
 					<div><span>${__("最近检查")}</span><strong data-summary="checked_at">—</strong></div>
 				</div>
 				<div class="quick-summary-actions">
@@ -83,9 +345,53 @@ frappe.pages["quick-sales-order"].on_page_load = function (wrapper) {
 		previewTimer: null,
 		editSequence: 0,
 		deepResult: null,
+		lastMaterialResult: null,
 		status: "editing",
 		idempotencyKey: null,
 	};
+	const pageHelpers = {
+		translate: __,
+		escapeHtml: frappe.utils.escape_html,
+		formatNumber: (value) => format_number(flt(value), null, 2),
+		formatDate: (value) => frappe.datetime.str_to_user(value),
+		formatCurrency: (value, currency) => format_currency(value, currency),
+	};
+
+	function renderMaterialRisk(result, { stale = false, checking = false } = {}) {
+		const view = buildMaterialRiskView(result);
+		view.stale = stale;
+		view.checking = checking;
+		$root.find(".quick-material-risk").toggleClass("is-stale", stale);
+		$root
+			.find(".quick-material-risk-body")
+			.removeClass("quick-material-risk-empty")
+			.html(materialRiskHtml(view, pageHelpers));
+		$root
+			.find(".quick-material-risk-time")
+			.text(
+				view.checked_at
+					? `${__("检查于")} ${pageHelpers.formatDate(view.checked_at)}`
+					: __("尚未检查")
+			);
+	}
+
+	function rememberMaterialResult(result) {
+		state.lastMaterialResult = { ...result, review_token: null };
+	}
+
+	function setMaterialRiskStale() {
+		const $section = $root.find(".quick-material-risk");
+		if (!$section.find(".quick-material-table, .quick-material-risk-zero").length) return;
+		$section.addClass("is-stale");
+		$section.find(".quick-material-risk-banner").remove();
+		$section
+			.find(".quick-material-risk-body")
+			.prepend(
+				`<div class="quick-material-risk-banner is-stale" role="status">${frappe.utils.escape_html(
+					__("订单已修改，以下结果仅供参考，请重新检查")
+				)}</div>`
+			);
+	}
 
 	function announce(message) {
 		$root.find(".quick-order-announcer").text(message || "");
@@ -336,6 +642,7 @@ frappe.pages["quick-sales-order"].on_page_load = function (wrapper) {
 
 	function markStale({ refreshPreview = false } = {}) {
 		const hadDeepResult = Boolean(state.deepResult);
+		if (hadDeepResult) setMaterialRiskStale();
 		state.editSequence += 1;
 		state.previewSequence += 1;
 		state.deepResult = null;
@@ -437,6 +744,7 @@ frappe.pages["quick-sales-order"].on_page_load = function (wrapper) {
 			return Promise.resolve(null);
 		}
 		setStatus("deep_checking");
+		if (state.lastMaterialResult) renderMaterialRisk(state.lastMaterialResult, { checking: true });
 		$root.find(".deep-check").text(__("正在检查…"));
 		announce(__("正在服务器检查库存、BOM、缺料和订单规则。"));
 		return frappe
@@ -454,7 +762,9 @@ frappe.pages["quick-sales-order"].on_page_load = function (wrapper) {
 				}
 				const result = response.message || {};
 				state.deepResult = result;
+				rememberMaterialResult(result);
 				updateSummary(result);
+				renderMaterialRisk(result, { stale: false });
 				$root.find(".deep-check").text(__("重新检查库存与缺料"));
 				if (!result.can_submit) {
 					showBlocked(result);
@@ -467,42 +777,18 @@ frappe.pages["quick-sales-order"].on_page_load = function (wrapper) {
 			})
 			.catch((error) => {
 				$root.find(".deep-check").text(__("检查库存与缺料"));
+				if (state.lastMaterialResult) renderMaterialRisk(state.lastMaterialResult, { stale: true });
 				if (state.status === "deep_checking") setStatus("editing");
 				throw error;
 			});
 	}
 
-	function confirmationHtml(result) {
-		return `
-			<div class="quick-confirm-summary">
-				<div><span>${__("客户")}</span><strong>${frappe.utils.escape_html(result.customer)}</strong></div>
-				<div><span>${__("交付日期")}</span><strong>${frappe.utils.escape_html(result.delivery_date)}</strong></div>
-				<div><span>${__("订单金额")}</span><strong>${format_currency(
-			result.grand_total,
-			result.currency
-		)}</strong></div>
-				<div><span>${__("可预留 / 需生产")}</span><strong>${format_number(
-			result.available_to_reserve,
-			null,
-			2
-		)} / ${format_number(result.production_required, null, 2)}</strong></div>
-				<div><span>${__("原料缺料")}</span><strong>${cint(result.shortage_item_count)} ${__("项")}</strong></div>
-			</div>
-			${
-				result.warnings?.length
-					? `<div class="quick-confirm-warning"><strong>${__(
-							"可以下单，但请留意"
-					  )}</strong>${renderIssues(result.warnings)}</div>`
-					: ""
-			}
-			<p class="text-muted">${__("销售订单提交不会自动预留库存、创建生产任务或采购申请。")}</p>
-		`;
-	}
-
 	function showConfirmation(result, payload, editSequence = state.editSequence) {
 		const dialog = new frappe.ui.Dialog({
 			title: __("确认这张销售订单"),
-			fields: [{ fieldname: "summary", fieldtype: "HTML", options: confirmationHtml(result) }],
+			fields: [
+				{ fieldname: "summary", fieldtype: "HTML", options: confirmationHtml(result, pageHelpers) },
+			],
 			primary_action_label: __("确认创建销售订单"),
 			primary_action: () => submitOrder(dialog, result, payload, editSequence),
 		});
@@ -540,8 +826,10 @@ frappe.pages["quick-sales-order"].on_page_load = function (wrapper) {
 				if (submitted.status === "reconfirmation_required") {
 					dialog.hide();
 					state.deepResult = submitted;
+					rememberMaterialResult(submitted);
 					state.idempotencyKey = null;
 					updateSummary(submitted);
+					renderMaterialRisk(submitted, { stale: false });
 					setStatus("reconfirmation_required");
 					frappe.msgprint({
 						title: __("情况已变化，请重新确认"),
@@ -553,6 +841,9 @@ frappe.pages["quick-sales-order"].on_page_load = function (wrapper) {
 				}
 				if (submitted.status === "blocked") {
 					dialog.hide();
+					state.deepResult = submitted;
+					rememberMaterialResult(submitted);
+					renderMaterialRisk(submitted, { stale: false });
 					showBlocked(submitted);
 					return;
 				}
@@ -592,6 +883,11 @@ frappe.pages["quick-sales-order"].on_page_load = function (wrapper) {
 	});
 	$root.on("click", ".deep-check", () => runPreflight().catch(() => {}));
 	$root.on("click", ".confirm-order", () => runPreflight({ openConfirmation: true }).catch(() => {}));
+	$root.on("click", ".quick-summary-shortage-link", () => {
+		const section = $root.find(".quick-material-risk").get(0);
+		section?.scrollIntoView({ behavior: "smooth", block: "start" });
+		section?.focus({ preventScroll: true });
+	});
 	$root.on("click", ".standard-sales-order", () => {
 		frappe.new_doc("Sales Order", {
 			customer: fields.customer.get_value(),
@@ -603,3 +899,12 @@ frappe.pages["quick-sales-order"].on_page_load = function (wrapper) {
 	page.clear_actions();
 	loadContext();
 };
+
+if (typeof module !== "undefined" && module.exports) {
+	module.exports = {
+		materialStatusMeta,
+		buildMaterialRiskView,
+		materialRiskHtml,
+		confirmationHtml,
+	};
+}
