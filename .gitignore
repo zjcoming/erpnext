@@ -30,3 +30,5 @@ development/frappe-bench/
 development/sites/
 development/logs/
 
+# Local agent worktrees
+.worktrees/
