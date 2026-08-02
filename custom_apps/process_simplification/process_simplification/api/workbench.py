@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 
 import frappe
 from frappe import _
@@ -23,6 +24,38 @@ from process_simplification.api.utils import (
 	remaining_qty,
 	row_to_dict,
 )
+
+
+@dataclass(frozen=True)
+class ProductionQuantities:
+	reserved_qty: float
+	available_to_reserve: float
+	finished_stock_coverage_qty: float
+	production_required_qty: float
+	unplanned_production_qty: float
+	overplanned_qty: float
+
+
+def calculate_production_quantities(
+	pending_qty: float,
+	reserved_qty: float,
+	available_to_reserve: float,
+	active_work_order_qty: float,
+) -> ProductionQuantities:
+	pending_qty = max(flt(pending_qty), 0)
+	reserved_qty = min(max(flt(reserved_qty), 0), pending_qty)
+	available_to_reserve = min(max(flt(available_to_reserve), 0), pending_qty - reserved_qty)
+	finished_stock_coverage_qty = reserved_qty + available_to_reserve
+	production_required_qty = max(pending_qty - finished_stock_coverage_qty, 0)
+	active_work_order_qty = max(flt(active_work_order_qty), 0)
+	return ProductionQuantities(
+		reserved_qty=reserved_qty,
+		available_to_reserve=available_to_reserve,
+		finished_stock_coverage_qty=finished_stock_coverage_qty,
+		production_required_qty=production_required_qty,
+		unplanned_production_qty=max(production_required_qty - active_work_order_qty, 0),
+		overplanned_qty=max(active_work_order_qty - production_required_qty, 0),
+	)
 
 
 def _remaining_reserved_qty(sre) -> float:
@@ -121,7 +154,7 @@ def get_material_status(item_code: str) -> str:
 	return "未检查" if get_default_bom(item_code) else "不涉及生产"
 
 
-def _status_and_actions(row: WorkbenchRow, item_code: str, warehouse: str | None, has_bom: bool):
+def _status_and_actions(row: WorkbenchRow, has_bom: bool):
 	if row.unsupported:
 		row.status = "不支持"
 		row.next_actions = [action("查看标准订单", "view_sales_order")]
@@ -141,21 +174,20 @@ def _status_and_actions(row: WorkbenchRow, item_code: str, warehouse: str | None
 			row.status = "完工待预留"
 		row.next_actions.append(action("预留完工成品", "reserve_completed_stock"))
 
-	if row.uncovered_qty > 0:
-		available_qty = get_available_qty_to_reserve(item_code, warehouse) if warehouse else 0
-		if available_qty > 0:
+	if row.pending_qty > row.reserved_qty:
+		if row.available_to_reserve > 0:
 			if row.status == "待处理":
 				row.status = "待预留"
 			row.next_actions.append(action("预留库存", "reserve_stock"))
-		if has_bom:
-			if row.status == "待处理":
-				row.status = "待生产"
-			row.next_actions.append(action("创建生产任务", "create_work_order"))
 
-	if row.active_work_order_qty > 0:
-		if row.status == "待处理":
+	if row.unplanned_production_qty > 0 or row.active_work_order_qty > 0 or row.overplanned_qty > 0:
+		if row.unplanned_production_qty > 0 and not has_bom:
+			row.status = "生产资料异常"
+		elif row.unplanned_production_qty > 0:
+			row.status = "待安排生产"
+		elif row.active_work_order_qty > 0 and row.status == "待处理":
 			row.status = "生产中"
-		row.next_actions.append(action("查看生产任务", "view_work_orders"))
+		row.next_actions.append(action("安排生产", "open_production_workbench"))
 
 	if not row.next_actions:
 		row.status = row.status if row.status != "待处理" else "待处理"
@@ -179,13 +211,21 @@ def get_order_workbench(sales_order: str):
 		delivered_qty = delivered_stock_qty(item)
 		pending_qty = pending_delivery_qty(item)
 		reserved_qty = get_effective_reserved_qty(so.name, item.name)
+		available_to_reserve = (
+			get_available_qty_to_reserve(item.item_code, item.warehouse) if item.warehouse else 0
+		)
 		work_orders = get_work_orders(so.name, item.name, item.item_code)
 		active_work_order_qty = get_active_work_order_qty(work_orders)
+		production = calculate_production_quantities(
+			pending_qty,
+			reserved_qty,
+			available_to_reserve,
+			active_work_order_qty,
+		)
 		completed_qty = get_completed_qty(work_orders)
 		manufacture_entries = get_manufacture_stock_entries(work_orders)
 		completed_reserved_qty = get_completed_reserved_qty(item.name, manufacture_entries)
 		completed_unreserved_qty = remaining_qty(completed_qty, completed_reserved_qty)
-		uncovered_qty = remaining_qty(pending_qty, reserved_qty, active_work_order_qty)
 		has_bom = bool(get_default_bom(item.item_code))
 
 		row = WorkbenchRow(
@@ -199,18 +239,23 @@ def get_order_workbench(sales_order: str):
 			order_qty=order_qty,
 			delivered_qty=delivered_qty,
 			pending_qty=pending_qty,
-			reserved_qty=reserved_qty,
+			reserved_qty=production.reserved_qty,
+			available_to_reserve=production.available_to_reserve,
+			finished_stock_coverage_qty=production.finished_stock_coverage_qty,
+			production_required_qty=production.production_required_qty,
 			active_work_order_qty=active_work_order_qty,
+			unplanned_production_qty=production.unplanned_production_qty,
+			overplanned_qty=production.overplanned_qty,
 			completed_qty=completed_qty,
 			completed_unreserved_qty=completed_unreserved_qty,
-			uncovered_qty=uncovered_qty,
+			uncovered_qty=production.unplanned_production_qty,
 			material_status=get_material_status(item.item_code),
 			unsupported=item.item_code in duplicates,
 			unsupported_reason="同一销售订单中存在重复产品行，简化流程暂不自动处理。"
 			if item.item_code in duplicates
 			else None,
 		)
-		_status_and_actions(row, item.item_code, item.warehouse, has_bom)
+		_status_and_actions(row, has_bom)
 		rows.append(row_to_dict(row))
 
 	return {
@@ -260,11 +305,19 @@ def _fulfillment_status(direct_ship: bool, needs_production: bool, uncovered_qty
 
 
 def _row_uncovered_qty(row) -> float:
+	if "unplanned_production_qty" in row:
+		return _positive_qty(row, "unplanned_production_qty")
 	return remaining_qty(
 		_positive_qty(row, "pending_qty"),
 		min(_positive_qty(row, "reserved_qty"), _positive_qty(row, "pending_qty")),
 		_positive_qty(row, "active_work_order_qty"),
 	)
+
+
+def _row_finished_stock_coverage(row) -> float:
+	if "finished_stock_coverage_qty" in row:
+		return min(_positive_qty(row, "finished_stock_coverage_qty"), _positive_qty(row, "pending_qty"))
+	return min(_positive_qty(row, "reserved_qty"), _positive_qty(row, "pending_qty"))
 
 
 def _fulfillment_risk(
@@ -278,11 +331,9 @@ def _fulfillment_risk(
 	missing_production_base = any(
 		_row_uncovered_qty(row) > 0 and row.get("material_status") == "不涉及生产" for row in pending_rows
 	)
-	production_uncovered = any(
-		_row_uncovered_qty(row) > 0 and _has_action(row, "create_work_order") for row in pending_rows
-	)
+	production_uncovered = any(_row_uncovered_qty(row) > 0 for row in pending_rows)
 	active_production = any(_positive_qty(row, "active_work_order_qty") > 0 for row in pending_rows)
-	partial_stock = 0 < reserved_qty < pending_qty
+	partial_stock = 0 < sum(_row_finished_stock_coverage(row) for row in pending_rows) < pending_qty
 
 	# Ordered candidates mirror the approved single-highest-risk hierarchy.
 	candidates = (
@@ -318,19 +369,23 @@ def build_fulfillment_order(order, rows, today=None) -> dict:
 	reserved_qty = sum(
 		min(_positive_qty(row, "reserved_qty"), _positive_qty(row, "pending_qty")) for row in pending_rows
 	)
+	available_to_reserve = sum(_positive_qty(row, "available_to_reserve") for row in pending_rows)
+	finished_stock_coverage_qty = sum(_row_finished_stock_coverage(row) for row in pending_rows)
 	active_work_order_qty = sum(_positive_qty(row, "active_work_order_qty") for row in pending_rows)
-	uncovered_qty = sum(
-		remaining_qty(
-			_positive_qty(row, "pending_qty"),
-			min(_positive_qty(row, "reserved_qty"), _positive_qty(row, "pending_qty")),
-			_positive_qty(row, "active_work_order_qty"),
-		)
+	production_required_qty = sum(
+		_positive_qty(row, "production_required_qty")
+		if "production_required_qty" in row
+		else remaining_qty(_positive_qty(row, "pending_qty"), _row_finished_stock_coverage(row))
 		for row in pending_rows
 	)
+	uncovered_qty = sum(_row_uncovered_qty(row) for row in pending_rows)
 	needs_production = any(
-		_positive_qty(row, "active_work_order_qty") > 0 or _has_action(row, "create_work_order") for row in pending_rows
+		_positive_qty(row, "active_work_order_qty") > 0
+		or _positive_qty(row, "production_required_qty") > 0
+		or _row_uncovered_qty(row) > 0
+		for row in pending_rows
 	)
-	direct_ship = bool(pending_rows) and reserved_qty == pending_qty and not needs_production
+	direct_ship = bool(pending_rows) and finished_stock_coverage_qty == pending_qty and not needs_production
 	status_code, status_label = _fulfillment_status(direct_ship, needs_production, uncovered_qty)
 	risk_level, risk_score, risk_label = _fulfillment_risk(
 		delivery_timing, pending_rows, direct_ship, pending_qty, reserved_qty
@@ -348,7 +403,11 @@ def build_fulfillment_order(order, rows, today=None) -> dict:
 		"delivered_qty": sum(flt(row.get("delivered_qty") or 0) for row in rows),
 		"pending_qty": pending_qty,
 		"reserved_qty": reserved_qty,
+		"available_to_reserve": available_to_reserve,
+		"finished_stock_coverage_qty": finished_stock_coverage_qty,
+		"production_required_qty": production_required_qty,
 		"active_work_order_qty": active_work_order_qty,
+		"unplanned_production_qty": uncovered_qty,
 		"completed_qty": sum(flt(row.get("completed_qty") or 0) for row in rows),
 		"uncovered_qty": uncovered_qty,
 		"delivery_timing": delivery_timing,

@@ -37,7 +37,12 @@ class WorkbenchRow:
 	delivered_qty: float
 	pending_qty: float
 	reserved_qty: float = 0
+	available_to_reserve: float = 0
+	finished_stock_coverage_qty: float = 0
+	production_required_qty: float = 0
 	active_work_order_qty: float = 0
+	unplanned_production_qty: float = 0
+	overplanned_qty: float = 0
 	completed_qty: float = 0
 	completed_unreserved_qty: float = 0
 	uncovered_qty: float = 0

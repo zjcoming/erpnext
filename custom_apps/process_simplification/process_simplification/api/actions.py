@@ -120,7 +120,10 @@ def reserve_stock(sales_order: str, sales_order_item: str, qty: float | None = N
 def create_work_order(sales_order: str, sales_order_item: str, qty: float | None = None):
 	frappe.has_permission("Work Order", "create", throw=True)
 	row = _row_from_workbench(sales_order, sales_order_item)
-	if row.uncovered_qty <= 0:
+	unplanned_qty = row.get("unplanned_production_qty")
+	if unplanned_qty is None:
+		unplanned_qty = row.get("uncovered_qty")
+	if not unplanned_qty or unplanned_qty <= 0:
 		throw_chinese("该订单行已经被库存预留或生产任务覆盖，不能重复创建生产任务。")
 
 	item = get_sales_order_item(sales_order_item)
@@ -135,8 +138,8 @@ def create_work_order(sales_order: str, sales_order_item: str, qty: float | None
 		defaults=defaults,
 		sales_order_item_warehouse=item.warehouse,
 	)
-	work_order_qty = normalize_qty(qty) if qty else row.uncovered_qty
-	if work_order_qty <= 0 or work_order_qty > row.uncovered_qty:
+	work_order_qty = normalize_qty(qty) if qty else unplanned_qty
+	if work_order_qty <= 0 or work_order_qty > unplanned_qty:
 		throw_chinese("本次生产数量不能超过当前尚未覆盖数量。")
 
 	wo = make_work_order(

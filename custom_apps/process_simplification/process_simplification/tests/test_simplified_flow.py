@@ -9,6 +9,44 @@ from process_simplification.api.workbench import _remaining_reserved_qty, get_ac
 
 
 class TestSimplifiedFlow(UnitTestCase):
+	def test_production_quantities_do_not_duplicate_available_finished_stock(self):
+		from process_simplification.api import workbench
+
+		self.assertTrue(
+			hasattr(workbench, "calculate_production_quantities"),
+			"production quantity calculator must exist",
+		)
+		result = workbench.calculate_production_quantities(
+			pending_qty=100,
+			reserved_qty=20,
+			available_to_reserve=30,
+			active_work_order_qty=40,
+		)
+
+		self.assertEqual(result.finished_stock_coverage_qty, 50)
+		self.assertEqual(result.production_required_qty, 50)
+		self.assertEqual(result.unplanned_production_qty, 10)
+		self.assertEqual(result.overplanned_qty, 0)
+
+	def test_overplanned_work_order_is_reported_without_negative_unplanned_qty(self):
+		from process_simplification.api import workbench
+
+		self.assertTrue(
+			hasattr(workbench, "calculate_production_quantities"),
+			"production quantity calculator must exist",
+		)
+		result = workbench.calculate_production_quantities(
+			pending_qty=10,
+			reserved_qty=0,
+			available_to_reserve=0,
+			active_work_order_qty=15,
+		)
+
+		self.assertEqual(result.finished_stock_coverage_qty, 0)
+		self.assertEqual(result.production_required_qty, 10)
+		self.assertEqual(result.unplanned_production_qty, 0)
+		self.assertEqual(result.overplanned_qty, 5)
+
 	def test_direct_stock_order_is_included_and_marked_ready_to_ship(self):
 		from process_simplification.api.workbench import build_fulfillment_order
 
@@ -156,9 +194,9 @@ class TestSimplifiedFlow(UnitTestCase):
 				("blue", 60, "生产中"),
 			),
 			(
-				"partial stock coverage",
+				"partial stock with no work order remains production uncovered",
 				{**base_row, "reserved_qty": 5},
-				("orange", 40, "库存部分覆盖"),
+				("orange", 70, "生产未覆盖"),
 			),
 			(
 				"ready to ship",
@@ -244,7 +282,7 @@ class TestSimplifiedFlow(UnitTestCase):
 				"total_orders": 6,
 				"overdue_orders": 1,
 				"due_within_7_days": 4,
-				"needs_production_orders": 0,
+				"needs_production_orders": 1,
 				"direct_ship_orders": 5,
 			},
 		)
