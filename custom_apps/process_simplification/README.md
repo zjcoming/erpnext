@@ -71,9 +71,9 @@ documents. Review tokens expire after 15 minutes.
 `订单履约总览` is the owner-facing, sales-to-delivery risk view. It reads every submitted Sales Order that is not
 closed, completed, or fully delivered, recalculates its remaining fulfilment from the standard order workbench data,
 and includes direct-stock orders as well as orders with production work. The default order is the earliest outstanding
-delivery date first, then the higher risk first; overdue, due-soon, stock/production state, and risk filters narrow the
-same read model. Expanding an order shows its mixed item states and existing line-level workbench actions; the route
-can focus the selected Sales Order.
+delivery date first, then the higher risk first, then the Sales Order creation time ascending; overdue, due-soon,
+stock/production state, and risk filters narrow the same read model. Expanding an order shows its mixed item states and
+existing line-level workbench actions; the route can focus the selected Sales Order.
 
 Loading, refreshing, filtering, expanding, and exporting the overview are read-only. They never reserve stock, create
 Work Orders, create purchase documents, or submit delivery documents. Row-level actions remain explicit in the

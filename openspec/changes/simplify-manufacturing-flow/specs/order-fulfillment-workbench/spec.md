@@ -131,7 +131,8 @@ direct-stock orders and orders whose items have mixed fulfilment states.
 
 - **WHEN** the overview returns unfinished orders with different delivery dates and risk levels
 - **THEN** it orders dated orders by earliest outstanding delivery date first, breaks equal dates by higher risk first,
-  and places orders without a delivery date after dated orders
+  breaks equal-date and equal-risk ties by Sales Order creation time ascending, and places orders without a delivery date
+  after dated orders
 
 #### Scenario: Focus an order through the route
 
