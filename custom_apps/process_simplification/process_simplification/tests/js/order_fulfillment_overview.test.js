@@ -8,6 +8,7 @@ const {
 	filterFulfillmentOrders,
 	overviewSummary,
 	orderOverviewHtml,
+	fulfillmentCsv,
 } = require("../../process_simplification/page/order_workbench/order_workbench.js");
 
 const escapeHtml = (value) =>
@@ -115,4 +116,19 @@ test("order HTML escapes customer and item labels", () => {
 
 	assert.doesNotMatch(html, /<img/);
 	assert.match(html, /&lt;img/);
+});
+
+test("expanded product rows include completed quantity", () => {
+	const html = orderOverviewHtml(order("SO-COMPLETED"), helpers);
+
+	assert.match(html, /已完工/);
+	assert.match(html, /1\.00/);
+});
+
+test("CSV uses Chinese headers and filename", () => {
+	const csv = fulfillmentCsv([order("SO-CSV")]);
+
+	assert.equal(csv.filename, "订单履约总览.csv");
+	assert.match(csv.content, /^\uFEFF"销售订单","客户","最早交期","订购","已发","待交","已预留","生产中","已完工","未覆盖","风险"/);
+	assert.match(csv.content, /"SO-CSV"/);
 });

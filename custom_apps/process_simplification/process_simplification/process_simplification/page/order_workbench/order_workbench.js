@@ -38,6 +38,27 @@ function overviewSummary(orders) {
 	);
 }
 
+function fulfillmentCsv(orders) {
+	const quote = (value) => `"${String(value ?? "").replaceAll('"', '""')}"`;
+	const lines = [
+		["销售订单", "客户", "最早交期", "订购", "已发", "待交", "已预留", "生产中", "已完工", "未覆盖", "风险"],
+		...(orders || []).map((order) => [
+			order.name,
+			order.customer_name || order.customer,
+			order.delivery_date,
+			order.order_qty,
+			order.delivered_qty,
+			order.pending_qty,
+			order.reserved_qty,
+			order.active_work_order_qty,
+			order.completed_qty,
+			order.uncovered_qty,
+			order.risk_label,
+		]),
+	].map((row) => row.map(quote).join(","));
+	return { filename: "订单履约总览.csv", content: "\uFEFF" + lines.join("\r\n") };
+}
+
 function orderOverviewHtml(order, helpers) {
 	const t = helpers.translate;
 	const esc = helpers.escapeHtml;
@@ -60,6 +81,7 @@ function orderOverviewHtml(order, helpers) {
 					<td class="fulfillment-number">${number(row.pending_qty)}</td>
 					<td class="fulfillment-number">${number(row.reserved_qty)}</td>
 					<td class="fulfillment-number">${number(row.active_work_order_qty)}</td>
+					<td class="fulfillment-number">${number(row.completed_qty)}</td>
 					<td class="fulfillment-number">${number(row.uncovered_qty)}</td>
 					<td>${esc(row.material_status || "")}</td>
 					<td><span class="indicator-pill gray">${esc(row.status || "")}</span>${row.unsupported_reason ? `<br><small>${esc(row.unsupported_reason)}</small>` : ""}</td>
@@ -88,7 +110,7 @@ function orderOverviewHtml(order, helpers) {
 				</div>
 				<div class="fulfillment-item-table-wrap">
 					<table class="table table-bordered fulfillment-item-table">
-						<thead><tr><th>${esc(t("产品"))}</th><th>${esc(t("订购"))}</th><th>${esc(t("已发"))}</th><th>${esc(t("待交"))}</th><th>${esc(t("已预留"))}</th><th>${esc(t("生产中"))}</th><th>${esc(t("未覆盖"))}</th><th>${esc(t("原料"))}</th><th>${esc(t("状态"))}</th><th>${esc(t("下一步"))}</th></tr></thead>
+						<thead><tr><th>${esc(t("产品"))}</th><th>${esc(t("订购"))}</th><th>${esc(t("已发"))}</th><th>${esc(t("待交"))}</th><th>${esc(t("已预留"))}</th><th>${esc(t("生产中"))}</th><th>${esc(t("已完工"))}</th><th>${esc(t("未覆盖"))}</th><th>${esc(t("原料"))}</th><th>${esc(t("状态"))}</th><th>${esc(t("下一步"))}</th></tr></thead>
 						<tbody>${itemRows}</tbody>
 					</table>
 				</div>
@@ -96,7 +118,7 @@ function orderOverviewHtml(order, helpers) {
 		</details>`;
 }
 
-const fulfillmentOverviewApi = { filterFulfillmentOrders, overviewSummary, orderOverviewHtml };
+const fulfillmentOverviewApi = { filterFulfillmentOrders, overviewSummary, fulfillmentCsv, orderOverviewHtml };
 
 if (typeof module !== "undefined" && module.exports) {
 	module.exports = fulfillmentOverviewApi;
@@ -257,16 +279,13 @@ if (typeof frappe !== "undefined") {
 		}
 
 		function exportVisibleOrders() {
-			const quote = (value) => `"${String(value ?? "").replaceAll('"', '""')}"`;
-			const lines = [
-				["Sales Order", "Customer", "Earliest Delivery", "Ordered", "Delivered", "Pending", "Reserved", "In Production", "Uncovered", "Risk"],
-				...visibleOrders().map((order) => [order.name, order.customer_name || order.customer, order.delivery_date, order.order_qty, order.delivered_qty, order.pending_qty, order.reserved_qty, order.active_work_order_qty, order.uncovered_qty, order.risk_label]),
-			].map((row) => row.map(quote).join(","));
+			const csv = fulfillmentCsv(visibleOrders());
 			const link = document.createElement("a");
-			link.href = URL.createObjectURL(new Blob(["\uFEFF" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" }));
-			link.download = "order-fulfillment-overview.csv";
+			const url = URL.createObjectURL(new Blob([csv.content], { type: "text/csv;charset=utf-8" }));
+			link.href = url;
+			link.download = csv.filename;
 			link.click();
-			URL.revokeObjectURL(link.href);
+			setTimeout(() => URL.revokeObjectURL(url), 0);
 		}
 
 		$root.on("input change", "[data-filter]", (event) => {
