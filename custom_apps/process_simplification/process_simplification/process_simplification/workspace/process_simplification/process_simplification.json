@@ -34,7 +34,7 @@
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "订单工作台",
+   "label": "订单履约总览",
    "link_count": 0,
    "link_to": "order-workbench",
    "link_type": "Page",

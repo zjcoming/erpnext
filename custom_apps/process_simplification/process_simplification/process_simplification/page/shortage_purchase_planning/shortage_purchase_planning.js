@@ -14,7 +14,7 @@ frappe.pages["shortage-purchase-planning"].on_page_load = function (wrapper) {
 			</div>
 			<div class="form-section selected-wrapper">
 				<h5>${__("待检查订单明细")}</h5>
-				<div class="selected-rows text-muted">${__("从订单工作台选择订单行，或输入销售订单后读取。")}</div>
+				<div class="selected-rows text-muted">${__("从订单履约总览选择订单行，或输入销售订单后读取。")}</div>
 			</div>
 			<div class="form-section">
 				<h5>${__("缺料结果")}</h5>
