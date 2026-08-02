@@ -253,7 +253,7 @@ class TestQuickOrderV2(UnitTestCase):
 
 	@patch("process_simplification.api.quick_order._validate_commercial_rules", return_value=[])
 	@patch("process_simplification.api.quick_order._build_sales_order")
-	@patch("process_simplification.api.quick_order.calculate_material_shortages")
+	@patch("process_simplification.api.quick_order.calculate_material_coverage")
 	@patch("process_simplification.api.quick_order.preview_quick_order_items")
 	@patch("process_simplification.api.quick_order._customer_po_issue", return_value=None)
 	@patch("process_simplification.api.quick_order._validate_customer", return_value=[])
@@ -266,7 +266,7 @@ class TestQuickOrderV2(UnitTestCase):
 		validate_customer,
 		customer_po_issue,
 		preview,
-		material_shortages,
+		material_coverage,
 		build_sales_order,
 		commercial_rules,
 	):
@@ -280,6 +280,8 @@ class TestQuickOrderV2(UnitTestCase):
 				{
 					"row": 1,
 					"item_code": "_Test Item",
+					"item_name": "Test Finished Good",
+					"qty": 10,
 					"warehouse": "Finished Goods - TC",
 					"available_to_reserve": 0,
 					"production_required": 1,
@@ -298,7 +300,39 @@ class TestQuickOrderV2(UnitTestCase):
 			"available_to_reserve": 0,
 			"production_required": 1,
 		}
-		material_shortages.return_value = [{"item_code": "RM-001", "shortage_qty": 2}]
+		material_coverage.return_value = frappe._dict(
+			{
+				"materials": [
+					{
+						"item_code": "RM-001",
+						"item_name": "Raw Material",
+						"warehouse": "Stores - TC",
+						"required_qty": 20,
+						"available_qty": 15,
+						"open_material_request_qty": 0,
+						"open_purchase_order_qty": 0,
+						"shortage_qty": 5,
+						"status": "new_purchase_required",
+						"sources": [
+							{
+								"row": 1,
+								"finished_item": "_Test Item",
+								"production_qty": 1,
+								"bom_no": "BOM-_Test Item-001",
+								"required_qty": 20,
+								"bom_qty_per_unit": 20,
+							}
+						],
+					}
+				],
+				"shortages": [
+					{
+						"item_code": "RM-001",
+						"shortage_qty": 5,
+					}
+				],
+			}
+		)
 		order = MagicMock()
 		order.grand_total = 10
 		order.currency = "CNY"
@@ -312,6 +346,72 @@ class TestQuickOrderV2(UnitTestCase):
 			{"FINISHED_GOODS_SHORTAGE", "RAW_MATERIAL_SHORTAGE"},
 		)
 		self.assertEqual(result["shortage_item_count"], 1)
+		self.assertEqual(result["material_groups"][0]["item_code"], "_Test Item")
+		self.assertEqual(result["material_groups"][0]["bom_no"], "BOM-_Test Item-001")
+		self.assertEqual(result["material_groups"][0]["materials"][0]["required_qty"], 20)
+		self.assertEqual(result["material_coverage"][0]["shortage_qty"], 5)
+
+	@patch("process_simplification.api.quick_order._validate_commercial_rules", return_value=[])
+	@patch("process_simplification.api.quick_order._build_sales_order")
+	@patch("process_simplification.api.quick_order.calculate_material_coverage")
+	@patch("process_simplification.api.quick_order.preview_quick_order_items")
+	@patch("process_simplification.api.quick_order._customer_po_issue", return_value=None)
+	@patch("process_simplification.api.quick_order._validate_customer", return_value=[])
+	@patch("process_simplification.api.quick_order.get_company_defaults")
+	@patch("process_simplification.api.quick_order.frappe.has_permission")
+	def test_material_without_source_warehouse_blocks_its_finished_good_row(
+		self,
+		has_permission,
+		get_company_defaults,
+		validate_customer,
+		customer_po_issue,
+		preview,
+		material_coverage,
+		build_sales_order,
+		commercial_rules,
+	):
+		from process_simplification.api.quick_order import _evaluate_quick_order
+
+		get_company_defaults.return_value = frappe._dict({"company": "_Test Company"})
+		preview.return_value = {
+			"rows": [
+				{
+					"row": 1,
+					"item_code": "FG-001",
+					"item_name": "Finished Good",
+					"qty": 1,
+					"warehouse": "Finished Goods - TC",
+					"available_to_reserve": 0,
+					"production_required": 1,
+					"bom_no": "BOM-FG-001",
+					"issues": [],
+				}
+			],
+			"available_to_reserve": 0,
+			"production_required": 1,
+		}
+		material_coverage.return_value = frappe._dict(
+			{
+				"materials": [
+					{
+						"item_code": "RM-001",
+						"warehouse": None,
+						"status": "cannot_calculate",
+						"sources": [{"row": 1, "required_qty": 1}],
+					}
+				],
+				"shortages": [],
+			}
+		)
+
+		result = _evaluate_quick_order(self._normalized_order())
+
+		self.assertFalse(result["can_submit"])
+		self.assertIn(
+			("RAW_MATERIAL_WAREHOUSE_MISSING", "line", 1),
+			{(issue["code"], issue["scope"], issue["row"]) for issue in result["blockers"]},
+		)
+		self.assertEqual(result["shortage_item_count"], 0)
 
 	def test_review_fingerprint_ignores_check_time_but_detects_material_change(self):
 		from process_simplification.api.quick_order import quick_order_review_fingerprint
@@ -324,10 +424,25 @@ class TestQuickOrderV2(UnitTestCase):
 			"shortage_item_count": 2,
 			"blockers": [],
 			"warnings": [{"code": "RAW_MATERIAL_SHORTAGE"}],
+			"material_coverage": [
+				{
+					"item_code": "RM-001",
+					"warehouse": "Stores - TC",
+					"required_qty": 10,
+					"available_qty": 5,
+					"open_material_request_qty": 0,
+					"open_purchase_order_qty": 0,
+					"shortage_qty": 5,
+					"status": "new_purchase_required",
+				}
+			],
 			"checked_at": "2026-08-01 10:00:00",
 		}
 		later = {**base, "checked_at": "2026-08-01 10:01:00"}
-		changed = {**later, "production_required": 8}
+		changed = {
+			**later,
+			"material_coverage": [{**later["material_coverage"][0], "available_qty": 4}],
+		}
 
 		self.assertEqual(quick_order_review_fingerprint(base), quick_order_review_fingerprint(later))
 		self.assertNotEqual(quick_order_review_fingerprint(base), quick_order_review_fingerprint(changed))

@@ -13,7 +13,7 @@ from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry impor
 )
 
 from process_simplification.api.setup import get_company_defaults, get_default_bom
-from process_simplification.api.shortage import calculate_material_shortages
+from process_simplification.api.shortage import calculate_material_coverage
 from process_simplification.api.utils import SimplifiedFlowError, normalize_qty, throw_chinese
 
 
@@ -509,6 +509,19 @@ def quick_order_review_fingerprint(result) -> str:
 			}
 			for row in result.get("rows") or []
 		],
+		"material_coverage": [
+			{
+				"item_code": row.get("item_code"),
+				"warehouse": row.get("warehouse"),
+				"required_qty": normalize_qty(row.get("required_qty")),
+				"available_qty": normalize_qty(row.get("available_qty")),
+				"open_material_request_qty": normalize_qty(row.get("open_material_request_qty")),
+				"open_purchase_order_qty": normalize_qty(row.get("open_purchase_order_qty")),
+				"shortage_qty": normalize_qty(row.get("shortage_qty")),
+				"status": row.get("status"),
+			}
+			for row in result.get("material_coverage") or []
+		],
 	}
 	return _canonical_hash(stable)
 
@@ -537,16 +550,69 @@ def _evaluate_quick_order(payload):
 			"bom_no": row.get("bom_no"),
 			"qty": row.get("production_required"),
 			"source": {
+				"row": row.get("row"),
 				"sales_order": "快速开单预检",
 				"sales_order_item": "第 {0} 行".format(row.get("row")),
 				"finished_item": row.get("item_code"),
-				"qty": row.get("production_required"),
+				"production_qty": row.get("production_required"),
+				"bom_no": row.get("bom_no"),
 			},
 		}
 		for row in preview["rows"]
 		if row.get("production_required") > 0 and row.get("bom_no")
 	]
-	shortages = calculate_material_shortages(demands, company, defaults) if company and demands else []
+	coverage = (
+		calculate_material_coverage(
+			demands,
+			company,
+			need_by_date=data.delivery_date,
+			defaults=defaults,
+		)
+		if company and demands
+		else frappe._dict({"materials": [], "shortages": []})
+	)
+	material_coverage = coverage.get("materials") or []
+	shortages = coverage.get("shortages") or []
+	material_groups = []
+	material_groups_by_row = {}
+	for preview_row in preview["rows"]:
+		group = {
+			"row": preview_row.get("row"),
+			"item_code": preview_row.get("item_code"),
+			"item_name": preview_row.get("item_name"),
+			"qty": normalize_qty(preview_row.get("qty")),
+			"warehouse": preview_row.get("warehouse"),
+			"available_to_reserve": normalize_qty(preview_row.get("available_to_reserve")),
+			"production_required": normalize_qty(preview_row.get("production_required")),
+			"bom_no": preview_row.get("bom_no"),
+			"materials": [],
+		}
+		material_groups.append(group)
+		material_groups_by_row[group["row"]] = group
+
+	for material in material_coverage:
+		for source in material.get("sources") or []:
+			group = material_groups_by_row.get(source.get("row"))
+			if not group:
+				continue
+			contribution = dict(material)
+			contribution["required_qty"] = normalize_qty(source.get("required_qty"))
+			contribution["bom_qty_per_unit"] = normalize_qty(source.get("bom_qty_per_unit"))
+			contribution["sources"] = [source]
+			group["materials"].append(contribution)
+
+		if material.get("status") == "cannot_calculate":
+			for source in material.get("sources") or []:
+				if source.get("row") is not None:
+					blockers.append(
+						_issue(
+							"RAW_MATERIAL_WAREHOUSE_MISSING",
+							"blocker",
+							"无法确定原料仓库，请先完善 BOM、公司或物料默认值。",
+							"line",
+							source.get("row"),
+						)
+					)
 	if shortages:
 		warnings.append(
 			_issue(
@@ -579,6 +645,8 @@ def _evaluate_quick_order(payload):
 		"production_required": preview["production_required"],
 		"shortage_item_count": len(shortages),
 		"shortages": shortages,
+		"material_coverage": material_coverage,
+		"material_groups": material_groups,
 		"rows": preview["rows"],
 		"blockers": blockers,
 		"warnings": warnings,
