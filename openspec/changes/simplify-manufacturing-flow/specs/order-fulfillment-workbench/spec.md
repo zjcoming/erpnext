@@ -106,3 +106,60 @@ The system SHALL recalculate workbench status from ERPNext standard documents on
 
 - **WHEN** a user cancels a Stock Reservation Entry, Work Order, Stock Entry, or Delivery Note from a standard ERPNext page
 - **THEN** the next workbench load recalculates the row quantities and next action without relying on stale simplified-app state
+
+### Requirement: Read-Only Order Fulfillment Overview
+
+The system SHALL provide an `订单履约总览` that discovers every readable, submitted Sales Order that is neither closed,
+completed, nor fully delivered, and that has pending delivery quantity. It SHALL recalculate each order from the
+Sales-Order-Item workbench read model without creating or changing ERPNext documents. The overview SHALL include
+direct-stock orders and orders whose items have mixed fulfilment states.
+
+#### Scenario: Discover all unfinished orders
+
+- **WHEN** a user with Sales Order read permission opens the overview
+- **THEN** the system lists every readable submitted Sales Order with pending delivery quantity, including an order that
+  can ship entirely from effective reserved stock and an order that needs production
+
+#### Scenario: Show mixed item states
+
+- **WHEN** one Sales Order has items in more than one state, such as directly deliverable stock, active production, and
+  uncovered demand
+- **THEN** the overview aggregates the order-level quantities and risk while its expansion exposes the current
+  item-level states and next actions from the workbench
+
+#### Scenario: Sort by delivery date and risk
+
+- **WHEN** the overview returns unfinished orders with different delivery dates and risk levels
+- **THEN** it orders dated orders by earliest outstanding delivery date first, breaks equal dates by higher risk first,
+  and places orders without a delivery date after dated orders
+
+#### Scenario: Focus an order through the route
+
+- **WHEN** a user opens the order-workbench route with a Sales Order identifier
+- **THEN** the overview focuses and expands that order when it is visible, while retaining the default overview ordering
+
+#### Scenario: Filter and export the visible read model
+
+- **WHEN** a user applies delivery-window, fulfilment-status, or risk filters, or exports the overview
+- **THEN** counters and CSV output reflect only the currently visible orders, and narrow desktop or tablet screens retain
+  access to the table through horizontal scrolling
+
+#### Scenario: Respect permissions and recalculate after actions
+
+- **WHEN** a user lacks Sales Order read permission
+- **THEN** the system denies overview discovery
+
+- **WHEN** an authorized user completes a simplified row action or returns after a standard ERPNext document change
+- **THEN** the overview reloads the standard-document read model and shows the recalculated quantities, state, and risk
+
+### Requirement: Keep Overview Scope Separate From Production Scheduling And Procurement Automation
+
+The system SHALL treat the overview as sales-to-delivery risk visibility and SHALL keep a future production workbench
+limited to production execution. It MUST NOT implement production scheduling or automatic procurement through either
+surface.
+
+#### Scenario: Inspect overview side effects
+
+- **WHEN** a user loads, refreshes, filters, expands, or exports the overview
+- **THEN** the system performs read-only operations and does not reserve stock, create Work Orders, create purchasing
+  documents, or submit delivery documents

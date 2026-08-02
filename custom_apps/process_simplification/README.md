@@ -65,3 +65,24 @@ Existing orders need no migration or rollback because the quick page creates onl
 Completed `Quick Order Idempotency` records are retained for 30 days and cleaned by a daily scheduler. They contain
 only the requesting user, request key/digest, status, result Sales Order and timestamps; they are not business
 documents. Review tokens expire after 15 minutes.
+
+## 订单履约总览
+
+`订单履约总览` is the owner-facing, sales-to-delivery risk view. It reads every submitted Sales Order that is not
+closed, completed, or fully delivered, recalculates its remaining fulfilment from the standard order workbench data,
+and includes direct-stock orders as well as orders with production work. The default order is the earliest outstanding
+delivery date first, then the higher risk first; overdue, due-soon, stock/production state, and risk filters narrow the
+same read model. Expanding an order shows its mixed item states and existing line-level workbench actions; the route
+can focus the selected Sales Order.
+
+Loading, refreshing, filtering, expanding, and exporting the overview are read-only. They never reserve stock, create
+Work Orders, create purchase documents, or submit delivery documents. Row-level actions remain explicit in the
+workbench and create only the corresponding standard ERPNext documents (for example Stock Reservation Entries, Work
+Orders, Material Requests, and draft Delivery Notes); the overview is refreshed afterwards. Access is permission-aware:
+users need Sales Order read access to discover the overview and keep the normal ERPNext permissions required by any
+action or linked document. The table is horizontally scrollable at narrow desktop/tablet widths, and CSV export reflects
+the currently visible orders.
+
+This overview deliberately covers the entire sales-to-delivery risk picture, not just manufacturing. A future
+production workbench may focus only on production execution, such as Work Order progress and related stock entries.
+Production scheduling and automatic procurement remain outside the scope of both surfaces.
