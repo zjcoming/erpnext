@@ -175,6 +175,8 @@ test("production demand HTML escapes server values and exposes complete labelled
 		assert.match(html, new RegExp(`data-label="${materialLabel}"`));
 	}
 	assert.match(html, /共享物料/);
+	assert.match(html, /需新采购/);
+	assert.doesNotMatch(html, />new_purchase_required</);
 	assert.match(html, /\/app\/work-order\/WO-001/);
 });
 

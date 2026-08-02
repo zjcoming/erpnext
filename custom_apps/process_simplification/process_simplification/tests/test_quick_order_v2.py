@@ -1132,6 +1132,7 @@ class TestQuickOrderV2(UnitTestCase):
 		stock_snapshot.assert_not_called()
 
 	@patch("process_simplification.api.actions.make_work_order")
+	@patch("process_simplification.api.actions.get_allocated_production_row")
 	@patch("process_simplification.api.actions.resolve_production_source_warehouse")
 	@patch("process_simplification.api.actions.get_default_bom")
 	@patch("process_simplification.api.actions.get_company_defaults")
@@ -1148,12 +1149,14 @@ class TestQuickOrderV2(UnitTestCase):
 		get_company_defaults,
 		get_default_bom,
 		resolve_source_warehouse,
+		get_allocated_production_row,
 		make_work_order,
 	):
 		from process_simplification.api.actions import create_work_order
 
 		has_permission.return_value = True
 		row_from_workbench.return_value = frappe._dict({"uncovered_qty": 4})
+		get_allocated_production_row.return_value = frappe._dict({"unplanned_production_qty": 4})
 		get_sales_order_item.return_value = frappe._dict(
 			{
 				"item_code": "FG-001",

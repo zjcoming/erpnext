@@ -36,8 +36,20 @@
    "icon": "list",
    "indent": 0,
    "keep_closed": 0,
-   "label": "订单履约总览",
+   "label": "订单工作台",
    "link_to": "order-workbench",
+   "link_type": "Page",
+   "show_arrow": 0,
+   "type": "Link"
+  },
+  {
+   "child": 0,
+   "collapsible": 1,
+   "icon": "manufacturing",
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "生产工作台",
+   "link_to": "production-workbench",
    "link_type": "Page",
    "show_arrow": 0,
    "type": "Link"

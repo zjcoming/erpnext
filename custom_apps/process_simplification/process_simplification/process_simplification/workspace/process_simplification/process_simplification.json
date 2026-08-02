@@ -17,7 +17,7 @@
    "hidden": 0,
    "is_query_report": 0,
    "label": "核心流程",
-   "link_count": 3,
+   "link_count": 4,
    "onboard": 0,
    "type": "Card Break"
   },
@@ -34,9 +34,19 @@
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "订单履约总览",
+   "label": "订单工作台",
    "link_count": 0,
    "link_to": "order-workbench",
+   "link_type": "Page",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "生产工作台",
+   "link_count": 0,
+   "link_to": "production-workbench",
    "link_type": "Page",
    "onboard": 1,
    "type": "Link"

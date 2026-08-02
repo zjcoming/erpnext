@@ -2,6 +2,17 @@ function isProductionDueWithin7Days(demand) {
 	return ["today", "within_7_days"].includes(demand.delivery_timing);
 }
 
+function productionMaterialStatusMeta(status, translate = (message) => message) {
+	const statusCopy = {
+		ready_now: { label: translate("当前可生产"), indicator: "green" },
+		awaiting_purchase_receipt: { label: translate("待采购到货"), indicator: "blue" },
+		purchase_request_pending: { label: translate("已提采购申请"), indicator: "orange" },
+		new_purchase_required: { label: translate("需新采购"), indicator: "red" },
+		cannot_calculate: { label: translate("无法判断"), indicator: "gray" },
+	};
+	return statusCopy[status] || statusCopy.cannot_calculate;
+}
+
 function filterProductionDemands(demands, filters = {}) {
 	const search = String(filters.search || "").trim().toLowerCase();
 	return (demands || []).filter((demand) => {
@@ -88,7 +99,7 @@ function productionDemandHtml(demand, helpers) {
 				.map(
 					(row) => `
 						<div class="production-work-order-card">
-							<div class="production-work-order-heading"><a href="/app/work-order/${encodeURIComponent(row.name || "")}"><strong>${esc(row.name || "")}</strong></a><span class="indicator-pill gray">${esc(row.status || "")}</span></div>
+							<div class="production-work-order-heading"><a href="/app/work-order/${encodeURIComponent(row.name || "")}"><strong>${esc(row.name || "")}</strong></a><span class="indicator-pill gray">${esc(t(row.status || ""))}</span></div>
 							<div data-label="${esc(t("计划数量"))}">${number(row.qty)}</div>
 							<div data-label="${esc(t("已生产"))}">${number(row.produced_qty)}</div>
 							<div data-label="${esc(t("剩余"))}">${number(Math.max(Number(row.qty || 0) - Number(row.produced_qty || 0), 0))}</div>
@@ -106,8 +117,9 @@ function productionDemandHtml(demand, helpers) {
 				<table class="table table-bordered production-material-table">
 					<thead><tr><th>${esc(t("物料"))}</th><th>${esc(t("本需求"))}</th><th>${esc(t("全部需求"))}</th><th>${esc(t("仓库库存"))}</th><th>${esc(t("已占用"))}</th><th>${esc(t("本次可用"))}</th><th>${esc(t("采购申请"))}</th><th>${esc(t("在途采购"))}</th><th>${esc(t("即时缺口"))}</th><th>${esc(t("采购缺口"))}</th><th>${esc(t("状态"))}</th></tr></thead>
 					<tbody>${(demand.materials || [])
-						.map(
-							(row) => `
+						.map((row) => {
+							const statusMeta = productionMaterialStatusMeta(row.status, t);
+							return `
 								<tr>
 									<td data-label="${esc(t("物料"))}"><strong>${esc(row.item_code || "")}</strong><br><small>${esc(row.item_name || "")} · ${esc(row.warehouse || t("未设置仓库"))}${row.is_shared ? ` · <span class="production-shared-material">${esc(t("共享物料"))}</span>` : ""}</small></td>
 									<td data-label="${esc(t("本需求"))}">${number(row.source_required_qty)}</td>
@@ -119,9 +131,9 @@ function productionDemandHtml(demand, helpers) {
 									<td data-label="${esc(t("在途采购"))}">${number(row.open_purchase_order_qty)}</td>
 									<td data-label="${esc(t("即时缺口"))}">${number(row.current_gap_qty)}</td>
 									<td data-label="${esc(t("采购缺口"))}">${number(row.shortage_qty)}</td>
-									<td data-label="${esc(t("状态"))}"><span class="indicator-pill ${row.status === "new_purchase_required" ? "red" : row.status === "ready_now" ? "green" : "orange"}">${esc(row.status || "")}</span></td>
-								</tr>`
-						)
+									<td data-label="${esc(t("状态"))}"><span class="indicator-pill ${esc(statusMeta.indicator)}">${esc(statusMeta.label)}</span></td>
+								</tr>`;
+						})
 						.join("")}</tbody>
 				</table>
 			</div>`
@@ -160,6 +172,7 @@ function refreshProductionOverview(page, demandKey) {
 
 const productionWorkbenchApi = {
 	filterProductionDemands,
+	productionMaterialStatusMeta,
 	productionSummary,
 	productionDemandHtml,
 	refreshProductionOverview,
@@ -320,4 +333,3 @@ if (typeof frappe !== "undefined") {
 		return refreshProductionOverview(wrapper.page, demandKey);
 	};
 }
-

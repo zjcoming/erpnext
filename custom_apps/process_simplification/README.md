@@ -66,23 +66,30 @@ Completed `Quick Order Idempotency` records are retained for 30 days and cleaned
 only the requesting user, request key/digest, status, result Sales Order and timestamps; they are not business
 documents. Review tokens expire after 15 minutes.
 
-## 订单履约总览
+## 订单工作台与生产工作台
 
-`订单履约总览` is the owner-facing, sales-to-delivery risk view. It reads every submitted Sales Order that is not
-closed, completed, or fully delivered, recalculates its remaining fulfilment from the standard order workbench data,
-and includes direct-stock orders as well as orders with production work. The default order is the earliest outstanding
-delivery date first, then the higher risk first, then the Sales Order creation time ascending; overdue, due-soon,
-stock/production state, and risk filters narrow the same read model. Expanding an order shows its mixed item states and
-existing line-level workbench actions; the route can focus the selected Sales Order.
+`订单工作台` is the owner-facing customer-fulfilment view. It includes every submitted Sales Order that is not closed,
+completed, or fully delivered, including stock-only orders that need no production. The collapsed order shows the
+earliest delivery date, delivery progress, finished-stock coverage, planned production, unplanned production and the
+highest risk. The expanded Sales Order Item rows can reserve current finished stock, reserve available completed output,
+create a draft Delivery Note, open the standard Sales Order, or hand a production requirement to `生产工作台`.
 
-Loading, refreshing, filtering, expanding, and exporting the overview are read-only. They never reserve stock, create
-Work Orders, create purchase documents, or submit delivery documents. Row-level actions remain explicit in the
-workbench and create only the corresponding standard ERPNext documents (for example Stock Reservation Entries, Work
-Orders, Material Requests, and draft Delivery Notes); the overview is refreshed afterwards. Access is permission-aware:
-users need Sales Order read access to discover the overview and keep the normal ERPNext permissions required by any
-action or linked document. The table is horizontally scrollable at narrow desktop/tablet widths, and CSV export reflects
-the currently visible orders.
+`生产工作台` is the phase-one owner production decision view. Its primary row is a Sales Order Item production demand,
+not a Work Order, so demand remains visible before any Work Order exists. Finished stock is allocated once across open
+orders in delivery-date order before production demand is calculated. Each row explains pending delivery, effective
+reservation, currently allocatable finished stock, required production, active Work Order coverage, unplanned quantity,
+completed output and output awaiting order reservation. Linked Work Orders remain standard ERPNext documents.
 
-This overview deliberately covers the entire sales-to-delivery risk picture, not just manufacturing. A future
-production workbench may focus only on production execution, such as Work Order progress and related stock entries.
-Production scheduling and automatic procurement remain outside the scope of both surfaces.
+The production workbench expands the effective BOM with ERPNext's standard multi-level BOM rules and shows raw-material
+stock, committed quantity, open unconverted Material Requests, outstanding Purchase Orders, current gap and new purchase
+gap. Shared raw materials show both the selected demand's contribution and the total current production requirement;
+the page does not claim that shared stock belongs exclusively to one order. `处理缺料` opens the separate shortage
+purchase page, which recalculates the selected demand and creates a standard Material Request. It never automatically
+chooses a supplier or creates a Purchase Order.
+
+Both workbenches are derived views, not business ledgers. Loading, filtering and expanding are read-only. Reserving
+stock, creating a Work Order, preparing a Delivery Note or creating a Material Request remains an explicit action with
+normal ERPNext permissions and a fresh server-side validation. The production workbench may create or supplement a
+standard Work Order, inspect material risk and reserve completed stock back to its source order; it does not perform
+material transfer, start work, Job Card reporting, manufacture Stock Entry, capacity scheduling or worker piece/time
+payroll. Those shop-floor operations stay in standard ERPNext and a later dedicated worker reporting page.

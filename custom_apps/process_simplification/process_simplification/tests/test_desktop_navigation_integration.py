@@ -57,3 +57,45 @@ class TestDesktopNavigationIntegration(IntegrationTestCase):
 			),
 			{"parent_icon": None, "hidden": 1},
 		)
+
+	def test_production_workbench_patch_updates_existing_navigation(self):
+		from process_simplification.patches.v0_0.add_production_workbench_navigation import execute
+
+		sidebar = frappe.get_doc("Workspace Sidebar", "process-simplification")
+		for item in sidebar.items:
+			if item.link_to == "order-workbench":
+				item.label = "订单履约总览"
+		sidebar.items = [item for item in sidebar.items if item.link_to != "production-workbench"]
+		sidebar.save(ignore_permissions=True)
+
+		workspace = frappe.get_doc("Workspace", "process-simplification")
+		for item in workspace.links:
+			if item.link_to == "order-workbench":
+				item.label = "订单履约总览"
+		workspace.links = [item for item in workspace.links if item.link_to != "production-workbench"]
+		workspace.save(ignore_permissions=True)
+
+		execute()
+
+		sidebar.reload()
+		workspace.reload()
+		self.assertEqual(
+			frappe.db.get_value("Page", "order-workbench", "title"),
+			"订单工作台",
+		)
+		self.assertEqual(
+			next(item.label for item in sidebar.items if item.link_to == "order-workbench"),
+			"订单工作台",
+		)
+		self.assertEqual(
+			next(item.label for item in workspace.links if item.link_to == "order-workbench"),
+			"订单工作台",
+		)
+		self.assertLess(
+			next(index for index, item in enumerate(sidebar.items) if item.link_to == "production-workbench"),
+			next(index for index, item in enumerate(sidebar.items) if item.link_to == "shortage-purchase-planning"),
+		)
+		self.assertLess(
+			next(index for index, item in enumerate(workspace.links) if item.link_to == "production-workbench"),
+			next(index for index, item in enumerate(workspace.links) if item.link_to == "shortage-purchase-planning"),
+		)
