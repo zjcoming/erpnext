@@ -40,6 +40,10 @@ function buildMaterialRiskView(result = {}) {
 	};
 }
 
+function clearRowStaleLabels(root) {
+	for (const element of root.find(".quick-stale-label").get()) element.remove();
+}
+
 function materialRiskHtml(view, helpers) {
 	const translate = helpers.translate;
 	const escape = (value) => helpers.escapeHtml(String(value ?? ""));
@@ -761,6 +765,7 @@ frappe.pages["quick-sales-order"].on_page_load = function (wrapper) {
 					return null;
 				}
 				const result = response.message || {};
+				clearRowStaleLabels($root);
 				state.deepResult = result;
 				rememberMaterialResult(result);
 				updateSummary(result);
@@ -906,5 +911,6 @@ if (typeof module !== "undefined" && module.exports) {
 		buildMaterialRiskView,
 		materialRiskHtml,
 		confirmationHtml,
+		clearRowStaleLabels,
 	};
 }

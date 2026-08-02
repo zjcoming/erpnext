@@ -360,7 +360,7 @@
 	border-top: 1px solid var(--border-color);
 }
 
-.quick-material-table {
+.quick-material-risk .quick-material-table {
 	min-width: 1240px;
 	margin-bottom: 0;
 }
@@ -653,5 +653,12 @@
 		display: flex;
 		align-items: center;
 		min-height: 44px;
+	}
+
+	.quick-summary-shortage-link {
+		display: flex;
+		align-items: center;
+		min-height: 44px;
+		padding: 8px 4px;
 	}
 }

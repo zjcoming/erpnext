@@ -9,6 +9,7 @@ const {
 	buildMaterialRiskView,
 	materialRiskHtml,
 	confirmationHtml,
+	clearRowStaleLabels,
 } = require("../../process_simplification/page/quick_sales_order/quick_sales_order.js");
 
 const escapeHtml = (value) =>
@@ -86,6 +87,39 @@ const fixtureWithSharedMaterial = {
 	material_coverage: [coverage()],
 	shortages: [coverage()],
 };
+
+function fulfillmentRoot(labels) {
+	const root = { children: [] };
+	root.children = labels.map(({ className, text }) => ({
+		className,
+		text,
+		remove() {
+			root.children = root.children.filter((child) => child !== this);
+		},
+	}));
+	root.find = (selector) => {
+		assert.equal(selector, ".quick-stale-label");
+		return {
+			get: () => root.children.filter((child) => child.className === "quick-stale-label"),
+		};
+	};
+	return root;
+}
+
+test("fresh preflight result removes every row stale label without removing current fulfillment", () => {
+	const root = fulfillmentRoot([
+		{ className: "quick-stale-label", text: "待重新检查" },
+		{ className: "quick-fulfillment", text: "当前可生产" },
+		{ className: "quick-stale-label", text: "待重新检查" },
+	]);
+
+	clearRowStaleLabels(root);
+
+	assert.deepEqual(
+		root.children.map((child) => child.text),
+		["当前可生产"]
+	);
+});
 
 test("builds product BOM cards and one aggregated shared-material summary", () => {
 	const view = buildMaterialRiskView(fixtureWithSharedMaterial);
