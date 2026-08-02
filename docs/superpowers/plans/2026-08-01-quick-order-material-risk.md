@@ -28,6 +28,7 @@
 - Modify `custom_apps/process_simplification/process_simplification/api/quick_order.py`: attach grouped material risk to authoritative preflight and include material outcomes in the review fingerprint.
 - Modify `custom_apps/process_simplification/process_simplification/process_simplification/page/quick_sales_order/quick_sales_order.js`: render the lower material-risk area, connect it to stale/checking/current states, and enrich confirmation copy.
 - Modify `custom_apps/process_simplification/process_simplification/public/css/process_simplification.css`: style product/BOM cards, horizontally scrollable material tables, risk badges, stale overlay, and responsive layout.
+- Create `custom_apps/process_simplification/process_simplification/tests/js/quick_order_material_risk.test.js`: exercise the pure material-risk status/view-model/HTML helpers with Node's built-in test runner before wiring them to Frappe DOM state.
 - Modify `custom_apps/process_simplification/process_simplification/tests/test_quick_order_v2.py`: unit coverage for stock commitments, all-material results, shared-material aggregation, date-qualified supply, grouped quick-order output, and fingerprint changes.
 - Modify `custom_apps/process_simplification/process_simplification/tests/test_quick_order_integration.py`: integration coverage for a production-required order returning BOM material detail without creating operational documents.
 - Modify `custom_apps/process_simplification/README.md`: document the new read-only risk detail and its calculation timestamp.
@@ -138,6 +139,7 @@ For every exploded BOM contribution, append a copied source with the contributio
 ```python
 source = dict(demand.get("source") or {})
 source["required_qty"] = normalize_qty(bom_item.get("qty"))
+source["bom_qty_per_unit"] = normalize_qty(bom_item.get("qty")) / qty
 material["sources"].append(source)
 ```
 
@@ -258,12 +260,45 @@ git commit -m "feat: add BOM risk details to quick-order preflight"
 **Files:**
 - Modify: `custom_apps/process_simplification/process_simplification/process_simplification/page/quick_sales_order/quick_sales_order.js:1-605`
 - Modify: `custom_apps/process_simplification/process_simplification/public/css/process_simplification.css:1-332`
+- Create: `custom_apps/process_simplification/process_simplification/tests/js/quick_order_material_risk.test.js`
 
 **Interfaces:**
 - Consumes: `result.material_groups`, `result.material_coverage`, `result.shortages`, and `result.checked_at` from Task 2.
-- Produces: DOM rendering functions `renderMaterialRisk(result, options)`, `renderMaterialGroup(group)`, `renderMaterialSummary(materials)`, and `setMaterialRiskStale()`.
+- Produces: testable pure functions `materialStatusMeta(status, translate)`, `buildMaterialRiskView(result)`, and `materialRiskHtml(view, helpers)`, plus DOM functions `renderMaterialRisk(result, options)` and `setMaterialRiskStale()`.
 
-- [ ] **Step 1: Add the material-risk container and empty state**
+- [ ] **Step 1: Write failing Node tests for the material-risk view and HTML**
+
+Use `node:test` and `node:assert/strict`. Stub only the top-level Frappe page-registration globals so requiring the page file does not execute `on_page_load`. Assert observable results from the real pure helpers:
+
+```javascript
+test("builds product BOM cards and one aggregated shared-material summary", () => {
+	const view = buildMaterialRiskView(fixtureWithSharedMaterial);
+
+	assert.equal(view.groups.length, 2);
+	assert.equal(view.groups[0].materials[0].bom_qty_per_unit, 2);
+	assert.equal(view.summary.length, 1);
+	assert.equal(view.summary[0].required_qty, 30);
+});
+
+test("escapes server-provided labels in rendered risk HTML", () => {
+	const html = materialRiskHtml(buildMaterialRiskView(fixtureWithUnsafeName), helpers);
+
+	assert.doesNotMatch(html, /<img/);
+	assert.match(html, /&lt;img/);
+});
+```
+
+Also cover zero-production copy, every backend status mapping, shared-material explanatory copy, and stale banner output.
+
+Run:
+
+```bash
+node --test custom_apps/process_simplification/process_simplification/tests/js/quick_order_material_risk.test.js
+```
+
+Expected: failure because the pure helpers are not exported yet.
+
+- [ ] **Step 2: Add the material-risk container and empty state**
 
 Insert the section between the product grid and the existing standard-order guidance/footer:
 
@@ -282,7 +317,7 @@ Insert the section between the product grid and the existing standard-order guid
 
 The empty state must not trigger BOM queries; it only explains when details appear.
 
-- [ ] **Step 2: Implement escaped, deterministic rendering helpers**
+- [ ] **Step 3: Implement escaped, deterministic rendering helpers**
 
 Use `frappe.utils.escape_html` for every server-provided label. Render one product/BOM card per `material_groups` entry. Each card header shows order quantity, currently reservable finished goods, production demand, finished-goods warehouse, and BOM number.
 
@@ -307,13 +342,13 @@ const materialStatusCopy = {
 
 For a shared material, add `本单汇总库存` supporting text so duplicated product cards do not imply that each product independently owns the full available quantity.
 
-- [ ] **Step 3: Render the order-level procurement summary**
+- [ ] **Step 4: Render the order-level procurement summary**
 
 Below product cards, render one aggregated row per material/warehouse from `material_coverage`. Default product cards with shortage to expanded and sufficient cards to collapsed. Add a `查看完整用料` toggle for sufficient products.
 
 The summary header states `预计需新增采购 N 项`; do not sum quantities across UOMs. Clicking the footer shortage metric scrolls to and focuses this section.
 
-- [ ] **Step 4: Connect rendering to the existing state machine**
+- [ ] **Step 5: Connect rendering to the existing state machine**
 
 - On `deep_checking`, keep the previous result visible and add `正在重新检查`.
 - On successful `runPreflight`, call `renderMaterialRisk(result, { stale: false })`, update the check time, and remove every stale label.
@@ -321,13 +356,13 @@ The summary header states `预计需新增采购 N 项`; do not sum quantities a
 - On blocked preflight with returned material data, render available explanation and blockers rather than blanking the section.
 - On no production demand, render `当前成品库存可覆盖，本单无需展开生产物料`.
 
-- [ ] **Step 5: Enrich confirmation detail**
+- [ ] **Step 6: Enrich confirmation detail**
 
 In `confirmationHtml`, show up to five shortage materials with item, warehouse, current production gap, existing procurement coverage, and suggested new request quantity. If there are more than five, show `另有 N 项，请查看页面下方明细`.
 
 Keep the existing statement that submitting the Sales Order does not create reservations, production tasks, or purchase requests.
 
-- [ ] **Step 6: Add responsive and accessible styling**
+- [ ] **Step 7: Add responsive and accessible styling**
 
 Add CSS for:
 
@@ -342,13 +377,14 @@ Add CSS for:
 
 Do not hide required columns on narrow screens; use horizontal scrolling.
 
-- [ ] **Step 7: Format, inspect, and commit**
+- [ ] **Step 8: Run Node tests, format, inspect, and commit**
 
-Run the repository formatter/checker against the two modified frontend files. Then open Quick Sales Order at desktop and narrow width and verify escaped names, expandable cards, horizontal scrolling, stale state, zero-production state, and the confirmation summary.
+Run the Node tests and repository formatter/checker against the modified frontend files. Then open Quick Sales Order at desktop and narrow width and verify escaped names, expandable cards, horizontal scrolling, stale state, zero-production state, and the confirmation summary.
 
 ```bash
 git add custom_apps/process_simplification/process_simplification/process_simplification/page/quick_sales_order/quick_sales_order.js \
-  custom_apps/process_simplification/process_simplification/public/css/process_simplification.css
+  custom_apps/process_simplification/process_simplification/public/css/process_simplification.css \
+  custom_apps/process_simplification/process_simplification/tests/js/quick_order_material_risk.test.js
 git commit -m "feat: show BOM material risk on quick orders"
 ```
 
