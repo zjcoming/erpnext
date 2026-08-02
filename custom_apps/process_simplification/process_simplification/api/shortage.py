@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import frappe
-from frappe.query_builder.functions import Sum
 from frappe.utils import add_days, nowdate, parse_json
 
 from erpnext.manufacturing.doctype.bom.bom import get_bom_items_as_dict
-from erpnext.stock.utils import get_stock_balance
 
 from process_simplification.api.setup import get_company_defaults, get_default_bom
 from process_simplification.api.utils import normalize_qty, throw_chinese
@@ -32,54 +30,120 @@ def _workbench_row(sales_order: str, sales_order_item: str):
 	throw_chinese("销售订单明细不存在或不属于该销售订单。")
 
 
-def _mr_outstanding(item_code: str) -> float:
+def get_material_stock_snapshot(item_code: str, warehouse: str | None) -> frappe._dict:
+	"""Return stock usable for this material in one source warehouse only."""
+	if not warehouse:
+		return frappe._dict(
+			{
+				"can_calculate": False,
+				"actual_qty": 0,
+				"committed_qty": 0,
+				"available_qty": 0,
+			}
+		)
+
+	bin_row = frappe._dict(
+		frappe.db.get_value(
+			"Bin",
+			{"item_code": item_code, "warehouse": warehouse},
+			[
+				"actual_qty",
+				"reserved_qty",
+				"reserved_qty_for_production",
+				"reserved_qty_for_sub_contract",
+				"reserved_qty_for_production_plan",
+			],
+			as_dict=True,
+		)
+		or {}
+	)
+	actual_qty = normalize_qty(bin_row.get("actual_qty"))
+	committed_qty = sum(
+		max(normalize_qty(bin_row.get(field)), 0)
+		for field in (
+			"reserved_qty",
+			"reserved_qty_for_production",
+			"reserved_qty_for_sub_contract",
+			"reserved_qty_for_production_plan",
+		)
+	)
+	return frappe._dict(
+		{
+			"can_calculate": True,
+			"actual_qty": actual_qty,
+			"committed_qty": committed_qty,
+			"available_qty": max(actual_qty - committed_qty, 0),
+		}
+	)
+
+
+def _mr_outstanding(item_code: str, warehouse: str | None, company: str, need_by_date: str | None) -> float:
+	if not warehouse:
+		return 0
 	mr = frappe.qb.DocType("Material Request")
 	mri = frappe.qb.DocType("Material Request Item")
-	result = (
+	query = (
 		frappe.qb.from_(mri)
 		.join(mr)
 		.on(mri.parent == mr.name)
-		.select(Sum(mri.stock_qty - mri.ordered_qty))
+		.select(mri.stock_qty, mri.ordered_qty)
 		.where(
 			(mri.item_code == item_code)
+			& (mri.warehouse == warehouse)
+			& (mr.company == company)
 			& (mr.docstatus == 1)
 			& (mr.material_request_type == "Purchase")
 			& (mr.status.notin(["Stopped", "Cancelled"]))
 		)
-	).run()
-	return normalize_qty(result[0][0] if result else 0)
+	)
+	if need_by_date:
+		query = query.where(mri.schedule_date <= need_by_date)
+	return sum(
+		max(normalize_qty(row[0]) - normalize_qty(row[1]), 0)
+		for row in query.run()
+	)
 
 
-def _po_outstanding(item_code: str) -> float:
+def _po_outstanding(item_code: str, warehouse: str | None, company: str, need_by_date: str | None) -> float:
+	if not warehouse:
+		return 0
 	po = frappe.qb.DocType("Purchase Order")
 	poi = frappe.qb.DocType("Purchase Order Item")
-	result = (
+	query = (
 		frappe.qb.from_(poi)
 		.join(po)
 		.on(poi.parent == po.name)
-		.select(Sum(poi.stock_qty - poi.received_qty))
+		.select(poi.stock_qty, poi.received_qty)
 		.where(
 			(poi.item_code == item_code)
+			& (poi.warehouse == warehouse)
+			& (po.company == company)
 			& (po.docstatus == 1)
 			& (po.status.notin(["Closed", "Cancelled"]))
 		)
-	).run()
-	return normalize_qty(result[0][0] if result else 0)
+	)
+	if need_by_date:
+		query = query.where(poi.schedule_date <= need_by_date)
+	return sum(
+		max(normalize_qty(row[0]) - normalize_qty(row[1]), 0)
+		for row in query.run()
+	)
 
 
 def _source_note(sources):
 	return "; ".join(
-		"{sales_order}/{sales_order_item}/{finished_item}: {qty}".format(**source)
+		"{0}/{1}/{2}: {3}".format(
+			source.get("sales_order") or "",
+			source.get("sales_order_item") or source.get("row") or "",
+			source.get("finished_item") or "",
+			source.get("required_qty") or source.get("qty") or 0,
+		)
 		for source in sources
 	)
 
 
-def calculate_material_shortages(demands, company: str, defaults=None):
-	"""Calculate net raw-material shortages for BOM demand from any guided flow.
-
-	Each demand supplies ``bom_no``, ``qty`` and an optional ``source`` mapping.
-	The returned rows intentionally match the shortage-purchase page contract.
-	"""
+def calculate_material_coverage(demands, company: str, need_by_date: str | None = None, defaults=None) -> frappe._dict:
+	"""Explain material availability, approved supply, and new purchase needs."""
 	defaults = defaults or get_company_defaults(company)
 	materials = {}
 	for demand in demands or []:
@@ -99,33 +163,76 @@ def calculate_material_shortages(demands, company: str, defaults=None):
 					"stock_uom": bom_item.get("stock_uom"),
 					"warehouse": warehouse,
 					"required_qty": 0,
+					"actual_qty": 0,
+					"committed_qty": 0,
 					"available_qty": 0,
 					"open_material_request_qty": 0,
 					"open_purchase_order_qty": 0,
+					"current_gap_qty": 0,
 					"shortage_qty": 0,
+					"status": "cannot_calculate",
+					"blocked": False,
 					"sources": [],
 				}
-			materials[key]["required_qty"] += normalize_qty(bom_item.get("qty"))
-			if demand.get("source"):
-				materials[key]["sources"].append(demand.source)
+			contribution_qty = normalize_qty(bom_item.get("qty"))
+			materials[key]["required_qty"] += contribution_qty
+			source = dict(demand.get("source") or {})
+			source["required_qty"] = contribution_qty
+			source["bom_qty_per_unit"] = contribution_qty / qty
+			materials[key]["sources"].append(source)
 
 	for material in materials.values():
-		material["available_qty"] = (
-			get_stock_balance(material["item_code"], material["warehouse"])
-			if material["warehouse"]
-			else 0
+		snapshot = get_material_stock_snapshot(material["item_code"], material["warehouse"])
+		material["actual_qty"] = normalize_qty(snapshot.get("actual_qty"))
+		material["committed_qty"] = normalize_qty(snapshot.get("committed_qty"))
+		material["available_qty"] = normalize_qty(snapshot.get("available_qty"))
+		if not snapshot.get("can_calculate"):
+			material["blocked"] = True
+			continue
+
+		material["open_material_request_qty"] = _mr_outstanding(
+			material["item_code"], material["warehouse"], company, need_by_date
 		)
-		material["open_material_request_qty"] = _mr_outstanding(material["item_code"])
-		material["open_purchase_order_qty"] = _po_outstanding(material["item_code"])
+		material["open_purchase_order_qty"] = _po_outstanding(
+			material["item_code"], material["warehouse"], company, need_by_date
+		)
+		material["current_gap_qty"] = max(
+			normalize_qty(material["required_qty"]) - material["available_qty"], 0
+		)
 		material["shortage_qty"] = max(
-			normalize_qty(material["required_qty"])
-			- normalize_qty(material["available_qty"])
-			- normalize_qty(material["open_material_request_qty"])
-			- normalize_qty(material["open_purchase_order_qty"]),
+			material["current_gap_qty"]
+			- material["open_material_request_qty"]
+			- material["open_purchase_order_qty"],
 			0,
 		)
+		if material["current_gap_qty"] == 0:
+			material["status"] = "ready_now"
+		elif material["open_purchase_order_qty"] >= material["current_gap_qty"]:
+			material["status"] = "awaiting_purchase_receipt"
+		elif (
+			material["open_material_request_qty"] + material["open_purchase_order_qty"]
+			>= material["current_gap_qty"]
+		):
+			material["status"] = "purchase_request_pending"
+		else:
+			material["status"] = "new_purchase_required"
 
-	return [material for material in materials.values() if material["shortage_qty"] > 0]
+	material_rows = sorted(materials.values(), key=lambda material: (material["warehouse"] or "", material["item_code"]))
+	return frappe._dict(
+		{
+			"materials": material_rows,
+			"shortages": [
+				material
+				for material in material_rows
+				if material["status"] == "new_purchase_required" and material["shortage_qty"] > 0
+			],
+		}
+	)
+
+
+def calculate_material_shortages(demands, company: str, defaults=None, need_by_date: str | None = None):
+	"""Return only material rows requiring a new purchase request."""
+	return calculate_material_coverage(demands, company, need_by_date, defaults)["shortages"]
 
 
 @frappe.whitelist()

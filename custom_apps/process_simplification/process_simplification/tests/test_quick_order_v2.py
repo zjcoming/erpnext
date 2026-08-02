@@ -590,10 +590,10 @@ class TestQuickOrderV2(UnitTestCase):
 
 	@patch("process_simplification.api.shortage._po_outstanding", return_value=1)
 	@patch("process_simplification.api.shortage._mr_outstanding", return_value=2)
-	@patch("process_simplification.api.shortage.get_stock_balance", return_value=3)
+	@patch("process_simplification.api.shortage.get_material_stock_snapshot")
 	@patch("process_simplification.api.shortage.get_bom_items_as_dict")
 	def test_shared_shortage_calculation_nets_stock_and_open_supply(
-		self, get_bom_items, get_stock_balance, mr_outstanding, po_outstanding
+		self, get_bom_items, stock_snapshot, mr_outstanding, po_outstanding
 	):
 		from process_simplification.api.shortage import calculate_material_shortages
 
@@ -607,6 +607,9 @@ class TestQuickOrderV2(UnitTestCase):
 				}
 			)
 		}
+		stock_snapshot.return_value = frappe._dict(
+			{"can_calculate": True, "actual_qty": 3, "committed_qty": 0, "available_qty": 3}
+		)
 		result = calculate_material_shortages(
 			[{"bom_no": "BOM-FG-001", "qty": 2}],
 			"Test Company",
@@ -615,6 +618,218 @@ class TestQuickOrderV2(UnitTestCase):
 
 		self.assertEqual(result[0]["required_qty"], 10)
 		self.assertEqual(result[0]["shortage_qty"], 4)
+
+	@patch("process_simplification.api.shortage.frappe.db.get_value")
+	def test_material_snapshot_deducts_erpnext_commitments(self, get_value):
+		from process_simplification.api.shortage import get_material_stock_snapshot
+
+		get_value.return_value = frappe._dict(
+			{
+				"actual_qty": 100,
+				"reserved_qty": 10,
+				"reserved_qty_for_production": 20,
+				"reserved_qty_for_sub_contract": 5,
+				"reserved_qty_for_production_plan": 3,
+			}
+		)
+
+		result = get_material_stock_snapshot("RM-001", "Stores - TC")
+
+		self.assertTrue(result.can_calculate)
+		self.assertEqual(result.actual_qty, 100)
+		self.assertEqual(result.committed_qty, 38)
+		self.assertEqual(result.available_qty, 62)
+
+	@patch("process_simplification.api.shortage.frappe.db.get_value")
+	def test_material_snapshot_requires_an_exact_warehouse(self, get_value):
+		from process_simplification.api.shortage import get_material_stock_snapshot
+
+		def bin_for_warehouse(doctype, filters, fields, as_dict=False):
+			if filters.get("warehouse") == "Stores A - TC":
+				return frappe._dict({"actual_qty": 7, "reserved_qty": 2})
+			return frappe._dict({"actual_qty": 99, "reserved_qty": 0})
+
+		get_value.side_effect = bin_for_warehouse
+
+		missing = get_material_stock_snapshot("RM-001", None)
+		stores_a = get_material_stock_snapshot("RM-001", "Stores A - TC")
+		stores_b = get_material_stock_snapshot("RM-001", "Stores B - TC")
+
+		self.assertFalse(missing.can_calculate)
+		self.assertEqual((missing.actual_qty, missing.committed_qty, missing.available_qty), (0, 0, 0))
+		self.assertEqual(stores_a.available_qty, 5)
+		self.assertEqual(stores_b.available_qty, 99)
+		self.assertEqual(
+			[call.args[1]["warehouse"] for call in get_value.call_args_list],
+			["Stores A - TC", "Stores B - TC"],
+		)
+
+	@patch("process_simplification.api.shortage._po_outstanding", return_value=0)
+	@patch("process_simplification.api.shortage._mr_outstanding", return_value=0)
+	@patch("process_simplification.api.shortage.get_material_stock_snapshot")
+	@patch("process_simplification.api.shortage.get_bom_items_as_dict")
+	def test_material_coverage_returns_sufficient_and_short_materials(
+		self, get_bom_items, stock_snapshot, mr_outstanding, po_outstanding
+	):
+		from process_simplification.api.shortage import calculate_material_coverage
+
+		get_bom_items.return_value = {
+			"RM-ENOUGH": frappe._dict(
+				{"item_name": "Enough", "stock_uom": "Nos", "source_warehouse": "Stores - TC", "qty": 4}
+			),
+			"RM-SHORT": frappe._dict(
+				{"item_name": "Short", "stock_uom": "Nos", "source_warehouse": "Stores - TC", "qty": 8}
+			),
+		}
+		stock_snapshot.side_effect = lambda item_code, warehouse: frappe._dict(
+			{
+				"can_calculate": True,
+				"actual_qty": 5 if item_code == "RM-ENOUGH" else 2,
+				"committed_qty": 0,
+				"available_qty": 5 if item_code == "RM-ENOUGH" else 2,
+			}
+		)
+
+		result = calculate_material_coverage(
+			[{"bom_no": "BOM-FG-001", "qty": 10, "source": {"row": 1, "finished_item": "FG-001"}}],
+			"_Test Company",
+			need_by_date="2099-01-10",
+			defaults=frappe._dict({"source_warehouse": "Stores - TC"}),
+		)
+
+		self.assertEqual([row["item_code"] for row in result.materials], ["RM-ENOUGH", "RM-SHORT"])
+		self.assertEqual([row["item_code"] for row in result.shortages], ["RM-SHORT"])
+		self.assertEqual(result.materials[0]["status"], "ready_now")
+		self.assertEqual(result.materials[1]["status"], "new_purchase_required")
+		self.assertEqual(result.materials[1]["current_gap_qty"], 6)
+		self.assertEqual(result.materials[1]["shortage_qty"], 6)
+
+	@patch("process_simplification.api.shortage._po_outstanding", return_value=8)
+	@patch("process_simplification.api.shortage._mr_outstanding", return_value=0)
+	@patch("process_simplification.api.shortage.get_material_stock_snapshot")
+	@patch("process_simplification.api.shortage.get_bom_items_as_dict")
+	def test_material_coverage_waits_for_an_on_time_purchase_order(
+		self, get_bom_items, stock_snapshot, mr_outstanding, po_outstanding
+	):
+		from process_simplification.api.shortage import calculate_material_coverage
+
+		get_bom_items.return_value = {
+			"RM-001": frappe._dict({"source_warehouse": "Stores - TC", "qty": 10})
+		}
+		stock_snapshot.return_value = frappe._dict(
+			{"can_calculate": True, "actual_qty": 2, "committed_qty": 0, "available_qty": 2}
+		)
+
+		result = calculate_material_coverage(
+			[{"bom_no": "BOM-FG-001", "qty": 1}],
+			"_Test Company",
+			need_by_date="2099-01-10",
+			defaults=frappe._dict({"source_warehouse": "Stores - TC"}),
+		)
+
+		self.assertEqual(result.materials[0]["status"], "awaiting_purchase_receipt")
+		self.assertEqual(result.materials[0]["shortage_qty"], 0)
+
+	@patch("process_simplification.api.shortage._po_outstanding", return_value=0)
+	@patch("process_simplification.api.shortage._mr_outstanding", return_value=8)
+	@patch("process_simplification.api.shortage.get_material_stock_snapshot")
+	@patch("process_simplification.api.shortage.get_bom_items_as_dict")
+	def test_material_coverage_keeps_unconverted_request_pending(
+		self, get_bom_items, stock_snapshot, mr_outstanding, po_outstanding
+	):
+		from process_simplification.api.shortage import calculate_material_coverage
+
+		get_bom_items.return_value = {
+			"RM-001": frappe._dict({"source_warehouse": "Stores - TC", "qty": 10})
+		}
+		stock_snapshot.return_value = frappe._dict(
+			{"can_calculate": True, "actual_qty": 2, "committed_qty": 0, "available_qty": 2}
+		)
+
+		result = calculate_material_coverage(
+			[{"bom_no": "BOM-FG-001", "qty": 1}],
+			"_Test Company",
+			need_by_date="2099-01-10",
+			defaults=frappe._dict({"source_warehouse": "Stores - TC"}),
+		)
+
+		self.assertEqual(result.materials[0]["status"], "purchase_request_pending")
+		self.assertEqual(result.materials[0]["shortage_qty"], 0)
+		self.assertEqual(result.shortages, [])
+
+	@patch("process_simplification.api.shortage._po_outstanding", return_value=0)
+	@patch("process_simplification.api.shortage._mr_outstanding", return_value=0)
+	@patch("process_simplification.api.shortage.get_material_stock_snapshot")
+	@patch("process_simplification.api.shortage.get_bom_items_as_dict")
+	def test_material_coverage_recommends_new_purchase_when_supply_is_late(
+		self, get_bom_items, stock_snapshot, mr_outstanding, po_outstanding
+	):
+		from process_simplification.api.shortage import calculate_material_coverage
+
+		get_bom_items.return_value = {
+			"RM-001": frappe._dict({"source_warehouse": "Stores - TC", "qty": 10})
+		}
+		stock_snapshot.return_value = frappe._dict(
+			{"can_calculate": True, "actual_qty": 2, "committed_qty": 0, "available_qty": 2}
+		)
+
+		result = calculate_material_coverage(
+			[{"bom_no": "BOM-FG-001", "qty": 1}],
+			"_Test Company",
+			need_by_date="2099-01-10",
+			defaults=frappe._dict({"source_warehouse": "Stores - TC"}),
+		)
+
+		self.assertEqual(result.materials[0]["status"], "new_purchase_required")
+		self.assertEqual(result.materials[0]["shortage_qty"], 8)
+
+	@patch("process_simplification.api.shortage._po_outstanding", return_value=0)
+	@patch("process_simplification.api.shortage._mr_outstanding", return_value=0)
+	@patch("process_simplification.api.shortage.get_material_stock_snapshot")
+	@patch("process_simplification.api.shortage.get_bom_items_as_dict")
+	def test_material_coverage_aggregates_shared_material_and_preserves_sources(
+		self, get_bom_items, stock_snapshot, mr_outstanding, po_outstanding
+	):
+		from process_simplification.api.shortage import calculate_material_coverage
+
+		get_bom_items.side_effect = [
+			{"RM-SHARED": frappe._dict({"source_warehouse": "Stores - TC", "qty": 4})},
+			{"RM-SHARED": frappe._dict({"source_warehouse": "Stores - TC", "qty": 6})},
+		]
+		stock_snapshot.return_value = frappe._dict(
+			{"can_calculate": True, "actual_qty": 3, "committed_qty": 0, "available_qty": 3}
+		)
+
+		result = calculate_material_coverage(
+			[
+				{"bom_no": "BOM-FG-001", "qty": 2, "source": {"row": 1, "finished_item": "FG-001", "qty": 2}},
+				{"bom_no": "BOM-FG-002", "qty": 3, "source": {"row": 2, "finished_item": "FG-002", "qty": 3}},
+			],
+			"_Test Company",
+			defaults=frappe._dict({"source_warehouse": "Stores - TC"}),
+		)
+
+		self.assertEqual(len(result.materials), 1)
+		self.assertEqual(result.materials[0]["required_qty"], 10)
+		self.assertEqual([source["required_qty"] for source in result.materials[0]["sources"]], [4, 6])
+		self.assertEqual([source["bom_qty_per_unit"] for source in result.materials[0]["sources"]], [2, 2])
+		stock_snapshot.assert_called_once_with("RM-SHARED", "Stores - TC")
+
+	@patch("process_simplification.api.shortage.get_bom_items_as_dict")
+	def test_material_coverage_blocks_missing_source_warehouse(self, get_bom_items):
+		from process_simplification.api.shortage import calculate_material_coverage
+
+		get_bom_items.return_value = {"RM-001": frappe._dict({"qty": 1})}
+
+		result = calculate_material_coverage(
+			[{"bom_no": "BOM-FG-001", "qty": 1}],
+			"_Test Company",
+			defaults=frappe._dict({"source_warehouse": None}),
+		)
+
+		self.assertEqual(result.materials[0]["status"], "cannot_calculate")
+		self.assertTrue(result.materials[0]["blocked"])
+		self.assertEqual(result.shortages, [])
 
 	@patch("process_simplification.api.actions.make_work_order")
 	@patch("process_simplification.api.actions.get_default_bom")
