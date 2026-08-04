@@ -912,6 +912,10 @@ frappe.pages["quick-sales-order"].on_page_load = function (wrapper) {
 	loadContext();
 };
 
+frappe.pages["quick-sales-order"].refresh = function () {
+	frappe.app.sidebar.set_workspace_sidebar();
+};
+
 if (typeof module !== "undefined" && module.exports) {
 	module.exports = {
 		materialStatusMeta,

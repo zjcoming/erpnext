@@ -158,3 +158,7 @@ frappe.pages["shortage-purchase-planning"].on_page_load = function (wrapper) {
 	page.set_primary_action(__("生成采购申请"), create_material_request);
 	render_selected();
 };
+
+frappe.pages["shortage-purchase-planning"].refresh = function () {
+	frappe.app.sidebar.set_workspace_sidebar();
+};

@@ -374,6 +374,7 @@ if (typeof frappe !== "undefined") {
 	};
 
 	frappe.pages["order-workbench"].refresh = function (wrapper) {
+		frappe.app.sidebar.set_workspace_sidebar();
 		const page = wrapper.page;
 		const routeSalesOrder = frappe.get_route()[1] || null;
 		return refreshFulfillmentOverview(page, routeSalesOrder);

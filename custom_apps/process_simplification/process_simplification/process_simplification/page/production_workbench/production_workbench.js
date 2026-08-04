@@ -329,6 +329,7 @@ if (typeof frappe !== "undefined") {
 	};
 
 	frappe.pages["production-workbench"].refresh = function (wrapper) {
+		frappe.app.sidebar.set_workspace_sidebar();
 		const demandKey = frappe.get_route()[1] || null;
 		return refreshProductionOverview(wrapper.page, demandKey);
 	};
