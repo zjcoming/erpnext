@@ -85,16 +85,19 @@ def get_material_stock_snapshot(item_code: str, warehouse: str | None) -> frappe
 	)
 
 
-def _mr_outstanding(item_code: str, warehouse: str | None, company: str, need_by_date: str | None) -> float:
+def _mr_documents(item_code: str, warehouse: str | None, company: str, need_by_date: str | None):
+	"""Outstanding purchase Material Request lines for this item/warehouse as
+	document rows, so the workbench can show which requests exist and how far
+	along they are."""
 	if not warehouse:
-		return 0
+		return []
 	mr = frappe.qb.DocType("Material Request")
 	mri = frappe.qb.DocType("Material Request Item")
 	query = (
 		frappe.qb.from_(mri)
 		.join(mr)
 		.on(mri.parent == mr.name)
-		.select(mri.stock_qty, mri.ordered_qty)
+		.select(mr.name, mr.status, mri.stock_qty, mri.ordered_qty, mri.schedule_date)
 		.where(
 			(mri.item_code == item_code)
 			& (mri.warehouse == warehouse)
@@ -106,22 +109,35 @@ def _mr_outstanding(item_code: str, warehouse: str | None, company: str, need_by
 	)
 	if need_by_date:
 		query = query.where(mri.schedule_date <= need_by_date)
-	return sum(
-		max(normalize_qty(row[0]) - normalize_qty(row[1]), 0)
-		for row in query.run()
-	)
+
+	documents = []
+	for row in query.run(as_dict=True):
+		outstanding = max(normalize_qty(row.stock_qty) - normalize_qty(row.ordered_qty), 0)
+		if outstanding <= 0:
+			continue
+		documents.append(
+			{
+				"doctype": "Material Request",
+				"name": row.name,
+				"status": row.status,
+				"outstanding_qty": outstanding,
+				"schedule_date": str(row.schedule_date) if row.schedule_date else None,
+			}
+		)
+	return documents
 
 
-def _po_outstanding(item_code: str, warehouse: str | None, company: str, need_by_date: str | None) -> float:
+def _po_documents(item_code: str, warehouse: str | None, company: str, need_by_date: str | None):
+	"""Outstanding Purchase Order lines for this item/warehouse as document rows."""
 	if not warehouse:
-		return 0
+		return []
 	po = frappe.qb.DocType("Purchase Order")
 	poi = frappe.qb.DocType("Purchase Order Item")
 	query = (
 		frappe.qb.from_(poi)
 		.join(po)
 		.on(poi.parent == po.name)
-		.select(poi.stock_qty, poi.received_qty, poi.conversion_factor)
+		.select(po.name, po.status, poi.stock_qty, poi.received_qty, poi.conversion_factor, poi.schedule_date)
 		.where(
 			(poi.item_code == item_code)
 			& (poi.warehouse == warehouse)
@@ -132,10 +148,34 @@ def _po_outstanding(item_code: str, warehouse: str | None, company: str, need_by
 	)
 	if need_by_date:
 		query = query.where(poi.schedule_date <= need_by_date)
-	return sum(
-		max(normalize_qty(row[0]) - normalize_qty(row[1]) * normalize_qty(row[2] or 1), 0)
-		for row in query.run()
-	)
+
+	documents = []
+	for row in query.run(as_dict=True):
+		outstanding = max(
+			normalize_qty(row.stock_qty)
+			- normalize_qty(row.received_qty) * normalize_qty(row.conversion_factor or 1),
+			0,
+		)
+		if outstanding <= 0:
+			continue
+		documents.append(
+			{
+				"doctype": "Purchase Order",
+				"name": row.name,
+				"status": row.status,
+				"outstanding_qty": outstanding,
+				"schedule_date": str(row.schedule_date) if row.schedule_date else None,
+			}
+		)
+	return documents
+
+
+def _mr_outstanding(item_code: str, warehouse: str | None, company: str, need_by_date: str | None) -> float:
+	return sum(doc["outstanding_qty"] for doc in _mr_documents(item_code, warehouse, company, need_by_date))
+
+
+def _po_outstanding(item_code: str, warehouse: str | None, company: str, need_by_date: str | None) -> float:
+	return sum(doc["outstanding_qty"] for doc in _po_documents(item_code, warehouse, company, need_by_date))
 
 
 def _source_note(sources):
@@ -230,6 +270,7 @@ def calculate_material_coverage(
 					"blocked": False,
 					"warehouse_can_use": bool(resolved_source.can_use),
 					"sources": [],
+					"supply_documents": [],
 				}
 			else:
 				materials[key]["warehouse_can_use"] = bool(
@@ -256,11 +297,13 @@ def calculate_material_coverage(
 			material["blocked"] = True
 			continue
 
-		material["open_material_request_qty"] = _mr_outstanding(
-			material["item_code"], material["warehouse"], company, need_by_date
-		)
-		material["open_purchase_order_qty"] = _po_outstanding(
-			material["item_code"], material["warehouse"], company, need_by_date
+		mr_docs = _mr_documents(material["item_code"], material["warehouse"], company, need_by_date)
+		po_docs = _po_documents(material["item_code"], material["warehouse"], company, need_by_date)
+		material["open_material_request_qty"] = sum(doc["outstanding_qty"] for doc in mr_docs)
+		material["open_purchase_order_qty"] = sum(doc["outstanding_qty"] for doc in po_docs)
+		material["supply_documents"] = sorted(
+			mr_docs + po_docs,
+			key=lambda doc: (doc.get("schedule_date") or "9999-12-31", doc["doctype"], doc["name"]),
 		)
 		material["current_gap_qty"] = max(
 			normalize_qty(material["required_qty"]) - material["available_qty"], 0

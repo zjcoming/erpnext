@@ -1,7 +1,11 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-global.frappe = { pages: { "production-workbench": {} } };
+global.frappe = {
+	pages: { "production-workbench": {} },
+	router: { slug: (value) => String(value).toLowerCase().replaceAll(" ", "-") },
+	datetime: { str_to_user: (value) => value },
+};
 global.__ = (message) => message;
 
 const productionWorkbench = require("../../process_simplification/page/production_workbench/production_workbench.js");
@@ -178,6 +182,35 @@ test("production demand HTML escapes server values and exposes complete labelled
 	assert.match(html, /需新采购/);
 	assert.doesNotMatch(html, />new_purchase_required</);
 	assert.match(html, /\/app\/work-order\/WO-001/);
+});
+
+test("material rows show linked purchase documents and status, or a no-purchase hint", () => {
+	const withDocs = demand("DOCS", {
+		materials: [
+			{
+				item_code: "RM-DOC",
+				item_name: "原料 DOC",
+				warehouse: "Stores - TC",
+				open_material_request_qty: 10,
+				open_purchase_order_qty: 5,
+				shortage_qty: 0,
+				status: "purchase_request_pending",
+				supply_documents: [
+					{ doctype: "Material Request", name: "MREQ-1", status: "Pending", outstanding_qty: 10, schedule_date: "2026-08-05" },
+					{ doctype: "Purchase Order", name: "PORD-1", status: "To Receive", outstanding_qty: 5, schedule_date: "2026-08-06" },
+				],
+			},
+		],
+	});
+	const html = productionWorkbench.productionDemandHtml(withDocs, helpers);
+	assert.match(html, /\/app\/material-request\/MREQ-1/);
+	assert.match(html, /\/app\/purchase-order\/PORD-1/);
+	assert.match(html, /To Receive/);
+
+	// A material with no supply documents shows the no-purchase hint.
+	const noDocs = demand("NODOC");
+	const noDocHtml = productionWorkbench.productionDemandHtml(noDocs, helpers);
+	assert.match(noDocHtml, /尚未发起采购/);
 });
 
 test("route focus expands the selected Sales Order Item and reloads once", async () => {

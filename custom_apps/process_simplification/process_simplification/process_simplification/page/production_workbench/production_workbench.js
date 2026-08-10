@@ -119,6 +119,15 @@ function productionDemandHtml(demand, helpers) {
 					<tbody>${(demand.materials || [])
 						.map((row) => {
 							const statusMeta = productionMaterialStatusMeta(row.status, t);
+							const docs = row.supply_documents || [];
+							const docList = docs.length
+								? `<tr class="production-supply-docs"><td colspan="11" data-label="${esc(t("采购单据"))}"><div class="production-supply-doc-list">${docs
+									.map((doc) => {
+										const typeLabel = doc.doctype === "Material Request" ? t("采购申请") : t("采购单");
+										return `<a class="production-supply-doc" href="/app/${esc(frappe.router.slug(doc.doctype))}/${esc(doc.name)}" target="_blank"><span class="production-supply-doc-type">${esc(typeLabel)}</span> <strong>${esc(doc.name)}</strong> · <span class="indicator-pill grey">${esc(doc.status || "")}</span> · ${esc(t("未完成"))} ${number(doc.outstanding_qty)}${doc.schedule_date ? ` · ${esc(t("交期"))} ${esc(frappe.datetime.str_to_user(doc.schedule_date))}` : ""}</a>`;
+									})
+									.join("")}</div></td></tr>`
+								: "";
 							return `
 								<tr>
 									<td data-label="${esc(t("物料"))}"><strong>${esc(row.item_code || "")}</strong><br><small>${esc(row.item_name || "")} · ${esc(row.warehouse || t("未设置仓库"))}${row.is_shared ? ` · <span class="production-shared-material">${esc(t("共享物料"))}</span>` : ""}</small></td>
@@ -131,8 +140,8 @@ function productionDemandHtml(demand, helpers) {
 									<td data-label="${esc(t("在途采购"))}">${number(row.open_purchase_order_qty)}</td>
 									<td data-label="${esc(t("即时缺口"))}">${number(row.current_gap_qty)}</td>
 									<td data-label="${esc(t("采购缺口"))}">${number(row.shortage_qty)}</td>
-									<td data-label="${esc(t("状态"))}"><span class="indicator-pill ${esc(statusMeta.indicator)}">${esc(statusMeta.label)}</span></td>
-								</tr>`;
+									<td data-label="${esc(t("状态"))}"><span class="indicator-pill ${esc(statusMeta.indicator)}">${esc(statusMeta.label)}</span>${docs.length ? "" : `<br><small class="text-muted">${esc(t("尚未发起采购"))}</small>`}</td>
+								</tr>${docList}`;
 						})
 						.join("")}</tbody>
 				</table>
