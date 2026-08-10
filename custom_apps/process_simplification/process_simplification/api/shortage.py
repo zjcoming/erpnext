@@ -150,9 +150,46 @@ def _source_note(sources):
 	)
 
 
-def calculate_material_coverage(demands, company: str, need_by_date: str | None = None, defaults=None) -> frappe._dict:
-	"""Explain material availability, approved supply, and new purchase needs."""
+def _prior_required_by_key(demands, company: str, defaults) -> dict:
+	"""Sum raw-material demand per (item, warehouse) for demands that draw on the
+	same shared stock but are not part of the reported set.
+
+	Used so a partial (per-order) coverage check reduces free stock by other
+	in-flight demands first, instead of letting every order claim the same stock.
+	"""
+	consumed: dict = {}
+	for demand in demands or []:
+		demand = frappe._dict(demand)
+		qty = normalize_qty(demand.get("qty"))
+		if not demand.get("bom_no") or qty <= 0:
+			continue
+		try:
+			bom_items = get_bom_items_as_dict(demand.bom_no, company, qty=qty, fetch_exploded=1)
+		except Exception as exc:
+			raise MaterialCoverageBomExpansionError(demand.bom_no) from exc
+		resolved_source = resolve_production_source_warehouse(
+			company,
+			defaults=defaults,
+			sales_order_item_warehouse=(demand.get("source") or {}).get("sales_order_item_warehouse"),
+		)
+		for bom_item in bom_items.values():
+			key = (bom_item.get("item_code"), resolved_source.warehouse)
+			consumed[key] = consumed.get(key, 0) + normalize_qty(bom_item.get("qty"))
+	return consumed
+
+
+def calculate_material_coverage(
+	demands, company: str, need_by_date: str | None = None, defaults=None, prior_demands=None
+) -> frappe._dict:
+	"""Explain material availability, approved supply, and new purchase needs.
+
+	``prior_demands`` are other in-flight demands that draw on the same shared
+	stock; their raw-material need is consumed from free stock before the
+	reported ``demands`` are evaluated, so a per-order check does not let every
+	order believe the same scarce stock covers it.
+	"""
 	defaults = defaults or get_company_defaults(company)
+	prior_consumed = _prior_required_by_key(prior_demands, company, defaults)
 	materials = {}
 	for demand in demands or []:
 		demand = frappe._dict(demand)
@@ -213,7 +250,8 @@ def calculate_material_coverage(demands, company: str, need_by_date: str | None 
 		snapshot = get_material_stock_snapshot(material["item_code"], material["warehouse"])
 		material["actual_qty"] = normalize_qty(snapshot.get("actual_qty"))
 		material["committed_qty"] = normalize_qty(snapshot.get("committed_qty"))
-		material["available_qty"] = normalize_qty(snapshot.get("available_qty"))
+		prior_qty = prior_consumed.get((material["item_code"], material["warehouse"]), 0)
+		material["available_qty"] = max(normalize_qty(snapshot.get("available_qty")) - prior_qty, 0)
 		if not snapshot.get("can_calculate"):
 			material["blocked"] = True
 			continue
@@ -258,9 +296,9 @@ def calculate_material_coverage(demands, company: str, need_by_date: str | None 
 	)
 
 
-def calculate_material_shortages(demands, company: str, defaults=None, need_by_date: str | None = None):
+def calculate_material_shortages(demands, company: str, defaults=None, need_by_date: str | None = None, prior_demands=None):
 	"""Return only material rows requiring a new purchase request."""
-	return calculate_material_coverage(demands, company, need_by_date, defaults)["shortages"]
+	return calculate_material_coverage(demands, company, need_by_date, defaults, prior_demands)["shortages"]
 
 
 @frappe.whitelist()
@@ -273,6 +311,8 @@ def check_shortage(selected_rows, company: str | None = None):
 		throw_chinese("默认公司缺失，请先设置公司。")
 
 	demands = []
+	selected_items = set()
+	boundary_delivery_date = None
 	for selected in rows:
 		workbench_row = _workbench_row(selected.sales_order, selected.sales_order_item)
 		if workbench_row.get("unsupported"):
@@ -288,6 +328,11 @@ def check_shortage(selected_rows, company: str | None = None):
 		if not bom_no:
 			continue
 
+		selected_items.add(selected.sales_order_item)
+		delivery_date = workbench_row.get("delivery_date")
+		if delivery_date and (boundary_delivery_date is None or delivery_date > boundary_delivery_date):
+			boundary_delivery_date = delivery_date
+
 		demands.append(
 			{
 				"bom_no": bom_no,
@@ -302,10 +347,31 @@ def check_shortage(selected_rows, company: str | None = None):
 			}
 		)
 
-	shortages = calculate_material_shortages(demands, company, defaults)
+	prior_demands = _prior_demands_for(
+		company,
+		target_delivery_date=boundary_delivery_date,
+		exclude_sales_order_items=selected_items,
+	)
+	shortages = calculate_material_shortages(demands, company, defaults, prior_demands=prior_demands)
 	if not shortages:
 		return {"shortages": [], "message": "当前选择的订单没有需要采购的缺料。"}
 	return {"shortages": shortages}
+
+
+def _prior_demands_for(company, *, target_delivery_date, exclude_sales_order_items):
+	"""Delivery-date-prior production demands that consume shared stock first.
+
+	Imported lazily because ``production`` imports this module at load time.
+	"""
+	from process_simplification.api.production import get_prior_material_demands
+
+	prior = []
+	for demand in get_prior_material_demands(company, target_delivery_date=target_delivery_date):
+		source = demand.get("source") or {}
+		if source.get("sales_order_item") in exclude_sales_order_items:
+			continue
+		prior.append(demand)
+	return prior
 
 
 @frappe.whitelist()

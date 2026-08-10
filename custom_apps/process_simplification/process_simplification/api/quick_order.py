@@ -568,11 +568,17 @@ def _evaluate_quick_order(payload):
 	coverage = frappe._dict({"materials": [], "shortages": []})
 	if company and demands:
 		try:
+			from process_simplification.api.production import get_prior_material_demands
+
+			prior_demands = get_prior_material_demands(
+				company, target_delivery_date=data.delivery_date
+			)
 			coverage = calculate_material_coverage(
 				demands,
 				company,
 				need_by_date=data.delivery_date,
 				defaults=defaults,
+				prior_demands=prior_demands,
 			)
 		except MaterialCoverageBomExpansionError:
 			for demand in demands:

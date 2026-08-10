@@ -323,6 +323,42 @@ def _material_demands(demands):
 	return rows
 
 
+def _delivery_precedes(other_date, target_date) -> bool:
+	"""Delivery-date priority (口径 2): a demand with no date is treated as most
+	urgent, so it always precedes; a dated demand precedes a strictly later one."""
+	if not other_date:
+		return True
+	if not target_date:
+		return False
+	return getdate(other_date) < getdate(target_date)
+
+
+def get_prior_material_demands(
+	company: str,
+	*,
+	target_delivery_date=None,
+	exclude_sales_order_item: str | None = None,
+):
+	"""Production demands that must consume shared raw material before a target,
+	in delivery-date priority order.
+
+	Returned in the ``{bom_no, qty, source}`` shape expected by
+	``calculate_material_coverage(prior_demands=...)``. Used so a per-order
+	shortage check nets shared stock already claimed by earlier-due orders
+	instead of letting every order claim the same scarce stock.
+	"""
+	demands = []
+	for demand in get_production_overview().get("demands") or []:
+		if demand.get("company") != company:
+			continue
+		if exclude_sales_order_item and demand.get("sales_order_item") == exclude_sales_order_item:
+			continue
+		if not _delivery_precedes(demand.get("delivery_date"), target_delivery_date):
+			continue
+		demands.append(demand)
+	return _material_demands(demands)
+
+
 def _other_work_orders():
 	rows = frappe.get_all(
 		"Work Order",
