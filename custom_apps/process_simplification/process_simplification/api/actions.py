@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import frappe
 from frappe import _
-from frappe.utils import flt, now_datetime, parse_json
+from frappe.utils import flt, parse_json
 
-from erpnext.manufacturing.doctype.work_order.mapper import make_work_order
 from erpnext.selling.doctype.sales_order.mapper import make_delivery_note
 from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
 	get_available_qty_to_reserve,
+)
+
+from process_simplification.api.production_plan_adapter import (
+	create_work_orders_via_production_plan,
 )
 
 from process_simplification.api.setup import (
@@ -147,30 +150,36 @@ def create_work_order(sales_order: str, sales_order_item: str, qty: float | None
 	if work_order_qty <= 0 or work_order_qty > unplanned_qty:
 		throw_chinese("本次生产数量不能超过当前尚未覆盖数量。")
 
-	wo = make_work_order(
-		bom_no=bom_no,
-		item=item.item_code,
-		qty=work_order_qty,
-		company=so.company,
-		use_multi_level_bom=True,
-	)
-	wo.sales_order = sales_order
-	wo.sales_order_item = sales_order_item
-	wo.source_warehouse = resolved_source.warehouse
-	wo.wip_warehouse = defaults.wip_warehouse
-	wo.fg_warehouse = item.warehouse or defaults.fg_warehouse
-	wo.expected_delivery_date = item.delivery_date
-	wo.planned_start_date = now_datetime()
+	fg_warehouse = item.warehouse or defaults.fg_warehouse
 	if not resolved_source.can_use:
 		throw_chinese("原料仓不可用，请确认仓库存在、启用、非分组且属于订单公司。")
-	if not wo.wip_warehouse:
+	if not defaults.wip_warehouse:
 		throw_chinese("缺少 WIP 仓，请在 Company 中设置 Default WIP Warehouse。")
-	if not wo.fg_warehouse:
+	if not fg_warehouse:
 		throw_chinese("缺少成品仓，请在 Company 或订单行中设置仓库。")
-	wo.get_items_and_operations_from_bom()
-	wo.insert()
-	wo.submit()
-	return {"work_order": wo.name, "qty": work_order_qty}
+
+	# Create the finished-good Work Order plus one Work Order per in-house
+	# sub-assembly level via the standard Production Plan engine, while the
+	# delivery-priority net quantity above stays authoritative.
+	result = create_work_orders_via_production_plan(
+		sales_order=sales_order,
+		sales_order_item=sales_order_item,
+		company=so.company,
+		item_code=item.item_code,
+		bom_no=bom_no,
+		planned_qty=work_order_qty,
+		fg_warehouse=fg_warehouse,
+		sub_assembly_warehouse=resolved_source.warehouse,
+		delivery_date=item.delivery_date,
+	)
+	work_orders = result.get("work_orders") or []
+	return {
+		"work_order": work_orders[0] if work_orders else None,
+		"work_orders": work_orders,
+		"sub_assembly_count": result.get("sub_assembly_count", 0),
+		"production_plan": result.get("production_plan"),
+		"qty": work_order_qty,
+	}
 
 
 def _manufactured_finished_rows(sales_order: str, sales_order_item: str):

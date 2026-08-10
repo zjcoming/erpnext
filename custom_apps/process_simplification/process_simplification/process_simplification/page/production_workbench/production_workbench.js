@@ -309,8 +309,17 @@ if (typeof frappe !== "undefined") {
 				? `${__("确认按当前未安排数量创建生产任务？")}<br>${frappe.utils.escape_html(demand?.item_code || "")} · ${format_number(flt(demand?.unplanned_production_qty), null, 2)}`
 				: __("确认将当前可用完工成品回补到来源订单？");
 			frappe.confirm(message, () => {
-				frappe.call({ method: methods[action], args: { sales_order: salesOrder, sales_order_item: salesOrderItem }, freeze: true }).then(() => {
-					frappe.show_alert({ message: __("操作完成，已按最新数据重新检查。"), indicator: "green" });
+				frappe.call({ method: methods[action], args: { sales_order: salesOrder, sales_order_item: salesOrderItem }, freeze: true }).then((r) => {
+					const created = (r && r.message) || {};
+					let done = __("操作完成，已按最新数据重新检查。");
+					if (action === "create_work_order") {
+						const total = (created.work_orders || []).length;
+						const sub = flt(created.sub_assembly_count);
+						done = sub > 0
+							? __("已创建 {0} 个生产任务（含 {1} 个半成品），已按最新数据重新检查。", [total, sub])
+							: __("已创建 {0} 个生产任务，已按最新数据重新检查。", [total]);
+					}
+					frappe.show_alert({ message: done, indicator: "green" });
 					loadOverview();
 				});
 			});

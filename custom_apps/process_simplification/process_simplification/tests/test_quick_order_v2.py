@@ -1131,7 +1131,7 @@ class TestQuickOrderV2(UnitTestCase):
 		self.assertEqual(result.shortages, [])
 		stock_snapshot.assert_not_called()
 
-	@patch("process_simplification.api.actions.make_work_order")
+	@patch("process_simplification.api.actions.create_work_orders_via_production_plan")
 	@patch("process_simplification.api.actions.get_allocated_production_row")
 	@patch("process_simplification.api.actions.resolve_production_source_warehouse")
 	@patch("process_simplification.api.actions.get_default_bom")
@@ -1150,7 +1150,7 @@ class TestQuickOrderV2(UnitTestCase):
 		get_default_bom,
 		resolve_source_warehouse,
 		get_allocated_production_row,
-		make_work_order,
+		create_via_pp,
 	):
 		from process_simplification.api.actions import create_work_order
 
@@ -1176,11 +1176,22 @@ class TestQuickOrderV2(UnitTestCase):
 		resolve_source_warehouse.return_value = frappe._dict(
 			{"warehouse": "Stores - TC", "can_use": True, "reason": None}
 		)
-		work_order = MagicMock()
-		make_work_order.return_value = work_order
+		create_via_pp.return_value = {
+			"production_plan": "PP-0001",
+			"work_orders": ["WO-0001"],
+			"sub_assembly_count": 0,
+		}
 
-		create_work_order("SO-001", "SOI-001", 4)
+		result = create_work_order("SO-001", "SOI-001", 4)
 
-		self.assertEqual(make_work_order.call_args.kwargs["bom_no"], "BOM-FG-001-OLD")
-		self.assertEqual(work_order.source_warehouse, "Stores - TC")
+		# The BOM snapshotted on the Sales Order Item wins over get_default_bom,
+		# and the resolved source warehouse is used to check sub-assembly stock.
+		kwargs = create_via_pp.call_args.kwargs
+		self.assertEqual(kwargs["bom_no"], "BOM-FG-001-OLD")
+		self.assertEqual(kwargs["sub_assembly_warehouse"], "Stores - TC")
+		self.assertEqual(kwargs["fg_warehouse"], "Finished Goods - TC")
+		self.assertEqual(kwargs["planned_qty"], 4)
+		self.assertEqual(kwargs["sales_order"], "SO-001")
+		self.assertEqual(kwargs["sales_order_item"], "SOI-001")
+		self.assertEqual(result["work_order"], "WO-0001")
 		get_default_bom.assert_not_called()
