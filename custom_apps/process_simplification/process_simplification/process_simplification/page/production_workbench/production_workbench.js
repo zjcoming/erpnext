@@ -72,6 +72,56 @@ function productionSummary(demands) {
 	);
 }
 
+function workbenchPaginationHtml(pagination = {}, helpers) {
+	const t = helpers.translate;
+	const esc = helpers.escapeHtml;
+	const page = Number(pagination.page || 1);
+	const pageSize = Number(pagination.page_size || 20);
+	const totalPages = Number(pagination.total_pages || 0);
+	const totalCount = Number(pagination.total_count || 0);
+	const previousPage = Math.max(page - 1, 1);
+	const nextPage = totalPages ? Math.min(page + 1, totalPages) : page + 1;
+	const pageSizes = [20, 50, 100];
+	return `
+		<div class="workbench-pagination" aria-label="${esc(t("åˆ†é¡µ"))}">
+			<div class="workbench-pagination-summary">${esc(t("ç¬¬"))} ${page} / ${totalPages || 1} ${esc(t("é¡µ"))} · ${esc(t("å…±"))} ${totalCount} ${esc(t("æ¡"))}</div>
+			<div class="workbench-pagination-actions">
+				<button class="btn btn-default btn-sm workbench-page-action" data-page="${previousPage}" ${pagination.has_prev ? "" : "disabled"}>${esc(t("ä¸Šä¸€é¡µ"))}</button>
+				<button class="btn btn-default btn-sm workbench-page-action" data-page="${nextPage}" ${pagination.has_next ? "" : "disabled"}>${esc(t("ä¸‹ä¸€é¡µ"))}</button>
+				<select class="form-control input-sm workbench-page-size" aria-label="${esc(t("æ¯é¡µæ¡æ•°"))}">
+					${pageSizes
+						.map((size) => `<option value="${size}" data-page-size="${size}" ${size === pageSize ? "selected" : ""}>${size} ${esc(t("æ¡/é¡µ"))}</option>`)
+						.join("")}
+				</select>
+			</div>
+		</div>`;
+}
+
+function workbenchPaginationHtmlSafe(pagination = {}, helpers) {
+	const t = helpers.translate;
+	const esc = helpers.escapeHtml;
+	const page = Number(pagination.page || 1);
+	const pageSize = Number(pagination.page_size || 20);
+	const totalPages = Number(pagination.total_pages || 0);
+	const totalCount = Number(pagination.total_count || 0);
+	const previousPage = Math.max(page - 1, 1);
+	const nextPage = totalPages ? Math.min(page + 1, totalPages) : page + 1;
+	const pageSizes = [20, 50, 100];
+	return `
+		<div class="workbench-pagination" aria-label="${esc(t("\u5206\u9875"))}">
+			<div class="workbench-pagination-summary">${esc(t("\u7b2c"))} ${page} / ${totalPages || 1} ${esc(t("\u9875"))} · ${esc(t("\u5171"))} ${totalCount} ${esc(t("\u6761"))}</div>
+			<div class="workbench-pagination-actions">
+				<button class="btn btn-default btn-sm workbench-page-action" data-page="${previousPage}" ${pagination.has_prev ? "" : "disabled"}>${esc(t("\u4e0a\u4e00\u9875"))}</button>
+				<button class="btn btn-default btn-sm workbench-page-action" data-page="${nextPage}" ${pagination.has_next ? "" : "disabled"}>${esc(t("\u4e0b\u4e00\u9875"))}</button>
+				<select class="form-control input-sm workbench-page-size" aria-label="${esc(t("\u6bcf\u9875\u6761\u6570"))}">
+					${pageSizes
+						.map((size) => `<option value="${size}" data-page-size="${size}" ${size === pageSize ? "selected" : ""}>${size} ${esc(t("\u6761/\u9875"))}</option>`)
+						.join("")}
+				</select>
+			</div>
+		</div>`;
+}
+
 function productionDemandHtml(demand, helpers) {
 	const t = helpers.translate;
 	const esc = helpers.escapeHtml;
@@ -165,6 +215,7 @@ function refreshProductionOverview(page, demandKey) {
 	if (!page || !page.production_workbench) return;
 	const { state, loadOverview } = page.production_workbench;
 	state.filters.search = demandKey || "";
+	if (state.pagination) state.pagination.page = 1;
 	state.expandedDemands.clear();
 	if (demandKey) state.expandedDemands.add(demandKey);
 	return loadOverview();
@@ -174,6 +225,7 @@ const productionWorkbenchApi = {
 	filterProductionDemands,
 	productionMaterialStatusMeta,
 	productionSummary,
+	workbenchPaginationHtml: workbenchPaginationHtmlSafe,
 	productionDemandHtml,
 	refreshProductionOverview,
 };
@@ -201,11 +253,17 @@ if (typeof frappe !== "undefined") {
 				<div class="production-update-time text-muted"></div>
 				<p class="text-muted production-sort-note">${__("默认排序：订单交期、风险、未安排数量、订单创建时间。")}</p>
 				<div class="production-demand-list"></div>
+				<div class="production-pagination"></div>
 				<div class="production-other-section"></div>
 			</div>`);
 
 		const $root = page.main.find(".production-workbench");
-		const state = { data: { demands: [], other_work_orders: [] }, filters: {}, expandedDemands: new Set() };
+		const state = {
+			data: { demands: [], other_work_orders: [], summary: {}, pagination: { page: 1, page_size: 20 } },
+			filters: {},
+			pagination: { page: 1, page_size: 20 },
+			expandedDemands: new Set(),
+		};
 		page.production_workbench = { state, loadOverview };
 
 		const helpers = () => ({
@@ -216,7 +274,7 @@ if (typeof frappe !== "undefined") {
 		});
 
 		function visibleDemands() {
-			return filterProductionDemands(state.data.demands || [], state.filters);
+			return state.data.demands || [];
 		}
 
 		function renderKpis(summary) {
@@ -247,7 +305,7 @@ if (typeof frappe !== "undefined") {
 
 		function render() {
 			const demands = visibleDemands();
-			renderKpis(productionSummary(demands));
+			renderKpis(state.data.summary || productionSummary(demands));
 			for (const [name, value] of Object.entries(state.filters)) {
 				const $field = $root.find(`[data-filter="${name}"]`);
 				if ($field.is(":checkbox")) $field.prop("checked", Boolean(value));
@@ -267,6 +325,7 @@ if (typeof frappe !== "undefined") {
 					else state.expandedDemands.delete(key);
 				});
 			});
+			$root.find(".production-pagination").html(workbenchPaginationHtmlSafe(state.data.pagination || state.pagination, helpers()));
 			renderOtherWorkOrders();
 		}
 
@@ -274,15 +333,19 @@ if (typeof frappe !== "undefined") {
 			return frappe.call({
 				method: "process_simplification.api.production.get_production_overview",
 				freeze: true,
+				args: {
+					page: state.pagination.page,
+					page_size: state.pagination.page_size,
+					filters: state.filters,
+				},
 				freeze_message: __("正在计算生产需求与物料风险..."),
 			}).then((response) => {
 				state.data = response.message || { demands: [], other_work_orders: [] };
-				const customers = [...new Map((state.data.demands || []).map((row) => [row.customer, row.customer_name || row.customer])).entries()]
-					.filter(([customer]) => customer)
-					.sort((left, right) => left[1].localeCompare(right[1]));
+				state.pagination = state.data.pagination || state.pagination;
+				const customers = state.data.customers || [];
 				$root.find('[data-filter="customer"]').html(
 					[`<option value="">${frappe.utils.escape_html(__("全部客户"))}</option>`]
-						.concat(customers.map(([value, label]) => `<option value="${frappe.utils.escape_html(value)}">${frappe.utils.escape_html(label)}</option>`))
+						.concat(customers.map((row) => `<option value="${frappe.utils.escape_html(row.value)}">${frappe.utils.escape_html(row.label)}</option>`))
 						.join("")
 				);
 				$root.find(".production-update-time").text(
@@ -319,7 +382,17 @@ if (typeof frappe !== "undefined") {
 		$root.on("input change", "[data-filter]", (event) => {
 			const $input = $(event.currentTarget);
 			state.filters[$input.data("filter")] = $input.is(":checkbox") ? $input.prop("checked") : $input.val();
-			render();
+			state.pagination.page = 1;
+			loadOverview();
+		});
+		$root.on("click", ".workbench-page-action", (event) => {
+			state.pagination.page = Number($(event.currentTarget).data("page") || 1);
+			loadOverview();
+		});
+		$root.on("change", ".workbench-page-size", (event) => {
+			state.pagination.page = 1;
+			state.pagination.page_size = Number($(event.currentTarget).val() || 20);
+			loadOverview();
 		});
 		$root.on("click", ".production-action", (event) => {
 			const $button = $(event.currentTarget);

@@ -270,7 +270,7 @@ class TestSimplifiedFlow(UnitTestCase):
 			}[name]
 		}
 
-		result = get_fulfillment_overview()
+		result = get_fulfillment_overview(page_size=0)
 
 		self.assertEqual(
 			[order["name"] for order in result["orders"]],
@@ -309,7 +309,7 @@ class TestSimplifiedFlow(UnitTestCase):
 			"rows": [{"pending_qty": 1, "reserved_qty": 1, "delivery_date": "2026-08-08", "next_actions": []}]
 		}
 
-		result = get_fulfillment_overview()
+		result = get_fulfillment_overview(page_size=0)
 
 		self.assertEqual(len(result["orders"]), 501)
 		self.assertEqual(get_list.call_count, 2)
@@ -319,6 +319,41 @@ class TestSimplifiedFlow(UnitTestCase):
 		)
 		self.assertTrue(
 			all(call.kwargs.get("order_by") == "creation asc, name asc" for call in get_list.call_args_list)
+		)
+
+	@patch("process_simplification.api.workbench.now_datetime")
+	@patch("process_simplification.api.workbench.get_order_workbench")
+	@patch("process_simplification.api.workbench.frappe.get_list")
+	@patch("process_simplification.api.workbench.frappe.has_permission")
+	def test_fulfillment_overview_returns_requested_page_with_global_summary(
+		self, has_permission, get_list, get_order_workbench, now_datetime
+	):
+		from process_simplification.api.workbench import get_fulfillment_overview
+
+		has_permission.return_value = True
+		now_datetime.return_value = frappe.utils.get_datetime("2026-08-02 09:00:00")
+		get_list.return_value = [
+			frappe._dict(name=f"SO-{index}", customer="C1", customer_name="C1", creation=f"2026-08-0{index}")
+			for index in range(1, 6)
+		]
+		get_order_workbench.return_value = {
+			"rows": [{"pending_qty": 1, "reserved_qty": 1, "delivery_date": "2026-08-08", "next_actions": []}]
+		}
+
+		result = get_fulfillment_overview(page=2, page_size=2)
+
+		self.assertEqual([order["name"] for order in result["orders"]], ["SO-3", "SO-4"])
+		self.assertEqual(result["summary"]["total_orders"], 5)
+		self.assertEqual(
+			result["pagination"],
+			{
+				"page": 2,
+				"page_size": 2,
+				"total_count": 5,
+				"total_pages": 3,
+				"has_next": True,
+				"has_prev": True,
+			},
 		)
 
 	def test_quick_order_rejects_duplicate_finished_goods(self):

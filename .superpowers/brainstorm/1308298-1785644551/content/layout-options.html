@@ -1,0 +1,62 @@
+<h2>订单履约总览：哪种布局最适合老板？</h2>
+<p class="subtitle">三种方案都展示全部未完成订单，并按交期从早到晚排列；区别在于老板如何发现风险和进入处理。</p>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:14px;background:#f7f8fa">
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px">
+        <div style="background:white;border:1px solid #ddd;padding:8px"><small>逾期订单</small><b style="display:block;color:#c0392b">2</b></div>
+        <div style="background:white;border:1px solid #ddd;padding:8px"><small>7天内交付</small><b style="display:block">8</b></div>
+        <div style="background:white;border:1px solid #ddd;padding:8px"><small>需生产</small><b style="display:block;color:#d35400">5</b></div>
+        <div style="background:white;border:1px solid #ddd;padding:8px"><small>可直接发货</small><b style="display:block;color:#198754">3</b></div>
+      </div>
+      <div style="background:white;border:1px solid #dfe3e8;font-size:11px">
+        <div style="display:grid;grid-template-columns:1.1fr .9fr .8fr .8fr 1.2fr;padding:7px;font-weight:700;background:#f1f3f5"><span>订单/客户</span><span>交期</span><span>交付进度</span><span>生产进度</span><span>风险/下一步</span></div>
+        <div style="display:grid;grid-template-columns:1.1fr .9fr .8fr .8fr 1.2fr;padding:8px;border-top:1px solid #eee"><span>SO-0008<br>测试客户1</span><span style="color:#c0392b">已逾期 2 天</span><span>0 / 5000</span><span>未排产</span><span><b style="color:#c0392b">缺料</b> · 检查采购</span></div>
+        <div style="padding:8px 12px 10px 32px;background:#fbfbfc;border-top:1px dashed #ddd;color:#555">↳ CFCG125…　订单 5000　库存覆盖 311　需生产 4689　缺料 9 项</div>
+        <div style="display:grid;grid-template-columns:1.1fr .9fr .8fr .8fr 1.2fr;padding:8px;border-top:1px solid #eee"><span>SO-0012<br>客户甲</span><span>08-06</span><span>1000 / 1000</span><span>无需生产</span><span style="color:#198754"><b>可直接发货</b></span></div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A · 交期优先表格（推荐）</h3>
+      <p>一张表展示全部未完成订单；订单为主行，产品明细按需展开。最符合老板从交期、风险到下一步的阅读顺序。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:14px;background:#f7f8fa">
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;font-size:11px">
+        <div style="background:#fff;border-top:3px solid #c0392b;padding:8px"><b>异常/逾期 2</b><div style="margin-top:8px;padding:7px;background:#fff4f2;border:1px solid #f0cbc5">SO-0008<br>缺料 · 逾期2天</div></div>
+        <div style="background:#fff;border-top:3px solid #d35400;padding:8px"><b>待生产 5</b><div style="margin-top:8px;padding:7px;background:#fff8ed;border:1px solid #f0d6b7">SO-0010<br>未排产 · 3天后</div></div>
+        <div style="background:#fff;border-top:3px solid #2874a6;padding:8px"><b>生产中 7</b><div style="margin-top:8px;padding:7px;background:#eef7fc;border:1px solid #bdd7e7">SO-0009<br>完成 62%</div></div>
+        <div style="background:#fff;border-top:3px solid #198754;padding:8px"><b>待发货 3</b><div style="margin-top:8px;padding:7px;background:#effaf4;border:1px solid #c4e6d3">SO-0012<br>库存已覆盖</div></div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B · 履约阶段看板</h3>
+      <p>订单按异常、待生产、生产中、待发货分列。阶段直观，但订单多时难以严格按交期比较，跨阶段优先级也容易被割裂。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:14px;background:#f7f8fa">
+      <div style="display:grid;grid-template-columns:42% 58%;min-height:155px;background:white;border:1px solid #dfe3e8;font-size:11px">
+        <div style="border-right:1px solid #ddd">
+          <div style="padding:7px;background:#f1f3f5;font-weight:700">按交期排列</div>
+          <div style="padding:9px;background:#fff3f1;border-left:3px solid #c0392b">SO-0008 · 测试客户1<br><b>已逾期 / 缺料</b></div>
+          <div style="padding:9px;border-top:1px solid #eee">SO-0010 · 客户乙<br>3天后 / 待排产</div>
+          <div style="padding:9px;border-top:1px solid #eee">SO-0012 · 客户甲<br>5天后 / 可发货</div>
+        </div>
+        <div style="padding:10px"><b>SO-0008 履约详情</b><p style="margin:7px 0">交期风险：高　生产进度：0%</p><div style="height:8px;background:#eee"><div style="width:12%;height:8px;background:#d35400"></div></div><p>库存 311 · 需生产 4689 · 缺料 9项</p><button class="mock-button">进入订单处理</button></div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C · 主从双栏</h3>
+      <p>左边选订单，右边看完整详情。信息丰富，但屏幕占用大、移动端弱，也容易把总览做成复杂操作页。</p>
+    </div>
+  </div>
+</div>
+
+<div class="section" style="margin-top:18px">
+  <p><strong>我的建议：</strong>选择 A。它最符合“全部订单 + 交期排序 + 风险优先”的定位，并且能最大程度复用现有订单工作台的行级数据。</p>
+</div>

@@ -180,6 +180,19 @@ test("production demand HTML escapes server values and exposes complete labelled
 	assert.match(html, /\/app\/work-order\/WO-001/);
 });
 
+test("pagination HTML exposes compact production page controls", () => {
+	const html = productionWorkbench.workbenchPaginationHtml(
+		{ page: 3, page_size: 20, total_count: 61, total_pages: 4, has_next: true, has_prev: true },
+		helpers
+	);
+
+	assert.match(html, /\u7b2c 3 \/ 4 \u9875/);
+	assert.match(html, /\u5171 61 \u6761/);
+	assert.match(html, /data-page="2"/);
+	assert.match(html, /data-page="4"/);
+	assert.match(html, /data-page-size="20" selected/);
+});
+
 test("route focus expands the selected Sales Order Item and reloads once", async () => {
 	const loads = [];
 	const state = { filters: {}, expandedDemands: new Set() };

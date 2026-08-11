@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>ERPNext 订单履约总览</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --line: #e5e7eb;
+      --text: #202124;
+      --muted: #6b7280;
+      --dark: #111827;
+      --red: #c24136;
+      --red-bg: #fff3f1;
+      --orange: #b75d16;
+      --orange-bg: #fff7eb;
+      --blue: #246b9e;
+      --blue-bg: #eff7fc;
+      --green: #267a52;
+      --green-bg: #eef9f3;
+      --shadow: 0 1px 2px rgba(20, 24, 31, .04), 0 8px 24px rgba(20, 24, 31, .05);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Inter, "Microsoft YaHei", system-ui, sans-serif; color: var(--text); background: var(--bg); font-size: 14px; }
+    button, input, select { font: inherit; }
+    .app { display: grid; grid-template-columns: 174px 1fr; min-height: 100vh; }
+    .sidebar { background: #fff; border-right: 1px solid var(--line); padding: 14px 10px; display: flex; flex-direction: column; }
+    .brand { display: flex; gap: 9px; align-items: center; padding: 0 4px 18px; }
+    .brand-mark { width: 30px; height: 30px; border-radius: 9px; background: #747b86; color: #fff; display: grid; place-items: center; font-weight: 800; }
+    .brand strong { display: block; }
+    .brand small { color: var(--muted); }
+    .nav { display: grid; gap: 3px; }
+    .nav-item { border-radius: 7px; padding: 9px 10px; color: #4b5563; display: flex; gap: 9px; align-items: center; }
+    .nav-item.active { background: #f0f1f3; color: #111827; font-weight: 700; }
+    .nav-icon { width: 16px; text-align: center; }
+    .user { margin-top: auto; border-top: 1px solid var(--line); padding: 14px 6px 2px; color: var(--muted); font-size: 12px; }
+    .main { min-width: 0; }
+    .topbar { height: 52px; padding: 0 22px; display: flex; align-items: center; justify-content: space-between; background: #fff; border-bottom: 1px solid var(--line); }
+    .crumb { color: var(--muted); font-size: 13px; }
+    .top-actions { display: flex; gap: 8px; }
+    .button { border: 1px solid var(--line); background: #fff; border-radius: 7px; padding: 8px 12px; cursor: pointer; color: #374151; }
+    .button.primary { background: var(--dark); color: #fff; border-color: var(--dark); }
+    .content { padding: 22px; }
+    .heading { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 17px; }
+    h1 { margin: 0 0 5px; font-size: 23px; letter-spacing: -.02em; }
+    .subtitle { margin: 0; color: var(--muted); }
+    .snapshot { text-align: right; color: var(--muted); font-size: 12px; }
+    .kpis { display: grid; grid-template-columns: repeat(5, minmax(140px, 1fr)); gap: 10px; margin-bottom: 14px; }
+    .kpi { background: var(--panel); border: 1px solid var(--line); border-radius: 9px; padding: 13px 14px; box-shadow: 0 1px 2px rgba(0,0,0,.02); }
+    .kpi-top { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; }
+    .kpi-value { display: flex; align-items: baseline; gap: 5px; margin-top: 6px; }
+    .kpi-value strong { font-size: 24px; line-height: 1; }
+    .kpi-value small { color: var(--muted); }
+    .kpi.danger { border-color: #f0c9c4; background: #fffafa; }
+    .kpi.danger strong { color: var(--red); }
+    .kpi.warning strong { color: var(--orange); }
+    .kpi.success strong { color: var(--green); }
+    .toolbar { background: #fff; border: 1px solid var(--line); border-radius: 9px; padding: 10px; display: grid; grid-template-columns: minmax(240px, 1.5fr) repeat(3, minmax(130px, .7fr)) auto; gap: 8px; margin-bottom: 12px; }
+    .control { height: 36px; border: 1px solid var(--line); border-radius: 7px; padding: 0 10px; background: #fafafa; color: #374151; min-width: 0; }
+    .toggle { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; padding: 0 7px; color: #4b5563; }
+    .toggle input { accent-color: #111827; }
+    .legend { display: flex; align-items: center; gap: 16px; margin: 0 2px 9px; color: var(--muted); font-size: 12px; }
+    .dot { width: 8px; height: 8px; border-radius: 999px; display: inline-block; margin-right: 5px; }
+    .orders { display: grid; gap: 9px; }
+    .order { background: #fff; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; box-shadow: var(--shadow); }
+    .order.overdue { border-left: 4px solid var(--red); }
+    .order.soon { border-left: 4px solid var(--orange); }
+    .order.normal { border-left: 4px solid #9ca3af; }
+    .order-head { display: grid; grid-template-columns: 28px minmax(210px,1.25fr) 120px 130px 130px 130px minmax(180px,1.15fr) 150px; align-items: center; min-height: 70px; padding: 0 12px; gap: 10px; }
+    .expand { border: 0; background: transparent; color: var(--muted); font-size: 16px; cursor: pointer; }
+    .order-code { font-weight: 750; }
+    .customer { color: var(--muted); margin-top: 4px; font-size: 12px; }
+    .date strong { display: block; }
+    .date small { display: block; margin-top: 4px; }
+    .danger-text { color: var(--red); }
+    .warning-text { color: var(--orange); }
+    .metric { font-variant-numeric: tabular-nums; }
+    .metric strong { display: block; }
+    .metric small { display: block; margin-top: 4px; color: var(--muted); }
+    .progress { height: 5px; background: #eceff2; border-radius: 999px; overflow: hidden; margin-top: 6px; }
+    .progress > span { display: block; height: 100%; background: #5b7fa0; border-radius: inherit; }
+    .risk { display: flex; flex-wrap: wrap; gap: 5px; }
+    .badge { display: inline-flex; align-items: center; min-height: 24px; padding: 3px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+    .badge.red { background: var(--red-bg); color: var(--red); }
+    .badge.orange { background: var(--orange-bg); color: var(--orange); }
+    .badge.blue { background: var(--blue-bg); color: var(--blue); }
+    .badge.green { background: var(--green-bg); color: var(--green); }
+    .next { text-align: right; }
+    .link-btn { border: 1px solid var(--line); background: #f8f9fa; border-radius: 7px; padding: 7px 10px; cursor: pointer; font-weight: 650; }
+    .details { border-top: 1px solid var(--line); background: #fbfbfc; padding: 0 12px 12px 50px; display: none; }
+    .order.open .details { display: block; }
+    .order.open .expand { transform: rotate(90deg); }
+    .detail-head, .product { display: grid; grid-template-columns: minmax(230px,1.5fr) 100px 120px 120px 120px 120px 140px; gap: 10px; align-items: center; }
+    .detail-head { padding: 10px 8px 7px; color: var(--muted); font-size: 11px; font-weight: 700; }
+    .product { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 10px 8px; margin-bottom: 6px; font-size: 12px; }
+    .product-name { font-weight: 700; }
+    .product-code { color: var(--muted); margin-top: 3px; }
+    .detail-link { color: #245f8e; font-weight: 700; cursor: pointer; }
+    .table-caption { display: grid; grid-template-columns: 28px minmax(210px,1.25fr) 120px 130px 130px 130px minmax(180px,1.15fr) 150px; gap: 10px; padding: 0 12px 7px; color: var(--muted); font-size: 11px; font-weight: 700; }
+    .empty-note { margin-top: 12px; color: var(--muted); text-align: center; font-size: 12px; }
+    @media (max-width: 1120px) {
+      .app { grid-template-columns: 60px 1fr; }
+      .brand div:last-child, .nav-item span:last-child, .user { display:none; }
+      .kpis { grid-template-columns: repeat(3,1fr); }
+      .order-list-wrap { overflow-x:auto; }
+      .orders, .table-caption { min-width: 1180px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand"><div class="brand-mark">P</div><div><strong>流程简化</strong><small>老板工作台</small></div></div>
+      <nav class="nav">
+        <div class="nav-item"><span class="nav-icon">⌂</span><span>首页</span></div>
+        <div class="nav-item"><span class="nav-icon">＋</span><span>快速开单</span></div>
+        <div class="nav-item active"><span class="nav-icon">≡</span><span>订单履约总览</span></div>
+        <div class="nav-item"><span class="nav-icon">◇</span><span>生产工作台</span></div>
+        <div class="nav-item"><span class="nav-icon">□</span><span>缺料采购</span></div>
+      </nav>
+      <div class="user">Administrator<br />admin@example.com</div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar"><div class="crumb">流程简化 / 订单履约总览</div><div class="top-actions"><button class="button">导出</button><button class="button primary">刷新状态</button></div></header>
+      <section class="content">
+        <div class="heading">
+          <div><h1>订单履约总览</h1><p class="subtitle">全部未完成订单按交期排序，先处理逾期、缺料和未排产风险。</p></div>
+          <div class="snapshot">状态快照<br /><strong>2026-08-02 12:16</strong></div>
+        </div>
+
+        <div class="kpis">
+          <div class="kpi"><div class="kpi-top"><span>未完成订单</span><span>全部</span></div><div class="kpi-value"><strong>18</strong><small>单</small></div></div>
+          <div class="kpi danger"><div class="kpi-top"><span>已逾期</span><span>需立即处理</span></div><div class="kpi-value"><strong>2</strong><small>单</small></div></div>
+          <div class="kpi warning"><div class="kpi-top"><span>7 天内交付</span><span>临期</span></div><div class="kpi-value"><strong>8</strong><small>单</small></div></div>
+          <div class="kpi warning"><div class="kpi-top"><span>需要生产</span><span>含生产中</span></div><div class="kpi-value"><strong>9</strong><small>单</small></div></div>
+          <div class="kpi success"><div class="kpi-top"><span>可直接发货</span><span>无需生产</span></div><div class="kpi-value"><strong>3</strong><small>单</small></div></div>
+        </div>
+
+        <div class="toolbar">
+          <input class="control" placeholder="搜索订单号、客户或产品" />
+          <select class="control"><option>全部履约状态</option><option>异常</option><option>需生产</option><option>生产中</option><option>待发货</option></select>
+          <select class="control"><option>全部交期</option><option>已逾期</option><option>今天</option><option>未来 3 天</option><option>未来 7 天</option></select>
+          <select class="control"><option>全部客户</option><option>测试客户1</option><option>客户甲</option></select>
+          <label class="toggle"><input type="checkbox" /> 只看有风险</label>
+        </div>
+
+        <div class="legend"><span><i class="dot" style="background:var(--red)"></i>逾期/阻断</span><span><i class="dot" style="background:var(--orange)"></i>临期/需关注</span><span><i class="dot" style="background:var(--blue)"></i>执行中</span><span><i class="dot" style="background:var(--green)"></i>可发货</span><span>默认排序：交期升序 → 风险严重度 → 订单创建时间</span></div>
+
+        <div class="order-list-wrap">
+          <div class="table-caption"><span></span><span>销售订单 / 客户</span><span>统一交期</span><span>交付进度</span><span>库存覆盖</span><span>生产进度</span><span>最大风险</span><span style="text-align:right">下一步</span></div>
+          <div class="orders">
+            <article class="order overdue open">
+              <div class="order-head">
+                <button class="expand" aria-label="展开订单">›</button>
+                <div><div class="order-code">SAL-ORD-2026-00008</div><div class="customer">测试客户1 · 2 个产品</div></div>
+                <div class="date"><strong>2026-08-01</strong><small class="danger-text">已逾期 1 天</small></div>
+                <div class="metric"><strong>0 / 5,600</strong><div class="progress"><span style="width:0%"></span></div><small>尚未发货</small></div>
+                <div class="metric"><strong>311 / 5,600</strong><small>覆盖 5.6%</small></div>
+                <div class="metric"><strong>0 / 5,289</strong><div class="progress"><span style="width:0%"></span></div><small>尚未排产</small></div>
+                <div class="risk"><span class="badge red">缺料 9 项</span><span class="badge orange">未排产</span></div>
+                <div class="next"><button class="link-btn">查看并处理</button></div>
+              </div>
+              <div class="details">
+                <div class="detail-head"><span>产品</span><span>订单数量</span><span>成品可覆盖</span><span>需生产</span><span>生产中</span><span>已完工</span><span>状态 / 动作</span></div>
+                <div class="product"><div><div class="product-name">CFCG125-12脚 蓝/黄 绿 L=610 无标</div><div class="product-code">CFCG125-12脚 蓝/黄 绿 L=610 无标</div></div><span>5,000</span><span>311</span><span>4,689</span><span>0</span><span>0</span><span><b class="danger-text">缺料 9 项</b><br><span class="detail-link">进入履约详情</span></span></div>
+                <div class="product"><div><div class="product-name">CFCG125-08脚 标准款</div><div class="product-code">CFCG125-08</div></div><span>600</span><span>0</span><span>600</span><span>0</span><span>0</span><span><b class="warning-text">待检查物料</b><br><span class="detail-link">检查库存与缺料</span></span></div>
+              </div>
+            </article>
+
+            <article class="order soon">
+              <div class="order-head">
+                <button class="expand" aria-label="展开订单">›</button>
+                <div><div class="order-code">SAL-ORD-2026-00011</div><div class="customer">客户乙 · 1 个产品</div></div>
+                <div class="date"><strong>2026-08-04</strong><small class="warning-text">剩余 2 天</small></div>
+                <div class="metric"><strong>0 / 2,000</strong><div class="progress"><span style="width:0%"></span></div><small>尚未发货</small></div>
+                <div class="metric"><strong>0 / 2,000</strong><small>无成品覆盖</small></div>
+                <div class="metric"><strong>1,200 / 2,000</strong><div class="progress"><span style="width:60%"></span></div><small>生产完成 60%</small></div>
+                <div class="risk"><span class="badge blue">生产中</span><span class="badge orange">交期临近</span></div>
+                <div class="next"><button class="link-btn">查看生产进度</button></div>
+              </div>
+              <div class="details"></div>
+            </article>
+
+            <article class="order normal">
+              <div class="order-head">
+                <button class="expand" aria-label="展开订单">›</button>
+                <div><div class="order-code">SAL-ORD-2026-00012</div><div class="customer">客户甲 · 1 个产品</div></div>
+                <div class="date"><strong>2026-08-06</strong><small>剩余 4 天</small></div>
+                <div class="metric"><strong>0 / 1,000</strong><div class="progress"><span style="width:0%"></span></div><small>待发货</small></div>
+                <div class="metric"><strong>1,000 / 1,000</strong><small>库存已覆盖</small></div>
+                <div class="metric"><strong>无需生产</strong><small>—</small></div>
+                <div class="risk"><span class="badge green">可直接发货</span></div>
+                <div class="next"><button class="link-btn">进入发货处理</button></div>
+              </div>
+              <div class="details"></div>
+            </article>
+
+            <article class="order normal">
+              <div class="order-head">
+                <button class="expand" aria-label="展开订单">›</button>
+                <div><div class="order-code">SAL-ORD-2026-00015</div><div class="customer">客户丙 · 3 个产品</div></div>
+                <div class="date"><strong>2026-08-12</strong><small>剩余 10 天</small></div>
+                <div class="metric"><strong>500 / 3,000</strong><div class="progress"><span style="width:17%"></span></div><small>已部分发货</small></div>
+                <div class="metric"><strong>900 / 2,500</strong><small>覆盖剩余 36%</small></div>
+                <div class="metric"><strong>1,200 / 1,600</strong><div class="progress"><span style="width:75%"></span></div><small>生产完成 75%</small></div>
+                <div class="risk"><span class="badge blue">正常执行</span></div>
+                <div class="next"><button class="link-btn">查看履约详情</button></div>
+              </div>
+              <div class="details"></div>
+            </article>
+          </div>
+        </div>
+        <div class="empty-note">共 18 张未完成订单 · 当前展示前 4 张示例 · 已自动排除已关闭和已全部交付订单</div>
+      </section>
+    </main>
+  </div>
+  <script>
+    document.querySelectorAll('.order').forEach((order) => {
+      order.querySelector('.expand').addEventListener('click', () => order.classList.toggle('open'));
+    });
+  </script>
+</body>
+</html>
+
+

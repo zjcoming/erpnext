@@ -55,6 +55,56 @@ function deliveryNoteRouteFromResponse(response) {
 	return deliveryNote ? ["Form", "Delivery Note", deliveryNote] : null;
 }
 
+function workbenchPaginationHtml(pagination = {}, helpers) {
+	const t = helpers.translate;
+	const esc = helpers.escapeHtml;
+	const page = Number(pagination.page || 1);
+	const pageSize = Number(pagination.page_size || 20);
+	const totalPages = Number(pagination.total_pages || 0);
+	const totalCount = Number(pagination.total_count || 0);
+	const previousPage = Math.max(page - 1, 1);
+	const nextPage = totalPages ? Math.min(page + 1, totalPages) : page + 1;
+	const pageSizes = [20, 50, 100];
+	return `
+		<div class="workbench-pagination" aria-label="${esc(t("åˆ†é¡µ"))}">
+			<div class="workbench-pagination-summary">${esc(t("ç¬¬"))} ${page} / ${totalPages || 1} ${esc(t("é¡µ"))} · ${esc(t("å…±"))} ${totalCount} ${esc(t("æ¡"))}</div>
+			<div class="workbench-pagination-actions">
+				<button class="btn btn-default btn-sm workbench-page-action" data-page="${previousPage}" ${pagination.has_prev ? "" : "disabled"}>${esc(t("ä¸Šä¸€é¡µ"))}</button>
+				<button class="btn btn-default btn-sm workbench-page-action" data-page="${nextPage}" ${pagination.has_next ? "" : "disabled"}>${esc(t("ä¸‹ä¸€é¡µ"))}</button>
+				<select class="form-control input-sm workbench-page-size" aria-label="${esc(t("æ¯é¡µæ¡æ•°"))}">
+					${pageSizes
+						.map((size) => `<option value="${size}" data-page-size="${size}" ${size === pageSize ? "selected" : ""}>${size} ${esc(t("æ¡/é¡µ"))}</option>`)
+						.join("")}
+				</select>
+			</div>
+		</div>`;
+}
+
+function workbenchPaginationHtmlSafe(pagination = {}, helpers) {
+	const t = helpers.translate;
+	const esc = helpers.escapeHtml;
+	const page = Number(pagination.page || 1);
+	const pageSize = Number(pagination.page_size || 20);
+	const totalPages = Number(pagination.total_pages || 0);
+	const totalCount = Number(pagination.total_count || 0);
+	const previousPage = Math.max(page - 1, 1);
+	const nextPage = totalPages ? Math.min(page + 1, totalPages) : page + 1;
+	const pageSizes = [20, 50, 100];
+	return `
+		<div class="workbench-pagination" aria-label="${esc(t("\u5206\u9875"))}">
+			<div class="workbench-pagination-summary">${esc(t("\u7b2c"))} ${page} / ${totalPages || 1} ${esc(t("\u9875"))} · ${esc(t("\u5171"))} ${totalCount} ${esc(t("\u6761"))}</div>
+			<div class="workbench-pagination-actions">
+				<button class="btn btn-default btn-sm workbench-page-action" data-page="${previousPage}" ${pagination.has_prev ? "" : "disabled"}>${esc(t("\u4e0a\u4e00\u9875"))}</button>
+				<button class="btn btn-default btn-sm workbench-page-action" data-page="${nextPage}" ${pagination.has_next ? "" : "disabled"}>${esc(t("\u4e0b\u4e00\u9875"))}</button>
+				<select class="form-control input-sm workbench-page-size" aria-label="${esc(t("\u6bcf\u9875\u6761\u6570"))}">
+					${pageSizes
+						.map((size) => `<option value="${size}" data-page-size="${size}" ${size === pageSize ? "selected" : ""}>${size} ${esc(t("\u6761/\u9875"))}</option>`)
+						.join("")}
+				</select>
+			</div>
+		</div>`;
+}
+
 function fulfillmentStatusColor(statusCode) {
 	return {
 		ready_to_ship: "green",
@@ -161,6 +211,7 @@ function refreshFulfillmentOverview(page, salesOrder) {
 	if (!page || !page.fulfillment_overview) return;
 	const { state, loadOverview } = page.fulfillment_overview;
 	state.filters.search = salesOrder || "";
+	if (state.pagination) state.pagination.page = 1;
 	state.expandedOrders.clear();
 	if (salesOrder) state.expandedOrders.add(salesOrder);
 	return loadOverview();
@@ -170,6 +221,7 @@ const fulfillmentOverviewApi = {
 	filterFulfillmentOrders,
 	overviewSummary,
 	fulfillmentCsv,
+	workbenchPaginationHtml: workbenchPaginationHtmlSafe,
 	orderOverviewHtml,
 	refreshFulfillmentOverview,
 	productionWorkbenchRoute,
@@ -215,11 +267,18 @@ if (typeof frappe !== "undefined") {
 				</div>
 				<p class="text-muted fulfillment-sort-note">${__("默认排序：最早交期、最高风险、创建时间。")}</p>
 				<div class="fulfillment-order-list"></div>
+				<div class="fulfillment-pagination"></div>
 			</div>
 		`);
 
 		const $root = page.main.find(".fulfillment-overview");
-		const state = { data: { orders: [] }, filters: {}, expandedOrders: new Set(), inFlightActions: new Set() };
+		const state = {
+			data: { orders: [], summary: {}, pagination: { page: 1, page_size: 20 } },
+			filters: {},
+			pagination: { page: 1, page_size: 20 },
+			expandedOrders: new Set(),
+			inFlightActions: new Set(),
+		};
 		page.fulfillment_overview = { state, loadOverview };
 
 		function browserHelpers() {
@@ -245,12 +304,12 @@ if (typeof frappe !== "undefined") {
 		}
 
 		function visibleOrders() {
-			return filterFulfillmentOrders(state.data.orders || [], state.filters);
+			return state.data.orders || [];
 		}
 
 		function render() {
 			const orders = visibleOrders();
-			renderKpis(overviewSummary(orders));
+			renderKpis(state.data.summary || overviewSummary(orders));
 			$root.find(".fulfillment-search").val(state.filters.search || "");
 			$root.find('[data-filter="deliveryWindow"]').val(state.filters.deliveryWindow || "");
 			$root.find('[data-filter="status"]').val(state.filters.status || "");
@@ -260,6 +319,7 @@ if (typeof frappe !== "undefined") {
 				? orders.map((order) => orderOverviewHtml(order, browserHelpers())).join("")
 				: `<div class="text-muted fulfillment-empty">${frappe.utils.escape_html(__("没有符合当前筛选条件的订单。"))}</div>`;
 			$root.find(".fulfillment-order-list").html(html);
+			$root.find(".fulfillment-pagination").html(workbenchPaginationHtmlSafe(state.data.pagination || state.pagination, browserHelpers()));
 			$root.find(".fulfillment-order").each((_, element) => {
 				const $order = $(element);
 				$order.prop("open", state.expandedOrders.has($order.data("sales-order")));
@@ -275,19 +335,21 @@ if (typeof frappe !== "undefined") {
 			return frappe.call({
 				method: "process_simplification.api.workbench.get_fulfillment_overview",
 				freeze: true,
+				args: {
+					page: state.pagination.page,
+					page_size: state.pagination.page_size,
+					filters: state.filters,
+				},
 				freeze_message: __("正在读取订单履约总览..."),
 			}).then((response) => {
 				state.data = response.message || { orders: [] };
-				const customers = [...new Map(
-					(state.data.orders || []).map((order) => [order.customer, order.customer_name || order.customer])
-				).entries()]
-					.filter(([customer]) => customer)
-					.sort((left, right) => left[1].localeCompare(right[1]));
+				state.pagination = state.data.pagination || state.pagination;
+				const customers = state.data.customers || [];
 				$root.find('[data-filter="customer"]').html(
 					[`<option value="">${frappe.utils.escape_html(__("全部客户"))}</option>`]
 						.concat(
 							customers.map(
-								([customer, label]) => `<option value="${frappe.utils.escape_html(customer)}">${frappe.utils.escape_html(label)}</option>`
+								(row) => `<option value="${frappe.utils.escape_html(row.value)}">${frappe.utils.escape_html(row.label)}</option>`
 							)
 						)
 						.join("")
@@ -362,7 +424,17 @@ if (typeof frappe !== "undefined") {
 		$root.on("input change", "[data-filter]", (event) => {
 			const $input = $(event.currentTarget);
 			state.filters[$input.data("filter")] = $input.is(":checkbox") ? $input.prop("checked") : $input.val();
-			render();
+			state.pagination.page = 1;
+			loadOverview();
+		});
+		$root.on("click", ".workbench-page-action", (event) => {
+			state.pagination.page = Number($(event.currentTarget).data("page") || 1);
+			loadOverview();
+		});
+		$root.on("change", ".workbench-page-size", (event) => {
+			state.pagination.page = 1;
+			state.pagination.page_size = Number($(event.currentTarget).val() || 20);
+			loadOverview();
 		});
 		$root.on("click", ".row-action", (event) => {
 			const $button = $(event.currentTarget);

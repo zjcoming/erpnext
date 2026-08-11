@@ -779,6 +779,36 @@
 	text-align: center;
 }
 
+.workbench-pagination {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	margin-top: 12px;
+	padding: 10px 12px;
+	border: 1px solid var(--border-color);
+	border-radius: var(--border-radius);
+	background: var(--card-bg);
+}
+
+.workbench-pagination-summary {
+	color: var(--text-muted);
+	font-size: 12px;
+}
+
+.workbench-pagination-actions {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+
+.workbench-page-size {
+	width: auto;
+	min-width: 96px;
+}
+
 .fulfillment-overview :is(button, summary, input, select):focus-visible {
 	outline: 2px solid var(--primary);
 	outline-offset: 2px;
@@ -1253,6 +1283,21 @@
 
 	.production-filter-bar label {
 		min-height: 40px;
+	}
+
+	.workbench-pagination {
+		align-items: stretch;
+		flex-direction: column;
+	}
+
+	.workbench-pagination-actions {
+		justify-content: stretch;
+	}
+
+	.workbench-pagination-actions .btn,
+	.workbench-page-size {
+		flex: 1 1 0;
+		min-width: 0;
 	}
 
 	.fulfillment-order > summary {

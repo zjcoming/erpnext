@@ -11,10 +11,12 @@ from process_simplification.api.shortage import (
 	calculate_material_coverage,
 )
 from process_simplification.api.workbench import (
+	DEFAULT_WORKBENCH_PAGE_SIZE,
 	_delivery_timing,
 	calculate_production_quantities,
 	get_fulfillment_overview,
 	get_work_orders,
+	paginate_workbench_rows,
 )
 
 
@@ -134,7 +136,7 @@ def _allocated_rows_from_fulfillment(fulfillment):
 
 def get_allocated_production_row(sales_order: str, sales_order_item: str):
 	"""Return the delivery-priority finished-stock allocation used for safe Work Order creation."""
-	for row in _allocated_rows_from_fulfillment(get_fulfillment_overview()):
+	for row in _allocated_rows_from_fulfillment(get_fulfillment_overview(page_size=0)):
 		if row.get("sales_order") == sales_order and row.get("sales_order_item") == sales_order_item:
 			return row
 	return None
@@ -379,12 +381,81 @@ def _other_work_orders():
 	return [dict(row) for row in rows if not row.get("sales_order") or not row.get("sales_order_item")]
 
 
+def is_production_due_within_7_days(demand):
+	return demand.get("delivery_timing") in {"today", "within_7_days"}
+
+
+def filter_production_demands(demands, filters=None):
+	filters = frappe.parse_json(filters) if isinstance(filters, str) else filters
+	filters = frappe._dict(filters or {})
+	search = str(filters.get("search") or "").strip().lower()
+
+	def matches(demand):
+		searchable = " ".join(
+			str(value or "")
+			for value in [
+				demand.get("demand_key"),
+				demand.get("sales_order"),
+				demand.get("customer"),
+				demand.get("customer_name"),
+				demand.get("item_code"),
+				demand.get("item_name"),
+				*[row.get("name") for row in demand.get("work_orders") or []],
+			]
+		).lower()
+		delivery_window = filters.get("deliveryWindow")
+		if delivery_window == "within_7_days":
+			delivery_matches = is_production_due_within_7_days(demand)
+		else:
+			delivery_matches = not delivery_window or demand.get("delivery_timing") == delivery_window
+		return (
+			(not search or search in searchable)
+			and (not filters.get("customer") or demand.get("customer") == filters.get("customer"))
+			and delivery_matches
+			and (not filters.get("status") or demand.get("status_code") == filters.get("status"))
+			and (not filters.get("risk") or demand.get("risk_level") == filters.get("risk"))
+			and (
+				not filters.get("shortageOnly")
+				or flt(demand.get("material_summary", {}).get("shortage_item_count") or 0) > 0
+			)
+			and (not filters.get("unplannedOnly") or flt(demand.get("unplanned_production_qty") or 0) > 0)
+		)
+
+	return [demand for demand in demands or [] if matches(demand)]
+
+
+def production_overview_summary(demands):
+	return {
+		"total_demands": len(demands or []),
+		"unplanned_demands": sum(row["unplanned_production_qty"] > 0 for row in demands or []),
+		"overdue_demands": sum(row["delivery_timing"] == "overdue" for row in demands or []),
+		"due_within_7_days": sum(is_production_due_within_7_days(row) for row in demands or []),
+		"material_shortage_demands": sum(
+			row["material_summary"]["shortage_item_count"] > 0 for row in demands or []
+		),
+		"in_production_demands": sum(
+			row["status_code"] in {"in_production", "partially_completed"} for row in demands or []
+		),
+		"awaiting_order_reservation_demands": sum(
+			row["status_code"] == "awaiting_order_reservation" for row in demands or []
+		),
+	}
+
+
+def production_customers(demands):
+	customers = {}
+	for demand in demands or []:
+		if demand.get("customer"):
+			customers[demand.get("customer")] = demand.get("customer_name") or demand.get("customer")
+	return [{"value": value, "label": label} for value, label in sorted(customers.items(), key=lambda row: row[1])]
+
+
 @frappe.whitelist()
-def get_production_overview():
+def get_production_overview(page=1, page_size=DEFAULT_WORKBENCH_PAGE_SIZE, filters=None):
 	frappe.has_permission("Sales Order", "read", throw=True)
 	frappe.has_permission("Work Order", "read", throw=True)
 	checked_at = now_datetime()
-	fulfillment = get_fulfillment_overview()
+	fulfillment = get_fulfillment_overview(page_size=0)
 	orders = fulfillment.get("orders") or []
 	order_by_name = {order.get("name"): frappe._dict(order) for order in orders}
 	allocated_rows = _allocated_rows_from_fulfillment(fulfillment)
@@ -420,32 +491,20 @@ def get_production_overview():
 			covered_demands.extend(attach_material_coverage(company_demands, coverage))
 
 	covered_demands.sort(key=production_sort_key)
+	filtered_demands = filter_production_demands(covered_demands, filters)
+	paged_demands, pagination = paginate_workbench_rows(filtered_demands, page=page, page_size=page_size)
 	return {
 		"checked_at": checked_at,
-		"summary": {
-			"total_demands": len(covered_demands),
-			"unplanned_demands": sum(row["unplanned_production_qty"] > 0 for row in covered_demands),
-			"overdue_demands": sum(row["delivery_timing"] == "overdue" for row in covered_demands),
-			"due_within_7_days": sum(
-				row["delivery_timing"] in {"today", "within_7_days"} for row in covered_demands
-			),
-			"material_shortage_demands": sum(
-				row["material_summary"]["shortage_item_count"] > 0 for row in covered_demands
-			),
-			"in_production_demands": sum(
-				row["status_code"] in {"in_production", "partially_completed"} for row in covered_demands
-			),
-			"awaiting_order_reservation_demands": sum(
-				row["status_code"] == "awaiting_order_reservation" for row in covered_demands
-			),
-		},
-		"demands": covered_demands,
+		"summary": production_overview_summary(filtered_demands),
+		"pagination": pagination,
+		"customers": production_customers(filtered_demands),
+		"demands": paged_demands,
 		"other_work_orders": _other_work_orders(),
 	}
 
 
 def get_production_demand(sales_order: str, sales_order_item: str):
-	for demand in get_production_overview().get("demands") or []:
+	for demand in get_production_overview(page_size=0).get("demands") or []:
 		if demand.get("sales_order") == sales_order and demand.get("sales_order_item") == sales_order_item:
 			return frappe._dict(demand)
 	return None

@@ -9,6 +9,7 @@ const {
 	overviewSummary,
 	orderOverviewHtml,
 	fulfillmentCsv,
+	workbenchPaginationHtml,
 	refreshFulfillmentOverview,
 	productionWorkbenchRoute,
 	deliveryNoteRouteFromResponse,
@@ -249,6 +250,19 @@ test("CSV neutralizes every formula-leading cell before quoting", () => {
 	for (const cell of ["'=1+1", "'+SUM(A1:A2)", "'-1+1", "'@cmd", "'\tformula", "'\rformula"]) {
 		assert.ok(csv.content.includes(`"${cell}"`), `expected neutralized CSV cell ${JSON.stringify(cell)}`);
 	}
+});
+
+test("pagination HTML exposes compact page controls for desktop and mobile", () => {
+	const html = workbenchPaginationHtml(
+		{ page: 2, page_size: 20, total_count: 45, total_pages: 3, has_next: true, has_prev: true },
+		helpers
+	);
+
+	assert.match(html, /\u7b2c 2 \/ 3 \u9875/);
+	assert.match(html, /\u5171 45 \u6761/);
+	assert.match(html, /data-page="1"/);
+	assert.match(html, /data-page="3"/);
+	assert.match(html, /data-page-size="20" selected/);
 });
 
 test("every page refresh clears or sets route focus and reloads once", async () => {

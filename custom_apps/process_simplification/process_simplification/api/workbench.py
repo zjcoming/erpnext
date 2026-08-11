@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from math import ceil
 
 import frappe
 from frappe import _
-from frappe.utils import flt, getdate, now_datetime
+from frappe.utils import cint, flt, getdate, now_datetime
 
 from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
 	get_available_qty_to_reserve,
@@ -437,8 +438,109 @@ def _fulfillment_sort_key(order, fulfillment_order):
 	)
 
 
+DEFAULT_WORKBENCH_PAGE_SIZE = 20
+MAX_WORKBENCH_PAGE_SIZE = 100
+
+
+def normalize_workbench_pagination(page=1, page_size=DEFAULT_WORKBENCH_PAGE_SIZE):
+	page = max(cint(page) or 1, 1)
+	page_size = cint(page_size)
+	if page_size <= 0:
+		return page, 0
+	return page, min(page_size or DEFAULT_WORKBENCH_PAGE_SIZE, MAX_WORKBENCH_PAGE_SIZE)
+
+
+def paginate_workbench_rows(rows, page=1, page_size=DEFAULT_WORKBENCH_PAGE_SIZE):
+	page, page_size = normalize_workbench_pagination(page, page_size)
+	total_count = len(rows or [])
+	if page_size <= 0:
+		return list(rows or []), {
+			"page": 1,
+			"page_size": total_count,
+			"total_count": total_count,
+			"total_pages": 1 if total_count else 0,
+			"has_next": False,
+			"has_prev": False,
+		}
+
+	total_pages = ceil(total_count / page_size) if total_count else 0
+	start = (page - 1) * page_size
+	end = start + page_size
+	return list(rows or [])[start:end], {
+		"page": page,
+		"page_size": page_size,
+		"total_count": total_count,
+		"total_pages": total_pages,
+		"has_next": bool(total_pages and page < total_pages),
+		"has_prev": page > 1 and total_count > 0,
+	}
+
+
+def _filter_value(filters, key):
+	if not filters:
+		return None
+	return filters.get(key)
+
+
+def is_fulfillment_due_within_7_days(order):
+	return order.get("delivery_timing") in {"today", "within_7_days"}
+
+
+def filter_fulfillment_orders(orders, filters=None):
+	filters = frappe.parse_json(filters) if isinstance(filters, str) else filters
+	filters = frappe._dict(filters or {})
+	search = str(_filter_value(filters, "search") or "").strip().lower()
+
+	def matches(order):
+		searchable = " ".join(
+			str(value or "")
+			for value in [
+				order.get("name"),
+				order.get("customer"),
+				order.get("customer_name"),
+				*[
+					item
+					for row in order.get("rows") or []
+					for item in (row.get("item_code"), row.get("item_name"))
+				],
+			]
+		).lower()
+		delivery_window = _filter_value(filters, "deliveryWindow")
+		if delivery_window == "within_7_days":
+			delivery_matches = is_fulfillment_due_within_7_days(order)
+		else:
+			delivery_matches = not delivery_window or order.get("delivery_timing") == delivery_window
+		return (
+			(not search or search in searchable)
+			and (not _filter_value(filters, "customer") or order.get("customer") == _filter_value(filters, "customer"))
+			and delivery_matches
+			and (not _filter_value(filters, "status") or order.get("status_code") == _filter_value(filters, "status"))
+			and (not _filter_value(filters, "riskOnly") or order.get("risk_level") in {"red", "orange"})
+		)
+
+	return [order for order in orders or [] if matches(order)]
+
+
+def fulfillment_summary(orders):
+	return {
+		"total_orders": len(orders or []),
+		"overdue_orders": sum(order["delivery_timing"] == "overdue" for order in orders or []),
+		"due_within_7_days": sum(is_fulfillment_due_within_7_days(order) for order in orders or []),
+		"needs_production_orders": sum(order["needs_production"] for order in orders or []),
+		"direct_ship_orders": sum(order["direct_ship"] for order in orders or []),
+	}
+
+
+def fulfillment_customers(orders):
+	customers = {}
+	for order in orders or []:
+		if order.get("customer"):
+			customers[order.get("customer")] = order.get("customer_name") or order.get("customer")
+	return [{"value": value, "label": label} for value, label in sorted(customers.items(), key=lambda row: row[1])]
+
+
 @frappe.whitelist()
-def get_fulfillment_overview():
+def get_fulfillment_overview(page=1, page_size=DEFAULT_WORKBENCH_PAGE_SIZE, filters=None):
 	"""Return readable unfinished Sales Orders recalculated through the item workbench."""
 	frappe.has_permission("Sales Order", "read", throw=True)
 	checked_at = now_datetime()
@@ -446,7 +548,7 @@ def get_fulfillment_overview():
 	page_length = 500
 	limit_start = 0
 	while True:
-		page = frappe.get_list(
+		db_page = frappe.get_list(
 			"Sales Order",
 			filters={
 				"docstatus": 1,
@@ -458,8 +560,8 @@ def get_fulfillment_overview():
 			limit_start=limit_start,
 			limit_page_length=page_length,
 		)
-		orders.extend(page)
-		if len(page) < page_length:
+		orders.extend(db_page)
+		if len(db_page) < page_length:
 			break
 		limit_start += page_length
 
@@ -472,19 +574,14 @@ def get_fulfillment_overview():
 		fulfillment_orders.append((order, fulfillment_order))
 
 	fulfillment_orders.sort(key=lambda result: _fulfillment_sort_key(*result))
-	ordered_results = [result for _, result in fulfillment_orders]
+	filtered_results = filter_fulfillment_orders([result for _, result in fulfillment_orders], filters)
+	paged_results, pagination = paginate_workbench_rows(filtered_results, page=page, page_size=page_size)
 	return {
 		"checked_at": checked_at,
-		"summary": {
-			"total_orders": len(ordered_results),
-			"overdue_orders": sum(order["delivery_timing"] == "overdue" for order in ordered_results),
-			"due_within_7_days": sum(
-				order["delivery_timing"] in {"today", "within_7_days"} for order in ordered_results
-			),
-			"needs_production_orders": sum(order["needs_production"] for order in ordered_results),
-			"direct_ship_orders": sum(order["direct_ship"] for order in ordered_results),
-		},
-		"orders": ordered_results,
+		"summary": fulfillment_summary(filtered_results),
+		"pagination": pagination,
+		"customers": fulfillment_customers(filtered_results),
+		"orders": paged_results,
 	}
 
 

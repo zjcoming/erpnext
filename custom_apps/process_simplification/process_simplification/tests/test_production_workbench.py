@@ -1,5 +1,6 @@
 import frappe
 from frappe.tests import UnitTestCase
+from unittest.mock import patch
 
 
 class TestProductionWorkbench(UnitTestCase):
@@ -186,3 +187,57 @@ class TestProductionWorkbench(UnitTestCase):
 		ordered = sorted(demands, key=production.production_sort_key)
 
 		self.assertEqual([row["demand_key"] for row in ordered], ["MISSING", "DATED"])
+
+	@patch("process_simplification.api.production._other_work_orders")
+	@patch("process_simplification.api.production.get_default_bom")
+	@patch("process_simplification.api.production.get_work_orders")
+	@patch("process_simplification.api.production.get_fulfillment_overview")
+	@patch("process_simplification.api.production.frappe.has_permission")
+	@patch("process_simplification.api.production.now_datetime")
+	def test_production_overview_returns_requested_page_with_global_summary(
+		self, now_datetime, has_permission, get_fulfillment_overview, get_work_orders, get_default_bom, other_work_orders
+	):
+		production = self._module()
+		has_permission.return_value = True
+		now_datetime.return_value = frappe.utils.get_datetime("2026-08-02 09:00:00")
+		get_work_orders.return_value = []
+		get_default_bom.return_value = None
+		other_work_orders.return_value = []
+		get_fulfillment_overview.return_value = {
+			"orders": [
+				{
+					"name": f"SO-{index}",
+					"customer": "CUST-001",
+					"customer_name": "测试客户",
+					"company": "_Test Company",
+					"creation": f"2026-08-0{index}",
+					"rows": [
+						self._row(
+							name=f"SOI-{index}",
+							sales_order=f"SO-{index}",
+							item_code=f"FG-{index}",
+							delivery_date=f"2026-08-0{index}",
+							production_required_qty=10,
+							unplanned_production_qty=10,
+						)
+					],
+				}
+				for index in range(1, 6)
+			]
+		}
+
+		result = production.get_production_overview(page=2, page_size=2)
+
+		self.assertEqual([demand["demand_key"] for demand in result["demands"]], ["SOI-3", "SOI-4"])
+		self.assertEqual(result["summary"]["total_demands"], 5)
+		self.assertEqual(
+			result["pagination"],
+			{
+				"page": 2,
+				"page_size": 2,
+				"total_count": 5,
+				"total_pages": 3,
+				"has_next": True,
+				"has_prev": True,
+			},
+		)
