@@ -873,10 +873,15 @@ class TestQuickOrderV2(UnitTestCase):
 
 		result = get_material_stock_snapshot("RM-001", "Stores - TC")
 
+		# Production reservation is NOT deducted: that reservation is this flow's
+		# own production demand, so subtracting it would double-count the same
+		# need (demand once, reserved-for-that-demand again) and keep a
+		# well-stocked material perpetually "short". Only sales and subcontract
+		# commitments reduce availability.
 		self.assertTrue(result.can_calculate)
 		self.assertEqual(result.actual_qty, 100)
-		self.assertEqual(result.committed_qty, 38)
-		self.assertEqual(result.available_qty, 62)
+		self.assertEqual(result.committed_qty, 15)
+		self.assertEqual(result.available_qty, 85)
 
 	@patch("process_simplification.api.shortage.frappe.db.get_value")
 	def test_material_snapshot_requires_an_exact_warehouse(self, get_value):

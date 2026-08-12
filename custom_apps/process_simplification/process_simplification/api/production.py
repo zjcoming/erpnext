@@ -359,6 +359,18 @@ def get_prior_material_demands(
 	return _material_demands(demands)
 
 
+def get_all_material_demands(company: str):
+	"""All open production demands for the company, in the ``{bom_no, qty, source}``
+	shape for material coverage. Used to aggregate raw-material need across every
+	unfinished order so one Material Request can cover the combined quantity."""
+	demands = [
+		demand
+		for demand in get_production_overview().get("demands") or []
+		if demand.get("company") == company
+	]
+	return _material_demands(demands)
+
+
 def _other_work_orders():
 	rows = frappe.get_all(
 		"Work Order",

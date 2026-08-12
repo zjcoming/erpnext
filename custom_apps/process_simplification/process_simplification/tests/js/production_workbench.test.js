@@ -196,8 +196,8 @@ test("material rows show linked purchase documents and status, or a no-purchase 
 				shortage_qty: 0,
 				status: "purchase_request_pending",
 				supply_documents: [
-					{ doctype: "Material Request", name: "MREQ-1", status: "Pending", outstanding_qty: 10, schedule_date: "2026-08-05" },
-					{ doctype: "Purchase Order", name: "PORD-1", status: "To Receive", outstanding_qty: 5, schedule_date: "2026-08-06" },
+					{ doctype: "Material Request", name: "MREQ-1", status: "Pending", outstanding_qty: 10, schedule_date: "2026-08-05", is_late: false },
+					{ doctype: "Purchase Order", name: "PORD-1", status: "To Receive", outstanding_qty: 5, schedule_date: "2026-08-27", is_late: true },
 				],
 			},
 		],
@@ -206,6 +206,8 @@ test("material rows show linked purchase documents and status, or a no-purchase 
 	assert.match(html, /\/app\/material-request\/MREQ-1/);
 	assert.match(html, /\/app\/purchase-order\/PORD-1/);
 	assert.match(html, /To Receive/);
+	// The late Purchase Order is still shown and flagged.
+	assert.match(html, /迟于交期/);
 
 	// A material with no supply documents shows the no-purchase hint.
 	const noDocs = demand("NODOC");

@@ -124,7 +124,8 @@ function productionDemandHtml(demand, helpers) {
 								? `<tr class="production-supply-docs"><td colspan="11" data-label="${esc(t("采购单据"))}"><div class="production-supply-doc-list">${docs
 									.map((doc) => {
 										const typeLabel = doc.doctype === "Material Request" ? t("采购申请") : t("采购单");
-										return `<a class="production-supply-doc" href="/app/${esc(frappe.router.slug(doc.doctype))}/${esc(doc.name)}" target="_blank"><span class="production-supply-doc-type">${esc(typeLabel)}</span> <strong>${esc(doc.name)}</strong> · <span class="indicator-pill grey">${esc(doc.status || "")}</span> · ${esc(t("未完成"))} ${number(doc.outstanding_qty)}${doc.schedule_date ? ` · ${esc(t("交期"))} ${esc(frappe.datetime.str_to_user(doc.schedule_date))}` : ""}</a>`;
+										const lateTag = doc.is_late ? ` · <span class="indicator-pill red">${esc(t("迟于交期"))}</span>` : "";
+										return `<a class="production-supply-doc${doc.is_late ? " is-late" : ""}" href="/app/${esc(frappe.router.slug(doc.doctype))}/${esc(doc.name)}" target="_blank"><span class="production-supply-doc-type">${esc(typeLabel)}</span> <strong>${esc(doc.name)}</strong> · <span class="indicator-pill grey">${esc(doc.status || "")}</span> · ${esc(t("未完成"))} ${number(doc.outstanding_qty)}${doc.schedule_date ? ` · ${esc(t("交期"))} ${esc(frappe.datetime.str_to_user(doc.schedule_date))}` : ""}${lateTag}</a>`;
 									})
 									.join("")}</div></td></tr>`
 								: "";

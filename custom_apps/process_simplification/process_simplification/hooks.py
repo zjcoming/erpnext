@@ -7,7 +7,7 @@ app_license = "GPL-3.0"
 
 required_apps = ["erpnext"]
 
-app_include_css = "/assets/process_simplification/css/process_simplification.css?v=6"
+app_include_css = "/assets/process_simplification/css/process_simplification.css?v=7"
 
 after_install = "process_simplification.install.after_install"
 

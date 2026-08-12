@@ -427,13 +427,34 @@ class TestMaterialCoverageIntegration(IntegrationTestCase):
 			sum(doc["outstanding_qty"] for doc in po_docs),
 		)
 
+		# A Purchase Order due AFTER the deadline is still listed, flagged late,
+		# and excluded from the on-time outstanding total.
+		late_po = frappe.new_doc("Purchase Order")
+		late_po.company = company.name
+		late_po.supplier = supplier.name
+		late_po.transaction_date = nowdate()
+		late_po.schedule_date = add_days(need_date, 10)
+		late_po.append("items", {
+			"item_code": item.name, "warehouse": warehouse,
+			"schedule_date": add_days(need_date, 10), "qty": 4, "uom": "Nos", "conversion_factor": 1, "rate": 5,
+		})
+		late_po.insert()
+		late_po.submit()
+
+		po_docs_after = _po_documents(item.name, warehouse, company.name, need_date)
+		late = [d for d in po_docs_after if d["name"] == late_po.name]
+		self.assertEqual(len(late), 1)
+		self.assertTrue(late[0]["is_late"])
+		# On-time PO outstanding is unchanged (still just the 5 from the early PO).
+		self.assertEqual(_po_outstanding(item.name, warehouse, company.name, need_date), 5)
+
 	def test_material_coverage_attaches_supply_documents(self):
 		from unittest.mock import patch
 
 		from process_simplification.api.shortage import calculate_material_coverage
 
-		mr_docs = [{"doctype": "Material Request", "name": "MR-1", "status": "Pending", "outstanding_qty": 10}]
-		po_docs = [{"doctype": "Purchase Order", "name": "PO-1", "status": "To Receive", "outstanding_qty": 5}]
+		mr_docs = [{"doctype": "Material Request", "name": "MR-1", "status": "Pending", "outstanding_qty": 10, "is_late": False}]
+		po_docs = [{"doctype": "Purchase Order", "name": "PO-1", "status": "To Receive", "outstanding_qty": 5, "is_late": False}]
 
 		with (
 			patch("process_simplification.api.shortage.resolve_production_source_warehouse",

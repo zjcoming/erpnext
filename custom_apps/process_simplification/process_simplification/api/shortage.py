@@ -66,13 +66,16 @@ def get_material_stock_snapshot(item_code: str, warehouse: str | None) -> frappe
 		or {}
 	)
 	actual_qty = normalize_qty(bin_row.get("actual_qty"))
+	# Production and production-plan reservations are this flow's OWN production
+	# demand. The workbench already counts that demand separately, so deducting
+	# the matching reservation here would double-count it and keep a well-stocked
+	# material perpetually "short". Only sales and subcontract commitments, which
+	# are consumed outside this production demand, reduce availability.
 	committed_qty = sum(
 		max(normalize_qty(bin_row.get(field)), 0)
 		for field in (
 			"reserved_qty",
-			"reserved_qty_for_production",
 			"reserved_qty_for_sub_contract",
-			"reserved_qty_for_production_plan",
 		)
 	)
 	return frappe._dict(
@@ -88,7 +91,12 @@ def get_material_stock_snapshot(item_code: str, warehouse: str | None) -> frappe
 def _mr_documents(item_code: str, warehouse: str | None, company: str, need_by_date: str | None):
 	"""Outstanding purchase Material Request lines for this item/warehouse as
 	document rows, so the workbench can show which requests exist and how far
-	along they are."""
+	along they are.
+
+	All outstanding requests are returned regardless of schedule date; each is
+	tagged ``is_late`` when it is due after ``need_by_date`` so a request that
+	will arrive too late is still visible, just flagged. Quantity aggregation
+	(``_mr_outstanding``) still honours the delivery deadline."""
 	if not warehouse:
 		return []
 	mr = frappe.qb.DocType("Material Request")
@@ -107,8 +115,6 @@ def _mr_documents(item_code: str, warehouse: str | None, company: str, need_by_d
 			& (mr.status.notin(["Stopped", "Cancelled"]))
 		)
 	)
-	if need_by_date:
-		query = query.where(mri.schedule_date <= need_by_date)
 
 	documents = []
 	for row in query.run(as_dict=True):
@@ -122,13 +128,18 @@ def _mr_documents(item_code: str, warehouse: str | None, company: str, need_by_d
 				"status": row.status,
 				"outstanding_qty": outstanding,
 				"schedule_date": str(row.schedule_date) if row.schedule_date else None,
+				"is_late": bool(need_by_date and row.schedule_date and str(row.schedule_date) > str(need_by_date)),
 			}
 		)
 	return documents
 
 
 def _po_documents(item_code: str, warehouse: str | None, company: str, need_by_date: str | None):
-	"""Outstanding Purchase Order lines for this item/warehouse as document rows."""
+	"""Outstanding Purchase Order lines for this item/warehouse as document rows.
+
+	All outstanding orders are returned regardless of schedule date; each is
+	tagged ``is_late`` when due after ``need_by_date``. Quantity aggregation
+	(``_po_outstanding``) still honours the delivery deadline."""
 	if not warehouse:
 		return []
 	po = frappe.qb.DocType("Purchase Order")
@@ -146,8 +157,6 @@ def _po_documents(item_code: str, warehouse: str | None, company: str, need_by_d
 			& (po.status.notin(["Closed", "Cancelled"]))
 		)
 	)
-	if need_by_date:
-		query = query.where(poi.schedule_date <= need_by_date)
 
 	documents = []
 	for row in query.run(as_dict=True):
@@ -165,17 +174,28 @@ def _po_documents(item_code: str, warehouse: str | None, company: str, need_by_d
 				"status": row.status,
 				"outstanding_qty": outstanding,
 				"schedule_date": str(row.schedule_date) if row.schedule_date else None,
+				"is_late": bool(need_by_date and row.schedule_date and str(row.schedule_date) > str(need_by_date)),
 			}
 		)
 	return documents
 
 
 def _mr_outstanding(item_code: str, warehouse: str | None, company: str, need_by_date: str | None) -> float:
-	return sum(doc["outstanding_qty"] for doc in _mr_documents(item_code, warehouse, company, need_by_date))
+	# On-time outstanding only: a request due after the deadline does not count
+	# toward covering this demand's shortage.
+	return sum(
+		doc["outstanding_qty"]
+		for doc in _mr_documents(item_code, warehouse, company, need_by_date)
+		if not doc["is_late"]
+	)
 
 
 def _po_outstanding(item_code: str, warehouse: str | None, company: str, need_by_date: str | None) -> float:
-	return sum(doc["outstanding_qty"] for doc in _po_documents(item_code, warehouse, company, need_by_date))
+	return sum(
+		doc["outstanding_qty"]
+		for doc in _po_documents(item_code, warehouse, company, need_by_date)
+		if not doc["is_late"]
+	)
 
 
 def _source_note(sources):
@@ -299,8 +319,11 @@ def calculate_material_coverage(
 
 		mr_docs = _mr_documents(material["item_code"], material["warehouse"], company, need_by_date)
 		po_docs = _po_documents(material["item_code"], material["warehouse"], company, need_by_date)
-		material["open_material_request_qty"] = sum(doc["outstanding_qty"] for doc in mr_docs)
-		material["open_purchase_order_qty"] = sum(doc["outstanding_qty"] for doc in po_docs)
+		# Summary quantities count only on-time supply (keeps the shortage math
+		# tied to the delivery deadline); the document list shows all, flagging
+		# late ones.
+		material["open_material_request_qty"] = sum(d["outstanding_qty"] for d in mr_docs if not d["is_late"])
+		material["open_purchase_order_qty"] = sum(d["outstanding_qty"] for d in po_docs if not d["is_late"])
 		material["supply_documents"] = sorted(
 			mr_docs + po_docs,
 			key=lambda doc: (doc.get("schedule_date") or "9999-12-31", doc["doctype"], doc["name"]),
@@ -342,6 +365,36 @@ def calculate_material_coverage(
 def calculate_material_shortages(demands, company: str, defaults=None, need_by_date: str | None = None, prior_demands=None):
 	"""Return only material rows requiring a new purchase request."""
 	return calculate_material_coverage(demands, company, need_by_date, defaults, prior_demands)["shortages"]
+
+
+def get_all_material_demands(company: str):
+	"""All open production demands for the company as material-coverage rows.
+
+	Thin wrapper over ``production.get_all_material_demands`` (imported lazily
+	because ``production`` imports this module at load time)."""
+	from process_simplification.api.production import get_all_material_demands as _all
+
+	return _all(company)
+
+
+@frappe.whitelist()
+def check_all_shortages(company: str | None = None):
+	"""Aggregate raw-material shortage across every open order.
+
+	Pulls all open production demands, so ``calculate_material_coverage`` merges
+	each raw material by (item, warehouse) across orders and returns a single
+	consolidated shortage line per material for one combined purchase."""
+	frappe.has_permission("Material Request", "read", throw=True)
+	defaults = get_company_defaults(company)
+	company = company or defaults.company
+	if not company:
+		throw_chinese("默认公司缺失，请先设置公司。")
+
+	demands = get_all_material_demands(company)
+	shortages = calculate_material_shortages(demands, company, defaults)
+	if not shortages:
+		return {"shortages": [], "message": "当前所有订单没有需要采购的缺料。"}
+	return {"shortages": shortages}
 
 
 @frappe.whitelist()
