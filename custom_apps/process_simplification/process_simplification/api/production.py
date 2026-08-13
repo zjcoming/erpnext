@@ -285,7 +285,7 @@ def attach_material_coverage(demands, coverage):
 			for row in materials
 			if row.get("status") in {"awaiting_purchase_receipt", "purchase_request_pending"}
 		]
-		has_material_gap = any(_positive(row, "current_gap_qty") > 0 for row in materials)
+		has_material_gap = bool(blocked) or any(_positive(row, "current_gap_qty") > 0 for row in materials)
 		demand["material_summary"] = {
 			"status_code": "blocked"
 			if blocked
@@ -301,7 +301,12 @@ def attach_material_coverage(demands, coverage):
 		}
 		if shortages:
 			_unique_action(demand["next_actions"], "处理缺料", "handle_shortage")
-		if has_material_gap and demand["status_code"] not in {
+		if blocked and demand["status_code"] not in {"in_production", "partially_completed"}:
+			demand["status_code"] = "master_data_blocked"
+			demand["status_label"] = STATUS_LABELS["master_data_blocked"]
+			risk = _risk_for_demand(demand["delivery_timing"], demand["status_code"])
+			demand["risk_level"], demand["risk_score"], demand["risk_label"] = risk
+		elif has_material_gap and demand["status_code"] not in {
 			"master_data_blocked",
 			"unplanned",
 			"in_production",
@@ -320,16 +325,18 @@ def attach_priority_material_coverage(demands, company):
 	ordered = [frappe._dict(deepcopy(dict(demand))) for demand in demands or []]
 	ordered.sort(key=material_priority_sort_key)
 	material_demands = [(demand, _material_demands([demand])) for demand in ordered]
-	prior_demands = []
+	prior_consumed = {}
 	coverage_by_demand = []
 	remaining_supply = {}
+	fact_cache = {}
 
 	for demand, current_demands in material_demands:
 		coverage = calculate_material_coverage(
 			current_demands,
 			company,
 			need_by_date=demand.get("delivery_date"),
-			prior_demands=prior_demands,
+			prior_consumed=prior_consumed,
+			fact_cache=fact_cache,
 		)
 		for material in coverage.get("materials") or []:
 			gap_qty = _positive(material, "current_gap_qty")
@@ -342,17 +349,19 @@ def attach_priority_material_coverage(demands, company):
 						continue
 					allocated_qty = 0
 					if not document.get("is_late"):
+						detail_name = document.get("detail_name")
 						key = (
 							material.get("item_code"),
 							material.get("warehouse"),
 							document.get("doctype"),
-							document.get("detail_name") or document.get("name"),
+							detail_name or document.get("name"),
 						)
 						available_qty = remaining_supply.setdefault(key, _positive(document, "outstanding_qty"))
 						allocated_qty = min(gap_qty, available_qty)
 						remaining_supply[key] = available_qty - allocated_qty
 						gap_qty -= allocated_qty
 					document["allocated_qty"] = allocated_qty
+					document.pop("detail_name", None)
 					if doctype == "Purchase Order":
 						allocated_purchase_orders += allocated_qty
 					else:
@@ -372,7 +381,9 @@ def attach_priority_material_coverage(demands, company):
 			else:
 				material["status"] = "new_purchase_required"
 		coverage_by_demand.append((demand, coverage))
-		prior_demands.extend(current_demands)
+		for material in coverage.get("materials") or []:
+			key = (material.get("item_code"), material.get("warehouse"))
+			prior_consumed[key] = prior_consumed.get(key, 0) + _positive(material, "required_qty")
 
 	totals = {}
 	for _demand, coverage in coverage_by_demand:

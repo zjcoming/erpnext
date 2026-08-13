@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from copy import deepcopy
+
 import frappe
 from frappe.utils import add_days, nowdate, parse_json
 
@@ -240,18 +242,85 @@ def _prior_required_by_key(demands, company: str, defaults) -> dict:
 	return consumed
 
 
+def _coverage_defaults(company: str, defaults, fact_cache):
+	if defaults:
+		return defaults
+	if fact_cache is None:
+		return get_company_defaults(company)
+	defaults_by_company = fact_cache.setdefault("company_defaults", {})
+	if company not in defaults_by_company:
+		defaults_by_company[company] = get_company_defaults(company)
+	return defaults_by_company[company]
+
+
+def _coverage_stock_snapshot(item_code: str, warehouse: str | None, company: str, fact_cache):
+	if fact_cache is None:
+		return get_material_stock_snapshot(item_code, warehouse)
+	stock_snapshots = fact_cache.setdefault("stock_snapshots", {})
+	key = (company, item_code, warehouse)
+	if key not in stock_snapshots:
+		stock_snapshots[key] = get_material_stock_snapshot(item_code, warehouse)
+	return stock_snapshots[key]
+
+
+def _coverage_supply_documents(
+	item_code: str,
+	warehouse: str | None,
+	company: str,
+	need_by_date: str | None,
+	fact_cache,
+):
+	if fact_cache is None:
+		return (
+			_mr_documents(item_code, warehouse, company, need_by_date),
+			_po_documents(item_code, warehouse, company, need_by_date),
+		)
+
+	supply_documents = fact_cache.setdefault("supply_documents", {})
+	key = (company, item_code, warehouse)
+	if key not in supply_documents:
+		supply_documents[key] = {
+			"material_requests": [
+				dict(row) for row in _mr_documents(item_code, warehouse, company, None)
+			],
+			"purchase_orders": [dict(row) for row in _po_documents(item_code, warehouse, company, None)],
+		}
+
+	def for_deadline(rows):
+		documents = deepcopy(rows)
+		for document in documents:
+			schedule_date = document.get("schedule_date")
+			document["is_late"] = bool(
+				need_by_date and schedule_date and str(schedule_date) > str(need_by_date)
+			)
+		return documents
+
+	cached = supply_documents[key]
+	return for_deadline(cached["material_requests"]), for_deadline(cached["purchase_orders"])
+
+
 def calculate_material_coverage(
-	demands, company: str, need_by_date: str | None = None, defaults=None, prior_demands=None
+	demands,
+	company: str,
+	need_by_date: str | None = None,
+	defaults=None,
+	prior_demands=None,
+	*,
+	prior_consumed=None,
+	fact_cache=None,
 ) -> frappe._dict:
 	"""Explain material availability, approved supply, and new purchase needs.
 
 	``prior_demands`` are other in-flight demands that draw on the same shared
 	stock; their raw-material need is consumed from free stock before the
 	reported ``demands`` are evaluated, so a per-order check does not let every
-	order believe the same scarce stock covers it.
+	order believe the same scarce stock covers it. Sequential callers can pass
+	pre-aggregated ``prior_consumed`` and a shared ``fact_cache`` to avoid
+	re-expanding earlier BOMs or rereading identical stock and supply facts.
 	"""
-	defaults = defaults or get_company_defaults(company)
-	prior_consumed = _prior_required_by_key(prior_demands, company, defaults)
+	defaults = _coverage_defaults(company, defaults, fact_cache)
+	if prior_consumed is None:
+		prior_consumed = _prior_required_by_key(prior_demands, company, defaults)
 	materials = {}
 	for demand in demands or []:
 		demand = frappe._dict(demand)
@@ -310,7 +379,9 @@ def calculate_material_coverage(
 		if not warehouse_can_use:
 			material["blocked"] = True
 			continue
-		snapshot = get_material_stock_snapshot(material["item_code"], material["warehouse"])
+		snapshot = _coverage_stock_snapshot(
+			material["item_code"], material["warehouse"], company, fact_cache
+		)
 		material["actual_qty"] = normalize_qty(snapshot.get("actual_qty"))
 		material["committed_qty"] = normalize_qty(snapshot.get("committed_qty"))
 		prior_qty = prior_consumed.get((material["item_code"], material["warehouse"]), 0)
@@ -319,8 +390,9 @@ def calculate_material_coverage(
 			material["blocked"] = True
 			continue
 
-		mr_docs = _mr_documents(material["item_code"], material["warehouse"], company, need_by_date)
-		po_docs = _po_documents(material["item_code"], material["warehouse"], company, need_by_date)
+		mr_docs, po_docs = _coverage_supply_documents(
+			material["item_code"], material["warehouse"], company, need_by_date, fact_cache
+		)
 		# Summary quantities count only on-time supply (keeps the shortage math
 		# tied to the delivery deadline); the document list shows all, flagging
 		# late ones.

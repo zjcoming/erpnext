@@ -59,7 +59,16 @@ class TestProductionWorkbench(UnitTestCase):
 			"next_actions": [],
 		}
 
-	def _attach_priority_material_coverage(self, demands, *, stock_qty=10, po_docs=None, mr_docs=None):
+	def _attach_priority_material_coverage(
+		self,
+		demands,
+		*,
+		stock_qty=10,
+		po_docs=None,
+		mr_docs=None,
+		warehouse_can_use=True,
+		stock_can_calculate=True,
+	):
 		from process_simplification.api import production
 		po_docs = po_docs or []
 		mr_docs = mr_docs or []
@@ -81,14 +90,19 @@ class TestProductionWorkbench(UnitTestCase):
 			patch(
 				"process_simplification.api.shortage.resolve_production_source_warehouse",
 				return_value=frappe._dict(
-					{"warehouse": "Stores - TC", "can_use": True, "reason": None}
+					{"warehouse": "Stores - TC", "can_use": warehouse_can_use, "reason": None}
 				),
 			),
 			patch("process_simplification.api.shortage.get_bom_items_as_dict", side_effect=bom_items),
 			patch(
 				"process_simplification.api.shortage.get_material_stock_snapshot",
 				return_value=frappe._dict(
-					{"can_calculate": True, "actual_qty": stock_qty, "committed_qty": 0, "available_qty": stock_qty}
+					{
+						"can_calculate": stock_can_calculate,
+						"actual_qty": stock_qty,
+						"committed_qty": 0,
+						"available_qty": stock_qty,
+					}
 				),
 			),
 			patch(
@@ -346,6 +360,98 @@ class TestProductionWorkbench(UnitTestCase):
 		self.assertEqual(by_key["LATE"]["materials"][0]["source_count"], 2)
 		self.assertTrue(by_key["EARLY"]["materials"][0]["is_shared"])
 
+	def test_unusable_source_warehouse_blocks_pre_start_demand(self):
+		demand = self._priority_demand(
+			"WAREHOUSE-BLOCKED", "2026-08-04", "2026-08-01 09:00:00"
+		)
+
+		result = self._attach_priority_material_coverage([demand], warehouse_can_use=False)
+
+		self.assertEqual(result[0]["material_summary"]["status_code"], "blocked")
+		self.assertEqual(result[0]["status_code"], "master_data_blocked")
+		self.assertEqual(result[0]["status_label"], "基础资料异常")
+
+	def test_uncalculable_stock_snapshot_blocks_pre_start_demand(self):
+		demand = self._priority_demand("STOCK-BLOCKED", "2026-08-04", "2026-08-01 09:00:00")
+
+		result = self._attach_priority_material_coverage([demand], stock_can_calculate=False)
+
+		self.assertEqual(result[0]["material_summary"]["status_code"], "blocked")
+		self.assertEqual(result[0]["status_code"], "master_data_blocked")
+
+	def test_blocked_material_preserves_active_production_workflow_state(self):
+		demand = self._priority_demand("ACTIVE-BLOCKED", "2026-08-04", "2026-08-01 09:00:00")
+		demand["status_code"] = "in_production"
+
+		result = self._attach_priority_material_coverage([demand], warehouse_can_use=False)
+
+		self.assertEqual(result[0]["material_summary"]["status_code"], "blocked")
+		self.assertEqual(result[0]["status_code"], "in_production")
+
+	def test_priority_allocation_expands_once_and_caches_shared_material_facts(self):
+		from process_simplification.api import production
+
+		demands = [
+			self._priority_demand(f"DEMAND-{index}", f"2026-08-{index + 1:02d}", f"2026-07-{index + 1:02d}")
+			for index in range(1, 5)
+		]
+		po_docs = [
+			{
+				"doctype": "Purchase Order",
+				"name": "PO-CACHED",
+				"detail_name": "PO-CACHED-1",
+				"status": "To Receive",
+				"outstanding_qty": 10,
+				"schedule_date": "2026-08-01",
+				"is_late": False,
+			}
+		]
+
+		def bom_items(_bom_no, _company, qty, fetch_exploded):
+			return {
+				"RM-SHARED": frappe._dict(
+					{
+						"item_code": "RM-SHARED",
+						"item_name": "共享原料",
+						"stock_uom": "Nos",
+						"qty": 10 * qty,
+					}
+				)
+			}
+
+		with (
+			patch.object(production, "get_default_bom", return_value="BOM-FG"),
+			patch(
+				"process_simplification.api.shortage.get_company_defaults",
+				return_value=frappe._dict({"company": "_Test Company"}),
+			) as defaults_query,
+			patch(
+				"process_simplification.api.shortage.resolve_production_source_warehouse",
+				return_value=frappe._dict({"warehouse": "Stores - TC", "can_use": True, "reason": None}),
+			),
+			patch(
+				"process_simplification.api.shortage.get_bom_items_as_dict", side_effect=bom_items
+			) as bom_query,
+			patch(
+				"process_simplification.api.shortage.get_material_stock_snapshot",
+				return_value=frappe._dict(
+					{"can_calculate": True, "actual_qty": 10, "committed_qty": 0, "available_qty": 10}
+				),
+			) as stock_query,
+			patch("process_simplification.api.shortage._mr_documents", return_value=[]) as mr_query,
+			patch(
+				"process_simplification.api.shortage._po_documents", return_value=po_docs
+			) as po_query,
+		):
+			result = production.attach_priority_material_coverage(demands, "_Test Company")
+
+		self.assertEqual([row["materials"][0]["current_gap_qty"] for row in result], [0, 10, 10, 10])
+		self.assertEqual(defaults_query.call_count, 1)
+		self.assertEqual(bom_query.call_count, len(demands))
+		self.assertEqual(stock_query.call_count, 1)
+		self.assertEqual(mr_query.call_count, 1)
+		self.assertEqual(po_query.call_count, 1)
+
 	def test_material_priority_uses_older_creation_when_delivery_dates_match(self):
 		newer = self._priority_demand("NEWER", "2026-08-04", "2026-08-03 09:00:00")
 		older = self._priority_demand("OLDER", "2026-08-04", "2026-08-01 09:00:00")
@@ -478,6 +584,7 @@ class TestProductionWorkbench(UnitTestCase):
 			[(document["outstanding_qty"], document["allocated_qty"]) for document in material["supply_documents"]],
 			[(5, 5), (5, 5)],
 		)
+		self.assertTrue(all("detail_name" not in document for document in material["supply_documents"]))
 
 	def test_material_priority_allocates_shared_material_request_only_once(self):
 		early = self._priority_demand("EARLY", "2026-08-04", "2026-08-01 09:00:00")
