@@ -107,7 +107,7 @@ class TestProductionWorkbench(UnitTestCase):
 		self.assertEqual(allocated[1]["production_required_qty"], 30)
 		self.assertEqual(allocated[1]["unplanned_production_qty"], 30)
 
-	def test_material_coverage_is_projected_to_each_contributing_demand(self):
+	def test_material_coverage_is_attributed_to_each_order_line(self):
 		production = self._module()
 		self.assertTrue(hasattr(production, "attach_material_coverage"))
 		demands = [
@@ -126,28 +126,36 @@ class TestProductionWorkbench(UnitTestCase):
 				"next_actions": [],
 			},
 		]
+		# Per-SOI model: one coverage row per (order line, material). SOI-1 is
+		# short; SOI-2 is fully covered by allocated stock.
 		coverage = {
 			"materials": [
 				{
 					"item_code": "RM-001",
 					"item_name": "原料 001",
-					"stock_uom": "Nos",
 					"warehouse": "Stores - TC",
-					"required_qty": 30,
-					"actual_qty": 10,
-					"committed_qty": 0,
-					"available_qty": 10,
-					"open_material_request_qty": 5,
-					"open_purchase_order_qty": 5,
+					"sales_order_item": "SOI-1",
+					"demand_key": "SOI-1",
+					"required_qty": 20,
+					"allocated_qty": 0,
 					"current_gap_qty": 20,
-					"shortage_qty": 10,
+					"shortage_qty": 20,
 					"status": "new_purchase_required",
 					"blocked": False,
-					"sources": [
-						{"demand_key": "SOI-1", "required_qty": 20},
-						{"demand_key": "SOI-2", "required_qty": 10},
-					],
-				}
+				},
+				{
+					"item_code": "RM-001",
+					"item_name": "原料 001",
+					"warehouse": "Stores - TC",
+					"sales_order_item": "SOI-2",
+					"demand_key": "SOI-2",
+					"required_qty": 10,
+					"allocated_qty": 10,
+					"current_gap_qty": 0,
+					"shortage_qty": 0,
+					"status": "ready_now",
+					"blocked": False,
+				},
 			]
 		}
 
@@ -156,11 +164,11 @@ class TestProductionWorkbench(UnitTestCase):
 		first = result[0]
 		second = result[1]
 		self.assertEqual(first["materials"][0]["source_required_qty"], 20)
-		self.assertEqual(second["materials"][0]["source_required_qty"], 10)
-		self.assertEqual(first["materials"][0]["total_required_qty"], 30)
-		self.assertTrue(first["materials"][0]["is_shared"])
 		self.assertEqual(first["material_summary"]["shortage_item_count"], 1)
 		self.assertEqual(first["status_code"], "material_shortage")
+		# SOI-2's material is fully allocated -> ready, and it keeps its status.
+		self.assertEqual(second["materials"][0]["status"], "ready_now")
+		self.assertTrue(second["material_summary"]["materials_ready"])
 		self.assertEqual(second["status_code"], "unplanned")
 
 	def test_missing_delivery_date_sorts_before_dated_demands_as_a_data_risk(self):

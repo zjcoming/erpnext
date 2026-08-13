@@ -40,12 +40,11 @@ class TestSharedMaterialAllocation(UnitTestCase):
 		patcher.start()
 		self.addCleanup(patcher.stop)
 
-	@patch("process_simplification.api.shortage._po_outstanding", return_value=0)
-	@patch("process_simplification.api.shortage._mr_outstanding", return_value=0)
+	@patch("process_simplification.api.shortage._intransit_purchase_for_soi", return_value=0)
 	@patch("process_simplification.api.shortage.get_material_stock_snapshot")
 	@patch("process_simplification.api.shortage.get_bom_items_as_dict")
 	def test_prior_demands_consume_shared_stock_before_reported_demand(
-		self, get_bom_items, stock_snapshot, mr_outstanding, po_outstanding
+		self, get_bom_items, stock_snapshot, intransit
 	):
 		from process_simplification.api.shortage import calculate_material_coverage
 
@@ -56,9 +55,9 @@ class TestSharedMaterialAllocation(UnitTestCase):
 		)
 
 		# One other in-flight order already needs the whole 10, so the reported
-		# order must see zero residual stock and a full shortage of 10.
+		# order must get zero allocated stock and a full shortage of 10.
 		result = calculate_material_coverage(
-			[{"bom_no": "BOM-FG-001", "qty": 1, "source": {"row": 1, "finished_item": "FG-001"}}],
+			[{"bom_no": "BOM-FG-001", "qty": 1, "source": {"sales_order_item": "SOI-1", "finished_item": "FG-001"}}],
 			"_Test Company",
 			need_by_date="2099-01-10",
 			defaults=frappe._dict({"source_warehouse": "_Test Warehouse - _TC"}),
@@ -67,17 +66,16 @@ class TestSharedMaterialAllocation(UnitTestCase):
 
 		material = result.materials[0]
 		self.assertEqual(material["item_code"], "RM-SHARED")
-		self.assertEqual(material["available_qty"], 0)
+		self.assertEqual(material["allocated_qty"], 0)
 		self.assertEqual(material["current_gap_qty"], 10)
 		self.assertEqual(material["shortage_qty"], 10)
 		self.assertEqual(material["status"], "new_purchase_required")
 
-	@patch("process_simplification.api.shortage._po_outstanding", return_value=0)
-	@patch("process_simplification.api.shortage._mr_outstanding", return_value=0)
+	@patch("process_simplification.api.shortage._intransit_purchase_for_soi", return_value=0)
 	@patch("process_simplification.api.shortage.get_material_stock_snapshot")
 	@patch("process_simplification.api.shortage.get_bom_items_as_dict")
 	def test_without_prior_demands_behaviour_is_unchanged(
-		self, get_bom_items, stock_snapshot, mr_outstanding, po_outstanding
+		self, get_bom_items, stock_snapshot, intransit
 	):
 		from process_simplification.api.shortage import calculate_material_coverage
 
@@ -87,24 +85,23 @@ class TestSharedMaterialAllocation(UnitTestCase):
 		)
 
 		result = calculate_material_coverage(
-			[{"bom_no": "BOM-FG-001", "qty": 1, "source": {"row": 1, "finished_item": "FG-001"}}],
+			[{"bom_no": "BOM-FG-001", "qty": 1, "source": {"sales_order_item": "SOI-1", "finished_item": "FG-001"}}],
 			"_Test Company",
 			need_by_date="2099-01-10",
 			defaults=frappe._dict({"source_warehouse": "_Test Warehouse - _TC"}),
 		)
 
 		material = result.materials[0]
-		self.assertEqual(material["available_qty"], 10)
+		self.assertEqual(material["allocated_qty"], 10)
 		self.assertEqual(material["current_gap_qty"], 0)
 		self.assertEqual(material["shortage_qty"], 0)
 		self.assertEqual(material["status"], "ready_now")
 
-	@patch("process_simplification.api.shortage._po_outstanding", return_value=0)
-	@patch("process_simplification.api.shortage._mr_outstanding", return_value=0)
+	@patch("process_simplification.api.shortage._intransit_purchase_for_soi", return_value=0)
 	@patch("process_simplification.api.shortage.get_material_stock_snapshot")
 	@patch("process_simplification.api.shortage.get_bom_items_as_dict")
 	def test_prior_demands_only_partially_consume_shared_stock(
-		self, get_bom_items, stock_snapshot, mr_outstanding, po_outstanding
+		self, get_bom_items, stock_snapshot, intransit
 	):
 		from process_simplification.api.shortage import calculate_material_coverage
 
@@ -127,7 +124,7 @@ class TestSharedMaterialAllocation(UnitTestCase):
 
 		# Prior demand needs 10 (1 unit); reported demand needs 25 (2.5 units).
 		result = calculate_material_coverage(
-			[{"bom_no": "BOM-FG-001", "qty": 2.5, "source": {"row": 1, "finished_item": "FG-001"}}],
+			[{"bom_no": "BOM-FG-001", "qty": 2.5, "source": {"sales_order_item": "SOI-1", "finished_item": "FG-001"}}],
 			"_Test Company",
 			need_by_date="2099-01-10",
 			defaults=frappe._dict({"source_warehouse": "_Test Warehouse - _TC"}),
@@ -135,9 +132,9 @@ class TestSharedMaterialAllocation(UnitTestCase):
 		)
 
 		material = result.materials[0]
-		# Residual stock after the prior 10 is 20; reported demand needs 25.
+		# Residual stock after the prior 10 is 20; reported demand needs 25 -> 5 short.
 		self.assertEqual(material["required_qty"], 25)
-		self.assertEqual(material["available_qty"], 20)
+		self.assertEqual(material["allocated_qty"], 20)
 		self.assertEqual(material["current_gap_qty"], 5)
 		self.assertEqual(material["shortage_qty"], 5)
 

@@ -453,8 +453,10 @@ class TestMaterialCoverageIntegration(IntegrationTestCase):
 
 		from process_simplification.api.shortage import calculate_material_coverage
 
-		mr_docs = [{"doctype": "Material Request", "name": "MR-1", "status": "Pending", "outstanding_qty": 10, "is_late": False}]
-		po_docs = [{"doctype": "Purchase Order", "name": "PO-1", "status": "To Receive", "outstanding_qty": 5, "is_late": False}]
+		supply_docs = [
+			{"doctype": "Material Request", "name": "MR-1", "status": "Pending", "outstanding_qty": 10, "is_late": False},
+			{"doctype": "Purchase Order", "name": "PO-1", "status": "To Receive", "outstanding_qty": 5, "is_late": False},
+		]
 
 		with (
 			patch("process_simplification.api.shortage.resolve_production_source_warehouse",
@@ -463,18 +465,20 @@ class TestMaterialCoverageIntegration(IntegrationTestCase):
 				"RM-1": frappe._dict({"item_code": "RM-1", "source_warehouse": "_Test Warehouse - _TC", "qty": 20})}),
 			patch("process_simplification.api.shortage.get_material_stock_snapshot",
 				return_value=frappe._dict({"can_calculate": True, "actual_qty": 2, "committed_qty": 0, "available_qty": 2})),
-			patch("process_simplification.api.shortage._mr_documents", return_value=mr_docs),
-			patch("process_simplification.api.shortage._po_documents", return_value=po_docs),
+			patch("process_simplification.api.shortage._intransit_purchase_for_soi", return_value=15),
+			patch("process_simplification.api.shortage._soi_supply_documents", return_value=supply_docs),
 		):
 			result = calculate_material_coverage(
-				[{"bom_no": "BOM-1", "qty": 1}],
+				[{"bom_no": "BOM-1", "qty": 1, "source": {"sales_order_item": "SOI-1"}}],
 				"_Test Company",
 				need_by_date=add_days(nowdate(), 3),
 				defaults=frappe._dict({"source_warehouse": "_Test Warehouse - _TC"}),
 			)
 
 		material = result.materials[0]
-		# Documents are attached and the summary quantities are derived from them.
+		# Per-SOI supply documents are attached; the attributed in-transit (15)
+		# covers the gap after stock (18) partially -> 3 still short.
 		self.assertEqual([d["name"] for d in material["supply_documents"]], ["MR-1", "PO-1"])
-		self.assertEqual(material["open_material_request_qty"], 10)
-		self.assertEqual(material["open_purchase_order_qty"], 5)
+		self.assertEqual(material["intransit_qty"], 15)
+		self.assertEqual(material["allocated_qty"], 2)
+		self.assertEqual(material["shortage_qty"], 3)

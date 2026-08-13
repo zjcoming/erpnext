@@ -38,26 +38,20 @@ function coverage(overrides = {}) {
 		item_name: "Shared Material",
 		stock_uom: "Kg",
 		warehouse: "Stores - TC",
+		row: 1,
 		required_qty: 30,
-		actual_qty: 18,
-		committed_qty: 3,
-		available_qty: 15,
-		open_material_request_qty: 4,
-		open_purchase_order_qty: 5,
+		allocated_qty: 15,
+		intransit_qty: 0,
 		current_gap_qty: 15,
 		shortage_qty: 6,
+		bom_qty_per_unit: 2,
 		status: "new_purchase_required",
-		sources: [
-			{ row: 1, finished_item: "FG-001", required_qty: 20, bom_qty_per_unit: 2 },
-			{ row: 2, finished_item: "FG-002", required_qty: 10, bom_qty_per_unit: 2 },
-		],
 		...overrides,
 	};
 }
 
 function group(row, overrides = {}) {
-	const total = coverage();
-	const contribution = total.sources[row - 1];
+	const contribution = coverage({ row, required_qty: row === 1 ? 20 : 10 });
 	return {
 		row,
 		item_code: `FG-00${row}`,
@@ -67,14 +61,7 @@ function group(row, overrides = {}) {
 		available_to_reserve: 2,
 		production_required: row === 1 ? 10 : 5,
 		bom_no: `BOM-FG-00${row}-001`,
-		materials: [
-			{
-				...total,
-				required_qty: contribution.required_qty,
-				bom_qty_per_unit: contribution.bom_qty_per_unit,
-				sources: [contribution],
-			},
-		],
+		materials: [contribution],
 		...overrides,
 	};
 }
@@ -172,11 +159,11 @@ test("escapes every server-provided label in rendered risk HTML", () => {
 	assert.match(html, /&lt;img/);
 });
 
-test("explains shared inventory once at order level and expands only shortage products", () => {
+test("expands only shortage products and keeps ready ones collapsed", () => {
 	const enoughGroup = group(2, {
 		materials: [
 			{
-				...coverage({ status: "ready_now", shortage_qty: 0, current_gap_qty: 0 }),
+				...coverage({ status: "ready_now", shortage_qty: 0, current_gap_qty: 0, row: 2 }),
 				required_qty: 10,
 				bom_qty_per_unit: 2,
 			},
@@ -190,7 +177,6 @@ test("explains shared inventory once at order level and expands only shortage pr
 		helpers
 	);
 
-	assert.match(html, /本单汇总库存/);
 	assert.match(html, /预计需新增采购 1 项/);
 	assert.match(html, /<details[^>]*data-material-group="1"[^>]* open>/);
 	assert.match(html, /<details[^>]*data-material-group="2"(?![^>]* open)>/);
@@ -200,14 +186,14 @@ test("explains shared inventory once at order level and expands only shortage pr
 test("product cards distinguish this-product demand from every order-level coverage figure", () => {
 	const html = materialRiskHtml(buildMaterialRiskView(fixtureWithSharedMaterial), helpers);
 
-	assert.match(html, /BOM 单耗\/本产品贡献需求/);
+	assert.match(html, /BOM 单耗\/本单需求/);
 	assert.match(
 		html,
-		/除“本产品贡献需求”外，库存、采购申请、按时在途、缺口和结论均为全单汇总；采购判断以下方全单汇总为准。/
+		/按本订单核算：已分配库存来自当前库存的按交期分配；下单前尚无专属采购，缺口以本单需求为准。/
 	);
-	assert.match(html, /全单汇总·账面/);
-	assert.match(html, /全单汇总·采购申请/);
-	assert.match(html, /全单汇总·建议新增申请/);
+	assert.match(html, /已分配库存/);
+	assert.match(html, /在途\(本单\)/);
+	assert.match(html, /采购缺口/);
 });
 
 test("renders explicit zero-production copy instead of an empty material table", () => {

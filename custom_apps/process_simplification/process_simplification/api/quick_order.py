@@ -517,9 +517,8 @@ def quick_order_review_fingerprint(result) -> str:
 				"item_code": row.get("item_code"),
 				"warehouse": row.get("warehouse"),
 				"required_qty": normalize_qty(row.get("required_qty")),
-				"available_qty": normalize_qty(row.get("available_qty")),
-				"open_material_request_qty": normalize_qty(row.get("open_material_request_qty")),
-				"open_purchase_order_qty": normalize_qty(row.get("open_purchase_order_qty")),
+				"allocated_qty": normalize_qty(row.get("allocated_qty")),
+				"intransit_qty": normalize_qty(row.get("intransit_qty")),
 				"shortage_qty": normalize_qty(row.get("shortage_qty")),
 				"status": row.get("status"),
 			}
@@ -611,28 +610,20 @@ def _evaluate_quick_order(payload):
 		material_groups_by_row[group["row"]] = group
 
 	for material in material_coverage:
-		for source in material.get("sources") or []:
-			group = material_groups_by_row.get(source.get("row"))
-			if not group:
-				continue
-			contribution = dict(material)
-			contribution["required_qty"] = normalize_qty(source.get("required_qty"))
-			contribution["bom_qty_per_unit"] = normalize_qty(source.get("bom_qty_per_unit"))
-			contribution["sources"] = [source]
-			group["materials"].append(contribution)
+		group = material_groups_by_row.get(material.get("row"))
+		if group is not None:
+			group["materials"].append(dict(material))
 
-		if material.get("status") == "cannot_calculate":
-			for source in material.get("sources") or []:
-				if source.get("row") is not None:
-					blockers.append(
-						_issue(
-							"RAW_MATERIAL_WAREHOUSE_MISSING",
-							"blocker",
-							"无法确定原料仓库，请先完善 BOM、公司或物料默认值。",
-							"line",
-							source.get("row"),
-						)
-					)
+		if material.get("status") == "cannot_calculate" and material.get("row") is not None:
+			blockers.append(
+				_issue(
+					"RAW_MATERIAL_WAREHOUSE_MISSING",
+					"blocker",
+					"无法确定原料仓库，请先完善 BOM、公司或物料默认值。",
+					"line",
+					material.get("row"),
+				)
+			)
 	if shortages:
 		warnings.append(
 			_issue(

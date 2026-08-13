@@ -115,13 +115,13 @@ function productionDemandHtml(demand, helpers) {
 		? `
 			<div class="production-material-table-wrap">
 				<table class="table table-bordered production-material-table">
-					<thead><tr><th>${esc(t("物料"))}</th><th>${esc(t("本需求"))}</th><th>${esc(t("全部需求"))}</th><th>${esc(t("仓库库存"))}</th><th>${esc(t("已占用"))}</th><th>${esc(t("本次可用"))}</th><th>${esc(t("采购申请"))}</th><th>${esc(t("在途采购"))}</th><th>${esc(t("即时缺口"))}</th><th>${esc(t("采购缺口"))}</th><th>${esc(t("状态"))}</th></tr></thead>
+					<thead><tr><th>${esc(t("物料"))}</th><th>${esc(t("本单需求"))}</th><th>${esc(t("已分配库存"))}</th><th>${esc(t("在途(本单)"))}</th><th>${esc(t("采购缺口"))}</th><th>${esc(t("状态"))}</th></tr></thead>
 					<tbody>${(demand.materials || [])
 						.map((row) => {
 							const statusMeta = productionMaterialStatusMeta(row.status, t);
 							const docs = row.supply_documents || [];
 							const docList = docs.length
-								? `<tr class="production-supply-docs"><td colspan="11" data-label="${esc(t("采购单据"))}"><div class="production-supply-doc-list">${docs
+								? `<tr class="production-supply-docs"><td colspan="6" data-label="${esc(t("采购单据"))}"><div class="production-supply-doc-list">${docs
 									.map((doc) => {
 										const typeLabel = doc.doctype === "Material Request" ? t("采购申请") : t("采购单");
 										const lateTag = doc.is_late ? ` · <span class="indicator-pill red">${esc(t("迟于交期"))}</span>` : "";
@@ -131,23 +131,24 @@ function productionDemandHtml(demand, helpers) {
 								: "";
 							return `
 								<tr>
-									<td data-label="${esc(t("物料"))}"><strong>${esc(row.item_code || "")}</strong><br><small>${esc(row.item_name || "")} · ${esc(row.warehouse || t("未设置仓库"))}${row.is_shared ? ` · <span class="production-shared-material">${esc(t("共享物料"))}</span>` : ""}</small></td>
-									<td data-label="${esc(t("本需求"))}">${number(row.source_required_qty)}</td>
-									<td data-label="${esc(t("全部需求"))}">${number(row.total_required_qty)}</td>
-									<td data-label="${esc(t("仓库库存"))}">${number(row.actual_qty)}</td>
-									<td data-label="${esc(t("已占用"))}">${number(row.committed_qty)}</td>
-									<td data-label="${esc(t("本次可用"))}">${number(row.available_qty)}</td>
-									<td data-label="${esc(t("采购申请"))}">${number(row.open_material_request_qty)}</td>
-									<td data-label="${esc(t("在途采购"))}">${number(row.open_purchase_order_qty)}</td>
-									<td data-label="${esc(t("即时缺口"))}">${number(row.current_gap_qty)}</td>
+									<td data-label="${esc(t("物料"))}"><strong>${esc(row.item_code || "")}</strong><br><small>${esc(row.item_name || "")} · ${esc(row.warehouse || t("未设置仓库"))}</small></td>
+									<td data-label="${esc(t("本单需求"))}">${number(row.required_qty)}</td>
+									<td data-label="${esc(t("已分配库存"))}">${number(row.allocated_qty)}</td>
+									<td data-label="${esc(t("在途(本单)"))}">${number(row.intransit_qty)}</td>
 									<td data-label="${esc(t("采购缺口"))}">${number(row.shortage_qty)}</td>
-									<td data-label="${esc(t("状态"))}"><span class="indicator-pill ${esc(statusMeta.indicator)}">${esc(statusMeta.label)}</span>${docs.length ? "" : `<br><small class="text-muted">${esc(t("尚未发起采购"))}</small>`}</td>
+									<td data-label="${esc(t("状态"))}"><span class="indicator-pill ${esc(statusMeta.indicator)}">${esc(statusMeta.label)}</span>${docs.length || Number(row.shortage_qty || 0) <= 0 ? "" : `<br><small class="text-muted">${esc(t("尚未发起采购"))}</small>`}</td>
 								</tr>${docList}`;
 						})
 						.join("")}</tbody>
 				</table>
 			</div>`
 		: `<div class="text-muted production-empty-section">${esc(t("当前没有可展示的 BOM 物料。"))}</div>`;
+	const materialsReady = demand.material_summary && demand.material_summary.materials_ready;
+	const readyBadge = (demand.materials || []).length
+		? (materialsReady
+			? `<span class="indicator-pill green">${esc(t("齐料可开工"))}</span>`
+			: `<span class="indicator-pill orange">${esc(t("待齐料"))}</span>`)
+		: "";
 	return `
 		<details class="production-demand production-risk-${esc(demand.risk_level || "gray")}" data-demand-key="${esc(demand.demand_key)}">
 			<summary>
@@ -157,7 +158,7 @@ function productionDemandHtml(demand, helpers) {
 				<div class="production-demand-fact"><span>${esc(t("成品覆盖 / 待交"))}</span><strong>${number(demand.finished_stock_coverage_qty)} / ${number(demand.pending_qty)}</strong></div>
 				<div class="production-demand-fact"><span>${esc(t("已安排 / 需生产"))}</span><strong>${number(demand.active_work_order_qty)} / ${number(demand.production_required_qty)}</strong></div>
 				<div class="production-demand-fact"><span>${esc(t("未安排 / 已完工"))}</span><strong>${number(demand.unplanned_production_qty)} / ${number(demand.completed_qty)}</strong></div>
-				<div class="production-demand-risk"><span class="indicator-pill ${esc(demand.risk_level || "gray")}">${esc(demand.risk_label || "")}</span><span class="indicator-pill gray">${esc(demand.status_label || "")}</span></div>
+				<div class="production-demand-risk"><span class="indicator-pill ${esc(demand.risk_level || "gray")}">${esc(demand.risk_label || "")}</span><span class="indicator-pill gray">${esc(demand.status_label || "")}</span>${readyBadge}</div>
 				<span class="production-demand-toggle">${esc(t("查看并处理"))}</span>
 			</summary>
 			<div class="production-demand-details">
@@ -166,7 +167,7 @@ function productionDemandHtml(demand, helpers) {
 					.map(([label, value]) => `<div data-label="${esc(label)}"><span>${esc(label)}</span><strong>${number(value)}</strong></div>`)
 					.join("")}</div></section>
 				<section><h5>${esc(t("关联生产任务"))}</h5><div class="production-work-order-list">${workOrders}</div></section>
-				<section><h5>${esc(t("BOM 物料风险"))}</h5><p class="text-muted">${esc(t("共享物料按当前全部生产需求汇总，采购动作会再次复核。"))}</p>${materials}</section>
+				<section><h5>${esc(t("BOM 物料风险"))}</h5><p class="text-muted">${esc(t("按本订单需求核算：库存按交期优先分配，采购按本单归属计入。全部原料齐备即可开工。"))}</p>${materials}</section>
 			</div>
 		</details>`;
 }

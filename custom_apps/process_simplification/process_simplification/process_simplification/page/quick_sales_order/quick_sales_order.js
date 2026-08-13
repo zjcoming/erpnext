@@ -11,19 +11,8 @@ function materialStatusMeta(status, translate = (message) => message) {
 
 function buildMaterialRiskView(result = {}) {
 	const summary = Array.isArray(result.material_coverage) ? result.material_coverage : [];
-	const summaryByMaterial = new Map(
-		summary.map((material) => [`${material.item_code || ""}\u0000${material.warehouse || ""}`, material])
-	);
 	const groups = (Array.isArray(result.material_groups) ? result.material_groups : []).map((group) => {
-		const materials = (Array.isArray(group.materials) ? group.materials : []).map((material) => {
-			const aggregate = summaryByMaterial.get(
-				`${material.item_code || ""}\u0000${material.warehouse || ""}`
-			);
-			return {
-				...material,
-				shared_inventory: Boolean(aggregate && (aggregate.sources || []).length > 1),
-			};
-		});
+		const materials = Array.isArray(group.materials) ? group.materials : [];
 		return {
 			...group,
 			materials,
@@ -94,16 +83,8 @@ function materialRiskHtml(view, helpers) {
 						material.required_qty
 					)}${unit(material)}</td>
 							<td>${escape(material.warehouse || translate("未设置"))}</td>
-							<td class="quick-material-number">${number(material.actual_qty)}</td>
-							<td class="quick-material-number">${number(material.committed_qty)}</td>
-							<td class="quick-material-number">${number(material.available_qty)}${
-						material.shared_inventory
-							? `<small class="quick-shared-stock">${escape(translate("本单汇总库存"))}</small>`
-							: ""
-					}</td>
-							<td class="quick-material-number">${number(material.open_material_request_qty)}</td>
-							<td class="quick-material-number">${number(material.open_purchase_order_qty)}</td>
-							<td class="quick-material-number">${number(material.current_gap_qty)}</td>
+							<td class="quick-material-number">${number(material.allocated_qty)}</td>
+							<td class="quick-material-number">${number(material.intransit_qty)}</td>
 							<td class="quick-material-number">${number(material.shortage_qty)}</td>
 							<td>${statusPill(material.status)}</td>
 						</tr>`
@@ -128,22 +109,18 @@ function materialRiskHtml(view, helpers) {
 					</summary>
 					<p class="quick-material-scope-note">${escape(
 						translate(
-							"除“本产品贡献需求”外，库存、采购申请、按时在途、缺口和结论均为全单汇总；采购判断以下方全单汇总为准。"
+							"按本订单核算：已分配库存来自当前库存的按交期分配；下单前尚无专属采购，缺口以本单需求为准。"
 						)
 					)}</p>
 					<div class="quick-material-table-wrap">
 						<table class="table quick-material-table">
 							<thead><tr>
-				<th>${escape(translate("物料"))}</th><th>${escape(translate("BOM 单耗/本产品贡献需求"))}</th><th>${escape(
+				<th>${escape(translate("物料"))}</th><th>${escape(translate("BOM 单耗/本单需求"))}</th><th>${escape(
 				translate("来源仓库")
-			)}</th><th>${escape(translate("全单汇总·账面"))}</th><th>${escape(
-				translate("全单汇总·已占用")
-			)}</th><th>${escape(translate("全单汇总·可用"))}</th><th>${escape(
-				translate("全单汇总·采购申请")
-			)}</th><th>${escape(translate("全单汇总·按时在途"))}</th><th>${escape(
-				translate("全单汇总·当前生产缺口")
-			)}</th><th>${escape(translate("全单汇总·建议新增申请"))}</th><th>${escape(
-				translate("全单汇总·结论")
+			)}</th><th>${escape(translate("已分配库存"))}</th><th>${escape(
+				translate("在途(本单)")
+			)}</th><th>${escape(translate("采购缺口"))}</th><th>${escape(
+				translate("结论")
 			)}</th>
 							</tr></thead>
 							<tbody>${rows}</tbody>
@@ -160,12 +137,8 @@ function materialRiskHtml(view, helpers) {
 					<td class="quick-material-name">${label(material.item_code, material.item_name)}</td>
 					<td>${escape(material.warehouse || translate("未设置"))}</td>
 					<td class="quick-material-number">${number(material.required_qty)}${unit(material)}</td>
-					<td class="quick-material-number">${number(material.actual_qty)}</td>
-					<td class="quick-material-number">${number(material.committed_qty)}</td>
-					<td class="quick-material-number">${number(material.available_qty)}</td>
-					<td class="quick-material-number">${number(material.open_material_request_qty)}</td>
-					<td class="quick-material-number">${number(material.open_purchase_order_qty)}</td>
-					<td class="quick-material-number">${number(material.current_gap_qty)}</td>
+					<td class="quick-material-number">${number(material.allocated_qty)}</td>
+					<td class="quick-material-number">${number(material.intransit_qty)}</td>
 					<td class="quick-material-number">${number(material.shortage_qty)}</td>
 					<td>${statusPill(material.status)}</td>
 				</tr>`
@@ -177,17 +150,13 @@ function materialRiskHtml(view, helpers) {
 				<h4 id="quick-material-procurement-title">${escape(translate("全单原料与采购汇总"))}</h4>
 				<strong>${escape(translate("预计需新增采购 {0} 项", [view.shortages.length]))}</strong>
 			</div>
-			<p class="text-muted">${escape(translate("共享原料按物料和仓库合并计算，本单汇总库存仅展示一次。"))}</p>
+			<p class="text-muted">${escape(translate("按订单行核算缺口，共享原料按本单交期优先分配库存。"))}</p>
 			<div class="quick-material-table-wrap"><table class="table quick-material-table quick-material-summary-table">
 				<thead><tr><th>${escape(translate("物料"))}</th><th>${escape(translate("来源仓库"))}</th><th>${escape(
 				translate("本单需求")
-		  )}</th><th>${escape(translate("账面"))}</th><th>${escape(translate("已占用"))}</th><th>${escape(
-				translate("本单可用")
-		  )}</th><th>${escape(translate("采购申请"))}</th><th>${escape(
-				translate("按时在途")
-		  )}</th><th>${escape(translate("当前生产缺口"))}</th><th>${escape(
-				translate("建议新增申请")
-		  )}</th><th>${escape(translate("结论"))}</th></tr></thead>
+		  )}</th><th>${escape(translate("已分配库存"))}</th><th>${escape(
+				translate("在途(本单)")
+		  )}</th><th>${escape(translate("采购缺口"))}</th><th>${escape(translate("结论"))}</th></tr></thead>
 				<tbody>${summaryRows}</tbody>
 			</table></div>
 		</section>`
@@ -204,9 +173,7 @@ function confirmationHtml(result, helpers) {
 	const shortageRows = shortages
 		.slice(0, 5)
 		.map((material) => {
-			const procurementCoverage =
-				Number(material.open_material_request_qty || 0) +
-				Number(material.open_purchase_order_qty || 0);
+			const procurementCoverage = Number(material.intransit_qty || 0);
 			return `<tr><td>${escape(material.item_code)}${
 				material.item_name ? `<small>${escape(material.item_name)}</small>` : ""
 			}</td><td>${escape(material.warehouse || translate("未设置"))}</td><td>${number(

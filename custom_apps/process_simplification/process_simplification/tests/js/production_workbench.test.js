@@ -63,17 +63,11 @@ function demand(key, overrides = {}) {
 				item_name: "原料 001",
 				stock_uom: "Nos",
 				warehouse: "Stores - TC",
-				source_required_qty: 10,
-				total_required_qty: 30,
-				actual_qty: 5,
-				committed_qty: 2,
-				available_qty: 3,
-				open_material_request_qty: 4,
-				open_purchase_order_qty: 5,
-				current_gap_qty: 27,
-				shortage_qty: 18,
+				required_qty: 30,
+				allocated_qty: 3,
+				intransit_qty: 0,
+				shortage_qty: 27,
 				status: "new_purchase_required",
-				is_shared: true,
 			},
 		],
 		work_orders: [
@@ -166,19 +160,13 @@ test("production demand HTML escapes server values and exposes complete labelled
 		assert.match(html, new RegExp(`data-label="${label}"`));
 	}
 	for (const materialLabel of [
-		"本需求",
-		"全部需求",
-		"仓库库存",
-		"已占用",
-		"本次可用",
-		"采购申请",
-		"在途采购",
-		"即时缺口",
+		"本单需求",
+		"已分配库存",
+		"在途\\(本单\\)",
 		"采购缺口",
 	]) {
 		assert.match(html, new RegExp(`data-label="${materialLabel}"`));
 	}
-	assert.match(html, /共享物料/);
 	assert.match(html, /需新采购/);
 	assert.doesNotMatch(html, />new_purchase_required</);
 	assert.match(html, /\/app\/work-order\/WO-001/);
@@ -191,10 +179,11 @@ test("material rows show linked purchase documents and status, or a no-purchase 
 				item_code: "RM-DOC",
 				item_name: "原料 DOC",
 				warehouse: "Stores - TC",
-				open_material_request_qty: 10,
-				open_purchase_order_qty: 5,
+				required_qty: 15,
+				allocated_qty: 0,
+				intransit_qty: 15,
 				shortage_qty: 0,
-				status: "purchase_request_pending",
+				status: "awaiting_purchase_receipt",
 				supply_documents: [
 					{ doctype: "Material Request", name: "MREQ-1", status: "Pending", outstanding_qty: 10, schedule_date: "2026-08-05", is_late: false },
 					{ doctype: "Purchase Order", name: "PORD-1", status: "To Receive", outstanding_qty: 5, schedule_date: "2026-08-27", is_late: true },

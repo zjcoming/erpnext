@@ -244,23 +244,19 @@ def attach_material_coverage(demands, coverage):
 	for demand in result:
 		demand["materials"] = []
 
+	# Each coverage material row is already attributed to one Sales Order Item.
 	for material in (coverage or {}).get("materials") or []:
 		material = dict(material)
-		sources = [dict(source) for source in material.pop("sources", [])]
-		is_shared = len({source.get("demand_key") for source in sources if source.get("demand_key")}) > 1
-		for source in sources:
-			demand = by_key.get(source.get("demand_key") or source.get("sales_order_item"))
-			if not demand:
-				continue
-			demand["materials"].append(
-				{
-					**deepcopy(material),
-					"source_required_qty": flt(source.get("required_qty") or 0),
-					"total_required_qty": flt(material.get("required_qty") or 0),
-					"is_shared": is_shared,
-					"source_count": len(sources),
-				}
-			)
+		demand = by_key.get(material.get("demand_key") or material.get("sales_order_item"))
+		if not demand:
+			continue
+		demand["materials"].append(
+			{
+				**deepcopy(material),
+				"source_required_qty": flt(material.get("required_qty") or 0),
+				"total_required_qty": flt(material.get("required_qty") or 0),
+			}
+		)
 
 	for demand in result:
 		materials = demand["materials"]
@@ -273,8 +269,11 @@ def attach_material_coverage(demands, coverage):
 		awaiting = [
 			row
 			for row in materials
-			if row.get("status") in {"awaiting_purchase_receipt", "purchase_request_pending"}
+			if row.get("status") == "awaiting_purchase_receipt"
 		]
+		ready = bool(materials) and all(
+			(not row.get("blocked")) and row.get("status") == "ready_now" for row in materials
+		)
 		demand["material_summary"] = {
 			"status_code": "blocked"
 			if blocked
@@ -287,6 +286,7 @@ def attach_material_coverage(demands, coverage):
 			"shortage_item_count": len(shortages),
 			"blocked_item_count": len(blocked),
 			"awaiting_supply_item_count": len(awaiting),
+			"materials_ready": ready,
 		}
 		if shortages:
 			_unique_action(demand["next_actions"], "处理缺料", "handle_shortage")
@@ -314,7 +314,9 @@ def _material_demands(demands):
 					"demand_key": demand.get("demand_key"),
 					"sales_order": demand.get("sales_order"),
 					"sales_order_item": demand.get("sales_order_item"),
+					"customer_name": demand.get("customer_name") or demand.get("customer"),
 					"finished_item": demand.get("item_code"),
+					"finished_item_name": demand.get("item_name"),
 					"delivery_date": demand.get("delivery_date"),
 					"sales_order_item_warehouse": demand.get("warehouse"),
 				},

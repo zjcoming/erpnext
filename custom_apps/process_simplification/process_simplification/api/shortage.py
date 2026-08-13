@@ -198,6 +198,148 @@ def _po_outstanding(item_code: str, warehouse: str | None, company: str, need_by
 	)
 
 
+def _intransit_purchase_for_soi(
+	item_code: str, warehouse: str | None, company: str, sales_order_item: str | None, need_by_date: str | None
+) -> float:
+	"""Outstanding purchase attributed to a specific Sales Order Item that has
+	not yet been received.
+
+	Received purchase is already reflected in warehouse stock, so only the
+	not-yet-received balance is counted here. Purchase Orders are matched by
+	their native ``sales_order_item`` (carried over from the Material Request);
+	Material Requests not yet converted to a Purchase Order are included too."""
+	if not warehouse or not sales_order_item:
+		return 0
+
+	total = 0.0
+	po = frappe.qb.DocType("Purchase Order")
+	poi = frappe.qb.DocType("Purchase Order Item")
+	po_query = (
+		frappe.qb.from_(poi)
+		.join(po)
+		.on(poi.parent == po.name)
+		.select(poi.stock_qty, poi.received_qty, poi.conversion_factor)
+		.where(
+			(poi.item_code == item_code)
+			& (poi.warehouse == warehouse)
+			& (poi.sales_order_item == sales_order_item)
+			& (po.company == company)
+			& (po.docstatus == 1)
+			& (po.status.notin(["Closed", "Cancelled"]))
+		)
+	)
+	if need_by_date:
+		po_query = po_query.where(poi.schedule_date <= need_by_date)
+	ordered_from_po = 0.0
+	for row in po_query.run(as_dict=True):
+		outstanding = max(
+			normalize_qty(row.stock_qty) - normalize_qty(row.received_qty) * normalize_qty(row.conversion_factor or 1),
+			0,
+		)
+		total += outstanding
+		ordered_from_po += normalize_qty(row.stock_qty)
+
+	# Material Requests attributed to this SOI that are not yet converted to a PO
+	# (avoid double counting the part already turned into a Purchase Order).
+	mr = frappe.qb.DocType("Material Request")
+	mri = frappe.qb.DocType("Material Request Item")
+	mr_query = (
+		frappe.qb.from_(mri)
+		.join(mr)
+		.on(mri.parent == mr.name)
+		.select(mri.stock_qty, mri.ordered_qty)
+		.where(
+			(mri.item_code == item_code)
+			& (mri.warehouse == warehouse)
+			& (mri.sales_order_item == sales_order_item)
+			& (mr.company == company)
+			& (mr.docstatus == 1)
+			& (mr.material_request_type == "Purchase")
+			& (mr.status.notin(["Stopped", "Cancelled"]))
+		)
+	)
+	if need_by_date:
+		mr_query = mr_query.where(mri.schedule_date <= need_by_date)
+	for row in mr_query.run(as_dict=True):
+		total += max(normalize_qty(row.stock_qty) - normalize_qty(row.ordered_qty), 0)
+
+	return total
+
+
+def _soi_supply_documents(
+	item_code: str, warehouse: str | None, company: str, sales_order_item: str | None, need_by_date: str | None
+):
+	"""Purchase documents attributed to this Sales Order Item, for display."""
+	if not warehouse or not sales_order_item:
+		return []
+	docs = []
+	mr = frappe.qb.DocType("Material Request")
+	mri = frappe.qb.DocType("Material Request Item")
+	for row in (
+		frappe.qb.from_(mri)
+		.join(mr)
+		.on(mri.parent == mr.name)
+		.select(mr.name, mr.status, mri.stock_qty, mri.ordered_qty, mri.schedule_date)
+		.where(
+			(mri.item_code == item_code)
+			& (mri.warehouse == warehouse)
+			& (mri.sales_order_item == sales_order_item)
+			& (mr.company == company)
+			& (mr.docstatus == 1)
+			& (mr.material_request_type == "Purchase")
+			& (mr.status.notin(["Stopped", "Cancelled"]))
+		)
+		.run(as_dict=True)
+	):
+		outstanding = max(normalize_qty(row.stock_qty) - normalize_qty(row.ordered_qty), 0)
+		if outstanding <= 0:
+			continue
+		docs.append(
+			{
+				"doctype": "Material Request",
+				"name": row.name,
+				"status": row.status,
+				"outstanding_qty": outstanding,
+				"schedule_date": str(row.schedule_date) if row.schedule_date else None,
+				"is_late": bool(need_by_date and row.schedule_date and str(row.schedule_date) > str(need_by_date)),
+			}
+		)
+	po = frappe.qb.DocType("Purchase Order")
+	poi = frappe.qb.DocType("Purchase Order Item")
+	for row in (
+		frappe.qb.from_(poi)
+		.join(po)
+		.on(poi.parent == po.name)
+		.select(po.name, po.status, poi.stock_qty, poi.received_qty, poi.conversion_factor, poi.schedule_date)
+		.where(
+			(poi.item_code == item_code)
+			& (poi.warehouse == warehouse)
+			& (poi.sales_order_item == sales_order_item)
+			& (po.company == company)
+			& (po.docstatus == 1)
+			& (po.status.notin(["Closed", "Cancelled"]))
+		)
+		.run(as_dict=True)
+	):
+		outstanding = max(
+			normalize_qty(row.stock_qty) - normalize_qty(row.received_qty) * normalize_qty(row.conversion_factor or 1),
+			0,
+		)
+		if outstanding <= 0:
+			continue
+		docs.append(
+			{
+				"doctype": "Purchase Order",
+				"name": row.name,
+				"status": row.status,
+				"outstanding_qty": outstanding,
+				"schedule_date": str(row.schedule_date) if row.schedule_date else None,
+				"is_late": bool(need_by_date and row.schedule_date and str(row.schedule_date) > str(need_by_date)),
+			}
+		)
+	return sorted(docs, key=lambda d: (d.get("schedule_date") or "9999-12-31", d["doctype"], d["name"]))
+
+
 def _source_note(sources):
 	return "; ".join(
 		"{0}/{1}/{2}: {3}".format(
@@ -241,125 +383,186 @@ def _prior_required_by_key(demands, company: str, defaults) -> dict:
 def calculate_material_coverage(
 	demands, company: str, need_by_date: str | None = None, defaults=None, prior_demands=None
 ) -> frappe._dict:
-	"""Explain material availability, approved supply, and new purchase needs.
+	"""Explain raw-material coverage per order line (Sales Order Item).
 
-	``prior_demands`` are other in-flight demands that draw on the same shared
-	stock; their raw-material need is consumed from free stock before the
-	reported ``demands`` are evaluated, so a per-order check does not let every
-	order believe the same scarce stock covers it.
+	Each demand's BOM is exploded into materials attributed to that demand's
+	Sales Order Item. Warehouse stock for a shared ``(item, warehouse)`` is
+	allocated across order lines in delivery-date priority, so the earliest-due
+	order line consumes on-hand stock first. In-transit (not-yet-received)
+	purchase counts toward an order line only when the purchase is attributed to
+	that Sales Order Item. A material is ``ready_now`` when its allocated stock
+	alone meets the requirement; receipt of an attributed purchase raises
+	warehouse stock and turns the line ready on the next recompute.
+
+	``prior_demands`` are other in-flight demands (e.g. earlier-due orders not in
+	this call) that must consume shared stock before the reported demands.
 	"""
 	defaults = defaults or get_company_defaults(company)
 	prior_consumed = _prior_required_by_key(prior_demands, company, defaults)
-	materials = {}
+
+	rows = _expand_material_rows(demands, company, defaults)
+	_allocate_stock_by_delivery_priority(rows, prior_consumed)
+
+	for row in rows:
+		if row["blocked"]:
+			continue
+		soi = row["sales_order_item"]
+		intransit = _intransit_purchase_for_soi(
+			row["item_code"], row["warehouse"], company, soi, need_by_date
+		)
+		row["intransit_qty"] = intransit
+		# Gap after this line's allocated stock; in-transit attributed purchase
+		# closes the gap for "awaiting" but does not make it ready (not on hand).
+		gap_after_stock = max(normalize_qty(row["required_qty"]) - row["allocated_qty"], 0)
+		row["current_gap_qty"] = gap_after_stock
+		row["shortage_qty"] = max(gap_after_stock - intransit, 0)
+		if gap_after_stock <= 0:
+			row["status"] = "ready_now"
+		elif intransit >= gap_after_stock:
+			row["status"] = "awaiting_purchase_receipt"
+		else:
+			row["status"] = "new_purchase_required"
+		row["supply_documents"] = _soi_supply_documents(
+			row["item_code"], row["warehouse"], company, soi, need_by_date
+		)
+
+	material_rows = sorted(
+		rows, key=lambda r: (r["sales_order_item"] or "", r["warehouse"] or "", r["item_code"])
+	)
+	return frappe._dict(
+		{
+			"materials": material_rows,
+			"shortages": _merge_shortages_for_purchase(material_rows),
+		}
+	)
+
+
+def _expand_material_rows(demands, company: str, defaults):
+	"""One row per (Sales Order Item, item, warehouse) with the BOM requirement."""
+	rows = []
 	for demand in demands or []:
 		demand = frappe._dict(demand)
 		qty = normalize_qty(demand.get("qty"))
+		source = frappe._dict(demand.get("source") or {})
 		if not demand.get("bom_no") or qty <= 0:
 			continue
-
 		try:
 			bom_items = get_bom_items_as_dict(demand.bom_no, company, qty=qty, fetch_exploded=1)
 		except Exception as exc:
 			raise MaterialCoverageBomExpansionError(demand.bom_no) from exc
 		resolved_source = resolve_production_source_warehouse(
-			company,
-			defaults=defaults,
-			sales_order_item_warehouse=(demand.get("source") or {}).get(
-				"sales_order_item_warehouse"
-			),
+			company, defaults=defaults, sales_order_item_warehouse=source.get("sales_order_item_warehouse")
 		)
 		for bom_item in bom_items.values():
-			item_code = bom_item.get("item_code")
-			warehouse = resolved_source.warehouse
-			key = (item_code, warehouse)
-			if key not in materials:
-				materials[key] = {
-					"item_code": item_code,
+			contribution = normalize_qty(bom_item.get("qty"))
+			rows.append(
+				{
+					"item_code": bom_item.get("item_code"),
 					"item_name": bom_item.get("item_name"),
 					"stock_uom": bom_item.get("stock_uom"),
-					"warehouse": warehouse,
-					"required_qty": 0,
+					"warehouse": resolved_source.warehouse,
+					"row": source.get("row"),
+					"sales_order": source.get("sales_order"),
+					"sales_order_item": source.get("sales_order_item"),
+					"demand_key": source.get("demand_key") or source.get("sales_order_item"),
+					"customer_name": source.get("customer_name"),
+					"finished_item": source.get("finished_item"),
+					"finished_item_name": source.get("finished_item_name"),
+					"delivery_date": source.get("delivery_date"),
+					"required_qty": contribution,
+					"bom_qty_per_unit": contribution / qty if qty else 0,
 					"actual_qty": 0,
-					"committed_qty": 0,
-					"available_qty": 0,
-					"open_material_request_qty": 0,
-					"open_purchase_order_qty": 0,
+					"allocated_qty": 0,
+					"intransit_qty": 0,
 					"current_gap_qty": 0,
 					"shortage_qty": 0,
 					"status": "cannot_calculate",
-					"blocked": False,
-					"warehouse_can_use": bool(resolved_source.can_use),
-					"sources": [],
-					"supply_documents": [],
+					"blocked": not resolved_source.can_use,
 				}
-			else:
-				materials[key]["warehouse_can_use"] = bool(
-					materials[key]["warehouse_can_use"] and resolved_source.can_use
-				)
-			contribution_qty = normalize_qty(bom_item.get("qty"))
-			materials[key]["required_qty"] += contribution_qty
-			source = dict(demand.get("source") or {})
-			source["required_qty"] = contribution_qty
-			source["bom_qty_per_unit"] = contribution_qty / qty
-			materials[key]["sources"].append(source)
+			)
+	return rows
 
-	for material in materials.values():
-		warehouse_can_use = material.pop("warehouse_can_use")
-		if not warehouse_can_use:
-			material["blocked"] = True
+
+def _allocate_stock_by_delivery_priority(rows, prior_consumed):
+	"""Allocate on-hand stock per (item, warehouse) across order lines, earliest
+	delivery date first. ``prior_consumed`` (earlier demands outside this call)
+	is deducted from the pool before allocation."""
+	pools = {}
+	for row in rows:
+		if row["blocked"]:
 			continue
-		snapshot = get_material_stock_snapshot(material["item_code"], material["warehouse"])
-		material["actual_qty"] = normalize_qty(snapshot.get("actual_qty"))
-		material["committed_qty"] = normalize_qty(snapshot.get("committed_qty"))
-		prior_qty = prior_consumed.get((material["item_code"], material["warehouse"]), 0)
-		material["available_qty"] = max(normalize_qty(snapshot.get("available_qty")) - prior_qty, 0)
-		if not snapshot.get("can_calculate"):
-			material["blocked"] = True
-			continue
+		key = (row["item_code"], row["warehouse"])
+		if key not in pools:
+			snapshot = get_material_stock_snapshot(row["item_code"], row["warehouse"])
+			if not snapshot.get("can_calculate"):
+				row["blocked"] = True
+				continue
+			available = max(
+				normalize_qty(snapshot.get("available_qty")) - normalize_qty(prior_consumed.get(key, 0)), 0
+			)
+			pools[key] = {"available": available, "actual": normalize_qty(snapshot.get("actual_qty"))}
+		row["actual_qty"] = pools[key]["actual"]
 
-		mr_docs = _mr_documents(material["item_code"], material["warehouse"], company, need_by_date)
-		po_docs = _po_documents(material["item_code"], material["warehouse"], company, need_by_date)
-		# Summary quantities count only on-time supply (keeps the shortage math
-		# tied to the delivery deadline); the document list shows all, flagging
-		# late ones.
-		material["open_material_request_qty"] = sum(d["outstanding_qty"] for d in mr_docs if not d["is_late"])
-		material["open_purchase_order_qty"] = sum(d["outstanding_qty"] for d in po_docs if not d["is_late"])
-		material["supply_documents"] = sorted(
-			mr_docs + po_docs,
-			key=lambda doc: (doc.get("schedule_date") or "9999-12-31", doc["doctype"], doc["name"]),
-		)
-		material["current_gap_qty"] = max(
-			normalize_qty(material["required_qty"]) - material["available_qty"], 0
-		)
-		material["shortage_qty"] = max(
-			material["current_gap_qty"]
-			- material["open_material_request_qty"]
-			- material["open_purchase_order_qty"],
-			0,
-		)
-		if material["current_gap_qty"] == 0:
-			material["status"] = "ready_now"
-		elif material["open_purchase_order_qty"] >= material["current_gap_qty"]:
-			material["status"] = "awaiting_purchase_receipt"
-		elif (
-			material["open_material_request_qty"] + material["open_purchase_order_qty"]
-			>= material["current_gap_qty"]
-		):
-			material["status"] = "purchase_request_pending"
-		else:
-			material["status"] = "new_purchase_required"
-
-	material_rows = sorted(materials.values(), key=lambda material: (material["warehouse"] or "", material["item_code"]))
-	return frappe._dict(
-		{
-			"materials": material_rows,
-			"shortages": [
-				material
-				for material in material_rows
-				if material["status"] == "new_purchase_required" and material["shortage_qty"] > 0
-			],
-		}
+	ordered = sorted(
+		[r for r in rows if not r["blocked"]],
+		key=lambda r: (
+			r.get("delivery_date") or "9999-12-31",
+			str(r.get("sales_order") or ""),
+			str(r.get("sales_order_item") or ""),
+		),
 	)
+	for row in ordered:
+		key = (row["item_code"], row["warehouse"])
+		pool = pools.get(key)
+		if not pool:
+			continue
+		take = min(pool["available"], normalize_qty(row["required_qty"]))
+		row["allocated_qty"] = take
+		pool["available"] = max(pool["available"] - take, 0)
+
+
+def _merge_shortages_for_purchase(material_rows):
+	"""Merge order-line shortages back to (item, warehouse) for a consolidated
+	purchase, carrying each contributing Sales Order Item as a source so the
+	generated Material Request lines stay attributable."""
+	merged = {}
+	for row in material_rows:
+		if row["status"] != "new_purchase_required" or row["shortage_qty"] <= 0:
+			continue
+		key = (row["item_code"], row["warehouse"])
+		if key not in merged:
+			merged[key] = {
+				"item_code": row["item_code"],
+				"item_name": row.get("item_name"),
+				"stock_uom": row.get("stock_uom"),
+				"warehouse": row["warehouse"],
+				"required_qty": 0,
+				"shortage_qty": 0,
+				"sources": [],
+			}
+		merged[key]["required_qty"] += normalize_qty(row["required_qty"])
+		merged[key]["shortage_qty"] += normalize_qty(row["shortage_qty"])
+		merged[key]["sources"].append(
+			{
+				"sales_order": row.get("sales_order"),
+				"sales_order_item": row.get("sales_order_item"),
+				"customer_name": row.get("customer_name"),
+				"finished_item": row.get("finished_item"),
+				"finished_item_name": row.get("finished_item_name"),
+				"delivery_date": row.get("delivery_date"),
+				"required_qty": normalize_qty(row["shortage_qty"]),
+			}
+		)
+	return sorted(merged.values(), key=lambda m: (m["warehouse"] or "", m["item_code"]))
+
+
+def is_order_item_ready(coverage, sales_order_item: str) -> bool:
+	"""True when every material for the order line has its requirement met by
+	allocated on-hand stock (all raw materials present, ready to produce)."""
+	rows = [m for m in (coverage or {}).get("materials", []) if m.get("sales_order_item") == sales_order_item]
+	if not rows:
+		return False
+	return all(not r.get("blocked") and r.get("status") == "ready_now" for r in rows)
 
 
 def calculate_material_shortages(demands, company: str, defaults=None, need_by_date: str | None = None, prior_demands=None):
@@ -497,17 +700,61 @@ def create_material_request(shortage_rows, company: str | None = None, schedule_
 		if qty > shortage_qty and not row.get("allow_over_purchase"):
 			throw_chinese("第 {0} 行采购数量不能超过采购缺口。".format(index))
 
-		mr.append(
-			"items",
-			{
-				"item_code": row.item_code,
-				"qty": qty,
-				"schedule_date": row.get("schedule_date") or mr.schedule_date,
-				"warehouse": row.get("warehouse") or defaults.source_warehouse,
-				"description": "流程简化缺料来源：{0}".format(_source_note(row.get("sources") or [])),
-			},
-		)
+		warehouse = row.get("warehouse") or defaults.source_warehouse
+		schedule = row.get("schedule_date") or mr.schedule_date
+		note = "流程简化缺料来源：{0}".format(_source_note(row.get("sources") or []))
+		# Split the purchase across the originating Sales Order Items so each
+		# resulting line is attributable (native sales_order/sales_order_item,
+		# which ERPNext carries onto the Purchase Order when the MR is converted).
+		for line in _attributed_lines(qty, row.get("sources") or []):
+			mr.append(
+				"items",
+				{
+					"item_code": row.item_code,
+					"qty": line["qty"],
+					"schedule_date": schedule,
+					"warehouse": warehouse,
+					"sales_order": line.get("sales_order"),
+					"sales_order_item": line.get("sales_order_item"),
+					"description": note,
+				},
+			)
 
 	mr.insert()
 	mr.submit()
 	return {"material_request": mr.name, "docstatus": mr.docstatus}
+
+
+def _attributed_lines(qty: float, sources) -> list:
+	"""Split a purchase quantity across its source Sales Order Items in
+	proportion to each source's raw-material requirement.
+
+	Sources without a Sales Order Item, or an empty list, yield one
+	unattributed line for the whole quantity. The rounding remainder is added
+	to the last attributed line so the split total equals ``qty`` exactly."""
+	attributed = [frappe._dict(s) for s in sources if frappe._dict(s).get("sales_order_item")]
+	if not attributed:
+		return [{"qty": qty, "sales_order": None, "sales_order_item": None}]
+
+	total = sum(normalize_qty(s.get("required_qty")) for s in attributed)
+	lines = []
+	if total <= 0:
+		# No usable weights: put everything on the first source.
+		first = attributed[0]
+		return [{"qty": qty, "sales_order": first.get("sales_order"), "sales_order_item": first.get("sales_order_item")}]
+
+	allocated = 0.0
+	for idx, source in enumerate(attributed):
+		if idx == len(attributed) - 1:
+			line_qty = normalize_qty(qty - allocated)
+		else:
+			line_qty = normalize_qty(qty * normalize_qty(source.get("required_qty")) / total)
+			allocated += line_qty
+		lines.append(
+			{
+				"qty": line_qty,
+				"sales_order": source.get("sales_order"),
+				"sales_order_item": source.get("sales_order_item"),
+			}
+		)
+	return lines
