@@ -83,6 +83,16 @@ def production_sort_key(demand):
 	)
 
 
+def material_priority_sort_key(demand):
+	return (
+		not bool(demand.get("delivery_date")),
+		demand.get("delivery_date") or "9999-12-31",
+		str(demand.get("creation") or ""),
+		str(demand.get("sales_order") or ""),
+		str(demand.get("sales_order_item") or demand.get("demand_key") or ""),
+	)
+
+
 def allocate_finished_stock(rows):
 	"""Allocate each item/warehouse free-stock snapshot once, in delivery priority order."""
 	ordered = [frappe._dict(deepcopy(dict(row))) for row in rows or []]
@@ -299,6 +309,47 @@ def attach_material_coverage(demands, coverage):
 	return result
 
 
+def attach_priority_material_coverage(demands, company):
+	"""Attach per-demand material coverage after earlier demands consume shared stock."""
+	ordered = [frappe._dict(deepcopy(dict(demand))) for demand in demands or []]
+	ordered.sort(key=material_priority_sort_key)
+	material_demands = [(demand, _material_demands([demand])) for demand in ordered]
+	prior_demands = []
+	coverage_by_demand = []
+
+	for demand, current_demands in material_demands:
+		coverage = calculate_material_coverage(
+			current_demands,
+			company,
+			need_by_date=demand.get("delivery_date"),
+			prior_demands=prior_demands,
+		)
+		coverage_by_demand.append((demand, coverage))
+		prior_demands.extend(current_demands)
+
+	totals = {}
+	for _demand, coverage in coverage_by_demand:
+		for material in coverage.get("materials") or []:
+			key = (material.get("item_code"), material.get("warehouse"))
+			total = totals.setdefault(key, {"required_qty": 0, "sources": set()})
+			total["required_qty"] += _positive(material, "required_qty")
+			for source in material.get("sources") or []:
+				source_key = source.get("demand_key") or source.get("sales_order_item")
+				if source_key:
+					total["sources"].add(source_key)
+
+	result = []
+	for demand, coverage in coverage_by_demand:
+		attached_demand = attach_material_coverage([demand], coverage)[0]
+		for material in attached_demand["materials"]:
+			total = totals[(material.get("item_code"), material.get("warehouse"))]
+			material["total_required_qty"] = total["required_qty"]
+			material["source_count"] = len(total["sources"])
+			material["is_shared"] = material["source_count"] > 1
+		result.append(attached_demand)
+	return result
+
+
 def _material_demands(demands):
 	rows = []
 	for demand in demands:
@@ -414,22 +465,17 @@ def get_production_overview():
 		by_company.setdefault(demand.get("company"), []).append(demand)
 	covered_demands = []
 	for company, company_demands in by_company.items():
-		material_demands = _material_demands(company_demands)
-		if not material_demands or not company:
+		if not _material_demands(company_demands) or not company:
 			covered_demands.extend(company_demands)
 			continue
-		dates = [getdate(row.get("delivery_date")) for row in company_demands if row.get("delivery_date")]
-		need_by_date = min(dates) if dates else None
 		try:
-			coverage = calculate_material_coverage(material_demands, company, need_by_date=need_by_date)
+			covered_demands.extend(attach_priority_material_coverage(company_demands, company))
 		except MaterialCoverageBomExpansionError:
 			for demand in company_demands:
 				demand["status_code"] = "master_data_blocked"
 				demand["status_label"] = STATUS_LABELS["master_data_blocked"]
 				demand["material_summary"]["status_code"] = "blocked"
 			covered_demands.extend(company_demands)
-		else:
-			covered_demands.extend(attach_material_coverage(company_demands, coverage))
 
 	covered_demands.sort(key=production_sort_key)
 	return {
