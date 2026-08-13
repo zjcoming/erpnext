@@ -59,8 +59,10 @@ class TestProductionWorkbench(UnitTestCase):
 			"next_actions": [],
 		}
 
-	def _attach_priority_material_coverage(self, demands):
+	def _attach_priority_material_coverage(self, demands, *, stock_qty=10, po_docs=None, mr_docs=None):
 		from process_simplification.api import production
+		po_docs = po_docs or []
+		mr_docs = mr_docs or []
 
 		def bom_items(_bom_no, _company, qty, fetch_exploded):
 			return {
@@ -86,11 +88,23 @@ class TestProductionWorkbench(UnitTestCase):
 			patch(
 				"process_simplification.api.shortage.get_material_stock_snapshot",
 				return_value=frappe._dict(
-					{"can_calculate": True, "actual_qty": 10, "committed_qty": 0, "available_qty": 10}
+					{"can_calculate": True, "actual_qty": stock_qty, "committed_qty": 0, "available_qty": stock_qty}
 				),
 			),
-			patch("process_simplification.api.shortage._mr_documents", return_value=[]),
-			patch("process_simplification.api.shortage._po_documents", return_value=[]),
+			patch(
+				"process_simplification.api.shortage._mr_documents",
+				side_effect=lambda _item, _warehouse, _company, need_by_date: [
+					{**document, "is_late": bool(need_by_date and document.get("schedule_date") > need_by_date)}
+					for document in mr_docs
+				],
+			),
+			patch(
+				"process_simplification.api.shortage._po_documents",
+				side_effect=lambda _item, _warehouse, _company, need_by_date: [
+					{**document, "is_late": bool(need_by_date and document.get("schedule_date") > need_by_date)}
+					for document in po_docs
+				],
+			),
 		):
 			return production.attach_priority_material_coverage(demands, "_Test Company")
 
@@ -212,7 +226,7 @@ class TestProductionWorkbench(UnitTestCase):
 		self.assertEqual(first["materials"][0]["total_required_qty"], 30)
 		self.assertTrue(first["materials"][0]["is_shared"])
 		self.assertEqual(first["material_summary"]["shortage_item_count"], 1)
-		self.assertEqual(first["status_code"], "material_shortage")
+		self.assertEqual(first["status_code"], "in_production")
 		self.assertEqual(second["status_code"], "unplanned")
 
 	def test_missing_delivery_date_sorts_before_dated_demands_as_a_data_risk(self):
@@ -271,3 +285,82 @@ class TestProductionWorkbench(UnitTestCase):
 		by_key = {row["demand_key"]: row for row in result}
 		self.assertEqual(by_key["DATED"]["materials"][0]["current_gap_qty"], 0)
 		self.assertEqual(by_key["UNDATED"]["materials"][0]["current_gap_qty"], 10)
+
+	def test_material_priority_allocates_shared_purchase_order_only_once(self):
+		early = self._priority_demand("EARLY", "2026-08-04", "2026-08-01 09:00:00")
+		late = self._priority_demand("LATE", "2026-08-10", "2026-08-02 09:00:00")
+
+		result = self._attach_priority_material_coverage(
+			[late, early],
+			stock_qty=0,
+			po_docs=[
+				{
+					"doctype": "Purchase Order",
+					"name": "PO-SHARED",
+					"status": "To Receive",
+					"outstanding_qty": 10,
+					"schedule_date": "2026-08-03",
+				}
+			],
+		)
+
+		by_key = {row["demand_key"]: row for row in result}
+		early_material = by_key["EARLY"]["materials"][0]
+		late_material = by_key["LATE"]["materials"][0]
+		self.assertEqual(early_material["open_purchase_order_qty"], 10)
+		self.assertEqual(early_material["status"], "awaiting_purchase_receipt")
+		self.assertEqual(early_material["supply_documents"][0]["allocated_qty"], 10)
+		self.assertEqual(late_material["open_purchase_order_qty"], 0)
+		self.assertEqual(late_material["shortage_qty"], 10)
+		self.assertEqual(late_material["supply_documents"][0]["allocated_qty"], 0)
+
+	def test_material_priority_allocates_purchase_order_only_after_its_schedule_date(self):
+		early = self._priority_demand("EARLY", "2026-08-04", "2026-08-01 09:00:00")
+		late = self._priority_demand("LATE", "2026-08-10", "2026-08-02 09:00:00")
+
+		result = self._attach_priority_material_coverage(
+			[early, late],
+			stock_qty=0,
+			po_docs=[
+				{
+					"doctype": "Purchase Order",
+					"name": "PO-BETWEEN-DATES",
+					"status": "To Receive",
+					"outstanding_qty": 10,
+					"schedule_date": "2026-08-07",
+				}
+			],
+		)
+
+		by_key = {row["demand_key"]: row for row in result}
+		early_document = by_key["EARLY"]["materials"][0]["supply_documents"][0]
+		late_document = by_key["LATE"]["materials"][0]["supply_documents"][0]
+		self.assertTrue(early_document["is_late"])
+		self.assertEqual(early_document["allocated_qty"], 0)
+		self.assertFalse(late_document["is_late"])
+		self.assertEqual(late_document["allocated_qty"], 10)
+
+	def test_material_coverage_blocks_unstarted_work_order_when_supply_is_inbound(self):
+		stock_covered = self._priority_demand("STOCK", "2026-08-04", "2026-08-01 09:00:00")
+		supply_covered = self._priority_demand("SUPPLY", "2026-08-10", "2026-08-02 09:00:00")
+
+		result = self._attach_priority_material_coverage(
+			[stock_covered, supply_covered],
+			po_docs=[
+				{
+					"doctype": "Purchase Order",
+					"name": "PO-INBOUND",
+					"status": "To Receive",
+					"outstanding_qty": 10,
+					"schedule_date": "2026-08-09",
+				}
+			],
+		)
+
+		by_key = {row["demand_key"]: row for row in result}
+		self.assertEqual(by_key["STOCK"]["status_code"], "ready_to_start")
+		self.assertEqual(by_key["SUPPLY"]["material_summary"]["status_code"], "awaiting_supply")
+		self.assertEqual(by_key["SUPPLY"]["status_code"], "material_shortage")
+		self.assertFalse(
+			any(action["action"] == "handle_shortage" for action in by_key["SUPPLY"]["next_actions"])
+		)
