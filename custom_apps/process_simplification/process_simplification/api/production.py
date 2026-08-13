@@ -346,7 +346,7 @@ def attach_priority_material_coverage(demands, company):
 							material.get("item_code"),
 							material.get("warehouse"),
 							document.get("doctype"),
-							document.get("name"),
+							document.get("detail_name") or document.get("name"),
 						)
 						available_qty = remaining_supply.setdefault(key, _positive(document, "outstanding_qty"))
 						allocated_qty = min(gap_qty, available_qty)

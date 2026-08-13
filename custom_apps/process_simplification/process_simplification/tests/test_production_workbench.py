@@ -364,3 +364,117 @@ class TestProductionWorkbench(UnitTestCase):
 		self.assertFalse(
 			any(action["action"] == "handle_shortage" for action in by_key["SUPPLY"]["next_actions"])
 		)
+
+	def test_material_priority_allocates_each_purchase_order_item_row(self):
+		demand = self._priority_demand("COMBINED-PO", "2026-08-10", "2026-08-01 09:00:00")
+
+		result = self._attach_priority_material_coverage(
+			[demand],
+			stock_qty=0,
+			po_docs=[
+				{
+					"doctype": "Purchase Order",
+					"name": "PO-TWO-ITEM-ROWS",
+					"status": "To Receive",
+					"outstanding_qty": 5,
+					"schedule_date": "2026-08-03",
+					"detail_name": "PO-TWO-ITEM-ROWS-1",
+				},
+				{
+					"doctype": "Purchase Order",
+					"name": "PO-TWO-ITEM-ROWS",
+					"status": "To Receive",
+					"outstanding_qty": 5,
+					"schedule_date": "2026-08-03",
+					"detail_name": "PO-TWO-ITEM-ROWS-2",
+				},
+			],
+		)
+
+		material = result[0]["materials"][0]
+		self.assertEqual(material["open_purchase_order_qty"], 10)
+		self.assertEqual(material["shortage_qty"], 0)
+		self.assertEqual(
+			[(document["outstanding_qty"], document["allocated_qty"]) for document in material["supply_documents"]],
+			[(5, 5), (5, 5)],
+		)
+
+	def test_material_priority_allocates_shared_material_request_only_once(self):
+		early = self._priority_demand("EARLY", "2026-08-04", "2026-08-01 09:00:00")
+		late = self._priority_demand("LATE", "2026-08-10", "2026-08-02 09:00:00")
+
+		result = self._attach_priority_material_coverage(
+			[late, early],
+			stock_qty=0,
+			mr_docs=[
+				{
+					"doctype": "Material Request",
+					"name": "MR-SHARED",
+					"status": "Pending",
+					"outstanding_qty": 5,
+					"schedule_date": "2026-08-03",
+					"detail_name": "MR-SHARED-1",
+				},
+				{
+					"doctype": "Material Request",
+					"name": "MR-SHARED",
+					"status": "Pending",
+					"outstanding_qty": 5,
+					"schedule_date": "2026-08-03",
+					"detail_name": "MR-SHARED-2",
+				}
+			],
+		)
+
+		by_key = {row["demand_key"]: row for row in result}
+		early_material = by_key["EARLY"]["materials"][0]
+		late_material = by_key["LATE"]["materials"][0]
+		self.assertEqual(early_material["open_material_request_qty"], 10)
+		self.assertEqual(early_material["status"], "purchase_request_pending")
+		self.assertEqual(sum(document["allocated_qty"] for document in early_material["supply_documents"]), 10)
+		self.assertEqual(late_material["open_material_request_qty"], 0)
+		self.assertEqual(late_material["shortage_qty"], 10)
+		self.assertEqual(late_material["supply_documents"][0]["allocated_qty"], 0)
+
+	def test_material_priority_consumes_purchase_orders_before_material_requests(self):
+		demand = self._priority_demand("PO-FIRST", "2026-08-10", "2026-08-01 09:00:00")
+
+		result = self._attach_priority_material_coverage(
+			[demand],
+			stock_qty=0,
+			po_docs=[
+				{
+					"doctype": "Purchase Order",
+					"name": "PO-SPLIT",
+					"status": "To Receive",
+					"outstanding_qty": 3,
+					"schedule_date": "2026-08-03",
+					"detail_name": "PO-SPLIT-1",
+				},
+				{
+					"doctype": "Purchase Order",
+					"name": "PO-SPLIT",
+					"status": "To Receive",
+					"outstanding_qty": 3,
+					"schedule_date": "2026-08-03",
+					"detail_name": "PO-SPLIT-2",
+				},
+			],
+			mr_docs=[
+				{
+					"doctype": "Material Request",
+					"name": "MR-FALLBACK",
+					"status": "Pending",
+					"outstanding_qty": 10,
+					"schedule_date": "2026-08-03",
+				}
+			],
+		)
+
+		material = result[0]["materials"][0]
+		self.assertEqual(material["open_purchase_order_qty"], 6)
+		self.assertEqual(material["open_material_request_qty"], 4)
+		self.assertEqual(
+			[(document["name"], document["allocated_qty"]) for document in material["supply_documents"]],
+			[("MR-FALLBACK", 4), ("PO-SPLIT", 3), ("PO-SPLIT", 3)],
+		)

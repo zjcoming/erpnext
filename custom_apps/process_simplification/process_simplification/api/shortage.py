@@ -105,7 +105,7 @@ def _mr_documents(item_code: str, warehouse: str | None, company: str, need_by_d
 		frappe.qb.from_(mri)
 		.join(mr)
 		.on(mri.parent == mr.name)
-		.select(mr.name, mr.status, mri.stock_qty, mri.ordered_qty, mri.schedule_date)
+		.select(mr.name, mri.name.as_("detail_name"), mr.status, mri.stock_qty, mri.ordered_qty, mri.schedule_date)
 		.where(
 			(mri.item_code == item_code)
 			& (mri.warehouse == warehouse)
@@ -125,6 +125,7 @@ def _mr_documents(item_code: str, warehouse: str | None, company: str, need_by_d
 			{
 				"doctype": "Material Request",
 				"name": row.name,
+				"detail_name": row.detail_name,
 				"status": row.status,
 				"outstanding_qty": outstanding,
 				"schedule_date": str(row.schedule_date) if row.schedule_date else None,
@@ -148,7 +149,7 @@ def _po_documents(item_code: str, warehouse: str | None, company: str, need_by_d
 		frappe.qb.from_(poi)
 		.join(po)
 		.on(poi.parent == po.name)
-		.select(po.name, po.status, poi.stock_qty, poi.received_qty, poi.conversion_factor, poi.schedule_date)
+		.select(po.name, poi.name.as_("detail_name"), po.status, poi.stock_qty, poi.received_qty, poi.conversion_factor, poi.schedule_date)
 		.where(
 			(poi.item_code == item_code)
 			& (poi.warehouse == warehouse)
@@ -171,6 +172,7 @@ def _po_documents(item_code: str, warehouse: str | None, company: str, need_by_d
 			{
 				"doctype": "Purchase Order",
 				"name": row.name,
+				"detail_name": row.detail_name,
 				"status": row.status,
 				"outstanding_qty": outstanding,
 				"schedule_date": str(row.schedule_date) if row.schedule_date else None,
