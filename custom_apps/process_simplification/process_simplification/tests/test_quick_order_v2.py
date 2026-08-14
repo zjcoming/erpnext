@@ -825,12 +825,36 @@ class TestQuickOrderV2(UnitTestCase):
 		self.assertEqual(result["review_token"], "review-token-2")
 		create_record.assert_not_called()
 
-	@patch("process_simplification.api.shortage._po_outstanding", return_value=1)
-	@patch("process_simplification.api.shortage._mr_outstanding", return_value=2)
+	@patch(
+		"process_simplification.api.shortage._po_documents",
+		return_value=[
+			{
+				"doctype": "Purchase Order",
+				"name": "PO-001",
+				"status": "To Receive",
+				"outstanding_qty": 1,
+				"schedule_date": "2099-01-01",
+				"is_late": False,
+			}
+		],
+	)
+	@patch(
+		"process_simplification.api.shortage._mr_documents",
+		return_value=[
+			{
+				"doctype": "Material Request",
+				"name": "MR-001",
+				"status": "Pending",
+				"outstanding_qty": 2,
+				"schedule_date": "2099-01-01",
+				"is_late": False,
+			}
+		],
+	)
 	@patch("process_simplification.api.shortage.get_material_stock_snapshot")
 	@patch("process_simplification.api.shortage.get_bom_items_as_dict")
 	def test_shared_shortage_calculation_nets_stock_and_open_supply(
-		self, get_bom_items, stock_snapshot, mr_outstanding, po_outstanding
+		self, get_bom_items, stock_snapshot, mr_documents, po_documents
 	):
 		from process_simplification.api.shortage import calculate_material_shortages
 
@@ -873,10 +897,15 @@ class TestQuickOrderV2(UnitTestCase):
 
 		result = get_material_stock_snapshot("RM-001", "Stores - TC")
 
+		# Production reservation is NOT deducted: that reservation is this flow's
+		# own production demand, so subtracting it would double-count the same
+		# need (demand once, reserved-for-that-demand again) and keep a
+		# well-stocked material perpetually "short". Only sales and subcontract
+		# commitments reduce availability.
 		self.assertTrue(result.can_calculate)
 		self.assertEqual(result.actual_qty, 100)
-		self.assertEqual(result.committed_qty, 38)
-		self.assertEqual(result.available_qty, 62)
+		self.assertEqual(result.committed_qty, 15)
+		self.assertEqual(result.available_qty, 85)
 
 	@patch("process_simplification.api.shortage.frappe.db.get_value")
 	def test_material_snapshot_requires_an_exact_warehouse(self, get_value):
@@ -902,12 +931,12 @@ class TestQuickOrderV2(UnitTestCase):
 			["Stores A - TC", "Stores B - TC"],
 		)
 
-	@patch("process_simplification.api.shortage._po_outstanding", return_value=0)
-	@patch("process_simplification.api.shortage._mr_outstanding", return_value=0)
+	@patch("process_simplification.api.shortage._po_documents", return_value=[])
+	@patch("process_simplification.api.shortage._mr_documents", return_value=[])
 	@patch("process_simplification.api.shortage.get_material_stock_snapshot")
 	@patch("process_simplification.api.shortage.get_bom_items_as_dict")
 	def test_material_coverage_returns_sufficient_and_short_materials(
-		self, get_bom_items, stock_snapshot, mr_outstanding, po_outstanding
+		self, get_bom_items, stock_snapshot, mr_documents, po_documents
 	):
 		from process_simplification.api.shortage import calculate_material_coverage
 
@@ -954,12 +983,24 @@ class TestQuickOrderV2(UnitTestCase):
 		self.assertEqual(result.materials[1]["current_gap_qty"], 6)
 		self.assertEqual(result.materials[1]["shortage_qty"], 6)
 
-	@patch("process_simplification.api.shortage._po_outstanding", return_value=8)
-	@patch("process_simplification.api.shortage._mr_outstanding", return_value=0)
+	@patch(
+		"process_simplification.api.shortage._po_documents",
+		return_value=[
+			{
+				"doctype": "Purchase Order",
+				"name": "PO-001",
+				"status": "To Receive",
+				"outstanding_qty": 8,
+				"schedule_date": "2099-01-01",
+				"is_late": False,
+			}
+		],
+	)
+	@patch("process_simplification.api.shortage._mr_documents", return_value=[])
 	@patch("process_simplification.api.shortage.get_material_stock_snapshot")
 	@patch("process_simplification.api.shortage.get_bom_items_as_dict")
 	def test_material_coverage_waits_for_an_on_time_purchase_order(
-		self, get_bom_items, stock_snapshot, mr_outstanding, po_outstanding
+		self, get_bom_items, stock_snapshot, mr_documents, po_documents
 	):
 		from process_simplification.api.shortage import calculate_material_coverage
 
@@ -982,12 +1023,24 @@ class TestQuickOrderV2(UnitTestCase):
 		self.assertEqual(result.materials[0]["status"], "awaiting_purchase_receipt")
 		self.assertEqual(result.materials[0]["shortage_qty"], 0)
 
-	@patch("process_simplification.api.shortage._po_outstanding", return_value=0)
-	@patch("process_simplification.api.shortage._mr_outstanding", return_value=8)
+	@patch("process_simplification.api.shortage._po_documents", return_value=[])
+	@patch(
+		"process_simplification.api.shortage._mr_documents",
+		return_value=[
+			{
+				"doctype": "Material Request",
+				"name": "MR-001",
+				"status": "Pending",
+				"outstanding_qty": 8,
+				"schedule_date": "2099-01-01",
+				"is_late": False,
+			}
+		],
+	)
 	@patch("process_simplification.api.shortage.get_material_stock_snapshot")
 	@patch("process_simplification.api.shortage.get_bom_items_as_dict")
 	def test_material_coverage_keeps_unconverted_request_pending(
-		self, get_bom_items, stock_snapshot, mr_outstanding, po_outstanding
+		self, get_bom_items, stock_snapshot, mr_documents, po_documents
 	):
 		from process_simplification.api.shortage import calculate_material_coverage
 
@@ -1011,12 +1064,12 @@ class TestQuickOrderV2(UnitTestCase):
 		self.assertEqual(result.materials[0]["shortage_qty"], 0)
 		self.assertEqual(result.shortages, [])
 
-	@patch("process_simplification.api.shortage._po_outstanding", return_value=0)
-	@patch("process_simplification.api.shortage._mr_outstanding", return_value=0)
+	@patch("process_simplification.api.shortage._po_documents", return_value=[])
+	@patch("process_simplification.api.shortage._mr_documents", return_value=[])
 	@patch("process_simplification.api.shortage.get_material_stock_snapshot")
 	@patch("process_simplification.api.shortage.get_bom_items_as_dict")
 	def test_material_coverage_recommends_new_purchase_when_supply_is_late(
-		self, get_bom_items, stock_snapshot, mr_outstanding, po_outstanding
+		self, get_bom_items, stock_snapshot, mr_documents, po_documents
 	):
 		from process_simplification.api.shortage import calculate_material_coverage
 
@@ -1039,12 +1092,12 @@ class TestQuickOrderV2(UnitTestCase):
 		self.assertEqual(result.materials[0]["status"], "new_purchase_required")
 		self.assertEqual(result.materials[0]["shortage_qty"], 8)
 
-	@patch("process_simplification.api.shortage._po_outstanding", return_value=0)
-	@patch("process_simplification.api.shortage._mr_outstanding", return_value=0)
+	@patch("process_simplification.api.shortage._po_documents", return_value=[])
+	@patch("process_simplification.api.shortage._mr_documents", return_value=[])
 	@patch("process_simplification.api.shortage.get_material_stock_snapshot")
 	@patch("process_simplification.api.shortage.get_bom_items_as_dict")
 	def test_material_coverage_aggregates_shared_material_and_preserves_sources(
-		self, get_bom_items, stock_snapshot, mr_outstanding, po_outstanding
+		self, get_bom_items, stock_snapshot, mr_documents, po_documents
 	):
 		from process_simplification.api.shortage import calculate_material_coverage
 
@@ -1131,7 +1184,7 @@ class TestQuickOrderV2(UnitTestCase):
 		self.assertEqual(result.shortages, [])
 		stock_snapshot.assert_not_called()
 
-	@patch("process_simplification.api.actions.make_work_order")
+	@patch("process_simplification.api.actions.create_work_orders_via_production_plan")
 	@patch("process_simplification.api.actions.get_allocated_production_row")
 	@patch("process_simplification.api.actions.resolve_production_source_warehouse")
 	@patch("process_simplification.api.actions.get_default_bom")
@@ -1150,7 +1203,7 @@ class TestQuickOrderV2(UnitTestCase):
 		get_default_bom,
 		resolve_source_warehouse,
 		get_allocated_production_row,
-		make_work_order,
+		create_via_pp,
 	):
 		from process_simplification.api.actions import create_work_order
 
@@ -1176,11 +1229,22 @@ class TestQuickOrderV2(UnitTestCase):
 		resolve_source_warehouse.return_value = frappe._dict(
 			{"warehouse": "Stores - TC", "can_use": True, "reason": None}
 		)
-		work_order = MagicMock()
-		make_work_order.return_value = work_order
+		create_via_pp.return_value = {
+			"production_plan": "PP-0001",
+			"work_orders": ["WO-0001"],
+			"sub_assembly_count": 0,
+		}
 
-		create_work_order("SO-001", "SOI-001", 4)
+		result = create_work_order("SO-001", "SOI-001", 4)
 
-		self.assertEqual(make_work_order.call_args.kwargs["bom_no"], "BOM-FG-001-OLD")
-		self.assertEqual(work_order.source_warehouse, "Stores - TC")
+		# The BOM snapshotted on the Sales Order Item wins over get_default_bom,
+		# and the resolved source warehouse is used to check sub-assembly stock.
+		kwargs = create_via_pp.call_args.kwargs
+		self.assertEqual(kwargs["bom_no"], "BOM-FG-001-OLD")
+		self.assertEqual(kwargs["sub_assembly_warehouse"], "Stores - TC")
+		self.assertEqual(kwargs["fg_warehouse"], "Finished Goods - TC")
+		self.assertEqual(kwargs["planned_qty"], 4)
+		self.assertEqual(kwargs["sales_order"], "SO-001")
+		self.assertEqual(kwargs["sales_order_item"], "SOI-001")
+		self.assertEqual(result["work_order"], "WO-0001")
 		get_default_bom.assert_not_called()

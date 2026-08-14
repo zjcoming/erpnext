@@ -1,7 +1,11 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-global.frappe = { pages: { "production-workbench": {} } };
+global.frappe = {
+	pages: { "production-workbench": {} },
+	router: { slug: (value) => String(value).toLowerCase().replaceAll(" ", "-") },
+	datetime: { str_to_user: (value) => value },
+};
 global.__ = (message) => message;
 
 const productionWorkbench = require("../../process_simplification/page/production_workbench/production_workbench.js");
@@ -191,6 +195,154 @@ test("pagination HTML exposes compact production page controls", () => {
 	assert.match(html, /data-page="2"/);
 	assert.match(html, /data-page="4"/);
 	assert.match(html, /data-page-size="20" selected/);
+});
+
+test("production status meta uses colors for the actual production state", () => {
+	assert.deepEqual(productionWorkbench.productionStatusMeta("ready_to_start"), { indicator: "green" });
+	assert.deepEqual(productionWorkbench.productionStatusMeta("in_production"), { indicator: "blue" });
+	assert.deepEqual(productionWorkbench.productionStatusMeta("partially_completed"), { indicator: "blue" });
+	assert.deepEqual(productionWorkbench.productionStatusMeta("unplanned"), { indicator: "orange" });
+	assert.deepEqual(productionWorkbench.productionStatusMeta("material_shortage"), { indicator: "red" });
+	assert.deepEqual(productionWorkbench.productionStatusMeta("master_data_blocked"), { indicator: "red" });
+	assert.deepEqual(productionWorkbench.productionStatusMeta("awaiting_order_reservation"), { indicator: "gray" });
+	assert.deepEqual(productionWorkbench.productionStatusMeta("overplanned"), { indicator: "gray" });
+	assert.deepEqual(productionWorkbench.productionStatusMeta("unknown"), { indicator: "gray" });
+});
+
+test("overdue ready demand keeps delivery risk red and production state green", () => {
+	const html = productionWorkbench.productionDemandHtml(
+		demand("OVERDUE-READY", {
+			delivery_timing: "overdue",
+			risk_level: "red",
+			risk_label: "\u5df2\u903e\u671f",
+			status_code: "ready_to_start",
+			status_label: "\u53ef\u5f00\u5de5",
+		}),
+		helpers
+	);
+
+	assert.match(html, /indicator-pill red">\u5df2\u903e\u671f/);
+	assert.match(html, /indicator-pill green">\u53ef\u5f00\u5de5/);
+});
+
+test("material rows show linked purchase documents and status, or a no-purchase hint", () => {
+	const withDocs = demand("DOCS", {
+		materials: [
+			{
+				item_code: "RM-DOC",
+				item_name: "原料 DOC",
+				warehouse: "Stores - TC",
+				current_gap_qty: 5,
+				open_material_request_qty: 10,
+				open_purchase_order_qty: 5,
+				shortage_qty: 0,
+				status: "purchase_request_pending",
+				supply_documents: [
+					{ doctype: "Material Request", name: "MREQ-1", status: "Pending", outstanding_qty: 10, allocated_qty: 4, schedule_date: "2026-08-05", is_late: false },
+					{ doctype: "Purchase Order", name: "PORD-1", status: "To Receive", outstanding_qty: 5, schedule_date: "2026-08-27", is_late: true },
+				],
+			},
+		],
+	});
+	const html = productionWorkbench.productionDemandHtml(withDocs, helpers);
+	assert.match(html, /\/app\/material-request\/MREQ-1/);
+	assert.match(html, /\/app\/purchase-order\/PORD-1/);
+	assert.match(html, /To Receive/);
+	assert.match(html, /未完成 10\.00 · 已分配给本单 4\.00/);
+	// The late Purchase Order is still shown and flagged.
+	assert.match(html, /晚于本单交期/);
+
+	// A material with no supply documents shows the no-purchase hint.
+	const noDocs = demand("NODOC");
+	const noDocHtml = productionWorkbench.productionDemandHtml(noDocs, helpers);
+	assert.match(noDocHtml, /尚未发起采购/);
+});
+
+test("material-ready rows hide unallocated supply documents and their late markers", () => {
+	const html = productionWorkbench.productionDemandHtml(
+		demand("READY-MATERIAL", {
+			materials: [
+				{
+					item_code: "RM-READY",
+					current_gap_qty: 0,
+					shortage_qty: 0,
+					status: "ready_now",
+					supply_documents: [
+						{ doctype: "Purchase Order", name: "PORD-UNALLOCATED", status: "To Receive", outstanding_qty: 8, allocated_qty: 0, is_late: true },
+					],
+				},
+			],
+		}),
+		helpers
+	);
+
+	assert.doesNotMatch(html, /PORD-UNALLOCATED/);
+	assert.doesNotMatch(html, /晚于本单交期/);
+	assert.doesNotMatch(html, /尚未发起采购/);
+});
+
+test("current material gaps retain unallocated documents with allocation and deadline context", () => {
+	const html = productionWorkbench.productionDemandHtml(
+		demand("GAP-MATERIAL", {
+			materials: [
+				{
+					item_code: "RM-GAP",
+					current_gap_qty: 2,
+					shortage_qty: 2,
+					status: "new_purchase_required",
+					supply_documents: [
+						{ doctype: "Purchase Order", name: "PORD-GAP", status: "To Receive", outstanding_qty: 8, allocated_qty: 0, is_late: true },
+					],
+				},
+			],
+		}),
+		helpers
+	);
+
+	assert.match(html, /PORD-GAP/);
+	assert.match(html, /未分配给本单/);
+	assert.match(html, /晚于本单交期/);
+});
+
+test("allocated supply documents keep total outstanding quantity and identify their allocation", () => {
+	const html = productionWorkbench.productionDemandHtml(
+		demand("ALLOCATED-MATERIAL", {
+			materials: [
+				{
+					item_code: "RM-ALLOCATED",
+					current_gap_qty: 0,
+					shortage_qty: 0,
+					status: "ready_now",
+					supply_documents: [
+						{ doctype: "Material Request", name: "MREQ-ALLOCATED", status: "Pending", outstanding_qty: 10, allocated_qty: 4, is_late: false },
+					],
+				},
+			],
+		}),
+		helpers
+	);
+
+	assert.match(html, /MREQ-ALLOCATED/);
+	assert.match(html, /未完成 10\.00/);
+	assert.match(html, /已分配给本单 4\.00/);
+});
+
+test("no-purchase hint appears only for an actual purchase shortage", () => {
+	const shortageHtml = productionWorkbench.productionDemandHtml(
+		demand("PURCHASE-SHORTAGE", {
+			materials: [{ item_code: "RM-SHORT", current_gap_qty: 2, shortage_qty: 2, status: "new_purchase_required" }],
+		}),
+		helpers
+	);
+	const readyHtml = productionWorkbench.productionDemandHtml(
+		demand("NO-PURCHASE-NEEDED", {
+			materials: [{ item_code: "RM-COVERED", current_gap_qty: 0, shortage_qty: 0, status: "ready_now" }],
+		}),
+		helpers
+	);
+
+	assert.match(shortageHtml, /尚未发起采购/);
+	assert.doesNotMatch(readyHtml, /尚未发起采购/);
 });
 
 test("route focus expands the selected Sales Order Item and reloads once", async () => {

@@ -99,6 +99,22 @@ frappe.pages["shortage-purchase-planning"].on_page_load = function (wrapper) {
 		});
 	}
 
+	function check_all_shortages() {
+		frappe.call({
+			method: "process_simplification.api.shortage.check_all_shortages",
+			freeze: true,
+			freeze_message: __("正在汇总全部订单缺料..."),
+		}).then((r) => {
+			shortage_rows = (r.message && r.message.shortages) || [];
+			selected_rows = [];
+			render_selected();
+			render_shortages();
+			if (!shortage_rows.length) {
+				frappe.msgprint((r.message && r.message.message) || __("所有订单没有需要采购的缺料。"));
+			}
+		});
+	}
+
 	function render_shortages() {
 		$root.find("tbody").html(
 			shortage_rows.map((row, index) => {
@@ -155,6 +171,7 @@ frappe.pages["shortage-purchase-planning"].on_page_load = function (wrapper) {
 	});
 	page.add_inner_button(__("读取订单"), load_from_sales_order);
 	page.add_inner_button(__("检查缺料"), check_shortage);
+	page.add_inner_button(__("汇总全部缺料"), check_all_shortages);
 	page.set_primary_action(__("生成采购申请"), create_material_request);
 	render_selected();
 };

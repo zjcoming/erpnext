@@ -328,3 +328,153 @@ class TestMaterialCoverageIntegration(IntegrationTestCase):
 				)
 				self.assertFalse(result.can_use)
 				self.assertEqual(result.warehouse, source_warehouse)
+
+	def test_supply_documents_expose_material_request_and_purchase_order_details(self):
+		from erpnext.buying.doctype.purchase_order.mapper import make_purchase_receipt
+
+		from process_simplification.api.shortage import (
+			_mr_documents,
+			_mr_outstanding,
+			_po_documents,
+			_po_outstanding,
+		)
+
+		# Self-contained fixtures (fresh company/warehouse) so the test does not
+		# depend on the site-level _Test Warehouse fixtures.
+		suffix = frappe.generate_hash(length=8)
+		abbr = "V{0}".format(suffix[:4]).upper()
+		company = frappe.get_doc(
+			{
+				"doctype": "Company",
+				"company_name": "Supply Vis {0}".format(suffix),
+				"abbr": abbr,
+				"default_currency": "INR",
+				"country": "India",
+				"create_chart_of_accounts_based_on": "Standard Template",
+			}
+		).insert()
+		warehouse = "Stores - {0}".format(abbr)
+		supplier = frappe.get_doc(
+			{
+				"doctype": "Supplier",
+				"supplier_name": "Supply Vis Supplier {0}".format(suffix),
+				"supplier_group": "All Supplier Groups",
+			}
+		).insert()
+		item = frappe.get_doc(
+			{
+				"doctype": "Item",
+				"item_code": "SUP-RM-{0}".format(suffix),
+				"item_name": "Supply Vis RM",
+				"item_group": "All Item Groups",
+				"stock_uom": "Nos",
+				"is_stock_item": 1,
+				"is_purchase_item": 1,
+				"valuation_rate": 5,
+			}
+		).insert()
+		need_date = add_days(nowdate(), 5)
+
+		mr = frappe.new_doc("Material Request")
+		mr.material_request_type = "Purchase"
+		mr.company = company.name
+		mr.transaction_date = nowdate()
+		mr.schedule_date = add_days(need_date, -1)
+		mr.append("items", {
+			"item_code": item.name, "warehouse": warehouse,
+			"schedule_date": add_days(need_date, -1), "qty": 10, "uom": "Nos", "conversion_factor": 1,
+		})
+		mr.insert()
+		mr.submit()
+
+		po = frappe.new_doc("Purchase Order")
+		po.company = company.name
+		po.supplier = supplier.name
+		po.transaction_date = nowdate()
+		po.schedule_date = add_days(need_date, -1)
+		po.append("items", {
+			"item_code": item.name, "warehouse": warehouse,
+			"schedule_date": add_days(need_date, -1), "qty": 8, "uom": "Nos", "conversion_factor": 1, "rate": 5,
+		})
+		po.insert()
+		po.submit()
+		receipt = make_purchase_receipt(po.name)
+		receipt.items[0].qty = 3
+		receipt.insert()
+		receipt.submit()
+
+		mr_docs = _mr_documents(item.name, warehouse, company.name, need_date)
+		po_docs = _po_documents(item.name, warehouse, company.name, need_date)
+
+		# One outstanding MR document (10 open) and one partially received PO (5 open).
+		self.assertEqual(len(mr_docs), 1)
+		self.assertEqual(mr_docs[0]["doctype"], "Material Request")
+		self.assertEqual(mr_docs[0]["name"], mr.name)
+		self.assertEqual(mr_docs[0]["outstanding_qty"], 10)
+
+		self.assertEqual(len(po_docs), 1)
+		self.assertEqual(po_docs[0]["doctype"], "Purchase Order")
+		self.assertEqual(po_docs[0]["name"], po.name)
+		self.assertEqual(po_docs[0]["outstanding_qty"], 5)
+
+		# Summed outstanding must exactly equal the detail-based totals (口径不变).
+		self.assertEqual(
+			_mr_outstanding(item.name, warehouse, company.name, need_date),
+			sum(doc["outstanding_qty"] for doc in mr_docs),
+		)
+		self.assertEqual(
+			_po_outstanding(item.name, warehouse, company.name, need_date),
+			sum(doc["outstanding_qty"] for doc in po_docs),
+		)
+
+		# A Purchase Order due AFTER the deadline is still listed, flagged late,
+		# and excluded from the on-time outstanding total.
+		late_po = frappe.new_doc("Purchase Order")
+		late_po.company = company.name
+		late_po.supplier = supplier.name
+		late_po.transaction_date = nowdate()
+		late_po.schedule_date = add_days(need_date, 10)
+		late_po.append("items", {
+			"item_code": item.name, "warehouse": warehouse,
+			"schedule_date": add_days(need_date, 10), "qty": 4, "uom": "Nos", "conversion_factor": 1, "rate": 5,
+		})
+		late_po.insert()
+		late_po.submit()
+
+		po_docs_after = _po_documents(item.name, warehouse, company.name, need_date)
+		late = [d for d in po_docs_after if d["name"] == late_po.name]
+		self.assertEqual(len(late), 1)
+		self.assertTrue(late[0]["is_late"])
+		# On-time PO outstanding is unchanged (still just the 5 from the early PO).
+		self.assertEqual(_po_outstanding(item.name, warehouse, company.name, need_date), 5)
+
+	def test_material_coverage_attaches_supply_documents(self):
+		from unittest.mock import patch
+
+		from process_simplification.api.shortage import calculate_material_coverage
+
+		mr_docs = [{"doctype": "Material Request", "name": "MR-1", "status": "Pending", "outstanding_qty": 10, "is_late": False}]
+		po_docs = [{"doctype": "Purchase Order", "name": "PO-1", "status": "To Receive", "outstanding_qty": 5, "is_late": False}]
+
+		with (
+			patch("process_simplification.api.shortage.resolve_production_source_warehouse",
+				return_value=frappe._dict({"warehouse": "_Test Warehouse - _TC", "can_use": True, "reason": None})),
+			patch("process_simplification.api.shortage.get_bom_items_as_dict", return_value={
+				"RM-1": frappe._dict({"item_code": "RM-1", "source_warehouse": "_Test Warehouse - _TC", "qty": 20})}),
+			patch("process_simplification.api.shortage.get_material_stock_snapshot",
+				return_value=frappe._dict({"can_calculate": True, "actual_qty": 2, "committed_qty": 0, "available_qty": 2})),
+			patch("process_simplification.api.shortage._mr_documents", return_value=mr_docs),
+			patch("process_simplification.api.shortage._po_documents", return_value=po_docs),
+		):
+			result = calculate_material_coverage(
+				[{"bom_no": "BOM-1", "qty": 1}],
+				"_Test Company",
+				need_by_date=add_days(nowdate(), 3),
+				defaults=frappe._dict({"source_warehouse": "_Test Warehouse - _TC"}),
+			)
+
+		material = result.materials[0]
+		# Documents are attached and the summary quantities are derived from them.
+		self.assertEqual([d["name"] for d in material["supply_documents"]], ["MR-1", "PO-1"])
+		self.assertEqual(material["open_material_request_qty"], 10)
+		self.assertEqual(material["open_purchase_order_qty"], 5)

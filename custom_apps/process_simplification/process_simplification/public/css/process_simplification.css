@@ -1078,6 +1078,35 @@
 	font-weight: 600;
 }
 
+.production-supply-docs td {
+	background: var(--subtle-fg, #f4f5f6);
+}
+
+.production-supply-doc-list {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+
+.production-supply-doc {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 2px 8px;
+	border: 1px solid var(--border-color);
+	border-radius: var(--border-radius);
+	font-size: 12px;
+	text-decoration: none;
+}
+
+.production-supply-doc-type {
+	color: var(--text-muted);
+}
+
+.production-supply-doc.is-late {
+	border-color: var(--red-300, #e24c4c);
+}
+
 .production-empty-section {
 	padding: 14px;
 	border: 1px dashed var(--border-color);
