@@ -21,12 +21,14 @@
 
 **Files:**
 - Modify: `custom_apps/process_simplification/process_simplification/process_simplification/page/production_workbench/production_workbench.js`
+- Modify: `custom_apps/process_simplification/process_simplification/process_simplification/page/production_workbench/production_workbench.json`
 - Test: `custom_apps/process_simplification/process_simplification/tests/js/production_workbench.test.js`
 
 **Interfaces:**
 - Produces: `productionStatusMeta(status) -> { indicator }` with green for `ready_to_start`, blue for active production states, orange for `unplanned`, red for shortage/data blockers, and gray for handoff/overplanned/unknown states.
 - Consumes: each material row's `current_gap_qty`, `shortage_qty`, and `supply_documents[].allocated_qty`.
 - Renders: only allocated supply documents when `current_gap_qty == 0`; all supply documents when `current_gap_qty > 0`.
+- Invalidates: the standard Page's browser cache by advancing its `modified` metadata when the page script changes.
 
 - [ ] **Step 1: Write failing status-color tests**
 
@@ -62,6 +64,8 @@ const docs = (row.supply_documents || []).filter(
 
 Use `已分配给本单` when allocation is positive, `未分配给本单` otherwise, and rename the late marker to `晚于本单交期`. Show `尚未发起采购` only when `shortage_qty > 0` and the displayed document list is empty.
 
+Advance `production_workbench.json`'s `modified` timestamp so Frappe's `page_info` synchronization removes existing `_page:production-workbench` browser caches after the Page metadata is reloaded.
+
 - [ ] **Step 5: Run focused and full frontend tests**
 
 ```bash
@@ -92,10 +96,18 @@ Open the production workbench demand for `SAL-ORD-2026-00003` and confirm:
 - Purchase Orders allocated `0` to the ready material are not displayed.
 - A genuinely short material still displays its inbound documents with clear per-order allocation and deadline wording.
 
+Before browser verification, reload the Page metadata and clear the server cache:
+
+```bash
+bench --site development.localhost reload-doc process_simplification page production_workbench
+bench --site development.localhost clear-cache
+```
+
 - [ ] **Step 8: Commit**
 
 ```bash
 git add custom_apps/process_simplification/process_simplification/process_simplification/page/production_workbench/production_workbench.js \
+  custom_apps/process_simplification/process_simplification/process_simplification/page/production_workbench/production_workbench.json \
   custom_apps/process_simplification/process_simplification/tests/js/production_workbench.test.js \
   docs/superpowers/plans/2026-08-14-production-workbench-status-and-supply-display.md
 git commit -m "fix(process-simplification): clarify production readiness display"
