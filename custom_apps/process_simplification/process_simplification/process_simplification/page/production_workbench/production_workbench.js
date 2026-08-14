@@ -13,6 +13,20 @@ function productionMaterialStatusMeta(status, translate = (message) => message) 
 	return statusCopy[status] || statusCopy.cannot_calculate;
 }
 
+function productionStatusMeta(status) {
+	const statusCopy = {
+		ready_to_start: { indicator: "green" },
+		in_production: { indicator: "blue" },
+		partially_completed: { indicator: "blue" },
+		unplanned: { indicator: "orange" },
+		material_shortage: { indicator: "red" },
+		master_data_blocked: { indicator: "red" },
+		awaiting_order_reservation: { indicator: "gray" },
+		overplanned: { indicator: "gray" },
+	};
+	return statusCopy[status] || { indicator: "gray" };
+}
+
 function filterProductionDemands(demands, filters = {}) {
 	const search = String(filters.search || "").trim().toLowerCase();
 	return (demands || []).filter((demand) => {
@@ -119,13 +133,18 @@ function productionDemandHtml(demand, helpers) {
 					<tbody>${(demand.materials || [])
 						.map((row) => {
 							const statusMeta = productionMaterialStatusMeta(row.status, t);
-							const docs = row.supply_documents || [];
+							const hasCurrentGap = Number(row.current_gap_qty || 0) > 0;
+							const docs = (row.supply_documents || []).filter(
+								(doc) => hasCurrentGap || Number(doc.allocated_qty || 0) > 0
+							);
 							const docList = docs.length
 								? `<tr class="production-supply-docs"><td colspan="11" data-label="${esc(t("采购单据"))}"><div class="production-supply-doc-list">${docs
 									.map((doc) => {
 										const typeLabel = doc.doctype === "Material Request" ? t("采购申请") : t("采购单");
-										const lateTag = doc.is_late ? ` · <span class="indicator-pill red">${esc(t("迟于交期"))}</span>` : "";
-										const allocation = doc.allocated_qty === undefined || doc.allocated_qty === null ? "" : ` · ${esc(t("已分配"))} ${number(doc.allocated_qty)}`;
+										const lateTag = doc.is_late ? ` · <span class="indicator-pill red">${esc(t("晚于本单交期"))}</span>` : "";
+										const allocation = Number(doc.allocated_qty || 0) > 0
+											? ` · ${esc(t("已分配给本单"))} ${number(doc.allocated_qty)}`
+											: ` · ${esc(t("未分配给本单"))}`;
 										return `<a class="production-supply-doc${doc.is_late ? " is-late" : ""}" href="/app/${esc(frappe.router.slug(doc.doctype))}/${esc(doc.name)}" target="_blank"><span class="production-supply-doc-type">${esc(typeLabel)}</span> <strong>${esc(doc.name)}</strong> · <span class="indicator-pill grey">${esc(doc.status || "")}</span> · ${esc(t("未完成"))} ${number(doc.outstanding_qty)}${allocation}${doc.schedule_date ? ` · ${esc(t("交期"))} ${esc(frappe.datetime.str_to_user(doc.schedule_date))}` : ""}${lateTag}</a>`;
 									})
 									.join("")}</div></td></tr>`
@@ -142,7 +161,7 @@ function productionDemandHtml(demand, helpers) {
 									<td data-label="${esc(t("在途采购"))}">${number(row.open_purchase_order_qty)}</td>
 									<td data-label="${esc(t("即时缺口"))}">${number(row.current_gap_qty)}</td>
 									<td data-label="${esc(t("采购缺口"))}">${number(row.shortage_qty)}</td>
-									<td data-label="${esc(t("状态"))}"><span class="indicator-pill ${esc(statusMeta.indicator)}">${esc(statusMeta.label)}</span>${docs.length ? "" : `<br><small class="text-muted">${esc(t("尚未发起采购"))}</small>`}</td>
+									<td data-label="${esc(t("状态"))}"><span class="indicator-pill ${esc(statusMeta.indicator)}">${esc(statusMeta.label)}</span>${Number(row.shortage_qty || 0) > 0 && !docs.length ? `<br><small class="text-muted">${esc(t("尚未发起采购"))}</small>` : ""}</td>
 								</tr>${docList}`;
 						})
 						.join("")}</tbody>
@@ -158,7 +177,7 @@ function productionDemandHtml(demand, helpers) {
 				<div class="production-demand-fact"><span>${esc(t("成品覆盖 / 待交"))}</span><strong>${number(demand.finished_stock_coverage_qty)} / ${number(demand.pending_qty)}</strong></div>
 				<div class="production-demand-fact"><span>${esc(t("已安排 / 需生产"))}</span><strong>${number(demand.active_work_order_qty)} / ${number(demand.production_required_qty)}</strong></div>
 				<div class="production-demand-fact"><span>${esc(t("未安排 / 已完工"))}</span><strong>${number(demand.unplanned_production_qty)} / ${number(demand.completed_qty)}</strong></div>
-				<div class="production-demand-risk"><span class="indicator-pill ${esc(demand.risk_level || "gray")}">${esc(demand.risk_label || "")}</span><span class="indicator-pill gray">${esc(demand.status_label || "")}</span></div>
+				<div class="production-demand-risk"><span class="indicator-pill ${esc(demand.risk_level || "gray")}">${esc(demand.risk_label || "")}</span><span class="indicator-pill ${esc(productionStatusMeta(demand.status_code).indicator)}">${esc(demand.status_label || "")}</span></div>
 				<span class="production-demand-toggle">${esc(t("查看并处理"))}</span>
 			</summary>
 			<div class="production-demand-details">
@@ -184,6 +203,7 @@ function refreshProductionOverview(page, demandKey) {
 const productionWorkbenchApi = {
 	filterProductionDemands,
 	productionMaterialStatusMeta,
+	productionStatusMeta,
 	productionSummary,
 	productionDemandHtml,
 	refreshProductionOverview,
