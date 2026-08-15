@@ -122,7 +122,9 @@ def reserve_stock(sales_order: str, sales_order_item: str, qty: float | None = N
 
 @frappe.whitelist()
 def create_work_order(sales_order: str, sales_order_item: str, qty: float | None = None):
-	frappe.has_permission("Work Order", "create", throw=True)
+	for doctype in ("Production Plan", "Work Order"):
+		for permission_type in ("create", "submit"):
+			frappe.has_permission(doctype, permission_type, throw=True)
 	row = _row_from_workbench(sales_order, sales_order_item)
 	unplanned_qty = row.get("unplanned_production_qty")
 	if unplanned_qty is None:

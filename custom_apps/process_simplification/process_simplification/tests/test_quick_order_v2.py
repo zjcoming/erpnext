@@ -1193,6 +1193,43 @@ class TestQuickOrderV2(UnitTestCase):
 	@patch("process_simplification.api.actions.get_sales_order_item")
 	@patch("process_simplification.api.actions._row_from_workbench")
 	@patch("process_simplification.api.actions.frappe.has_permission")
+	def test_create_work_order_checks_all_create_and_submit_permissions_before_writing(
+		self,
+		has_permission,
+		row_from_workbench,
+		get_sales_order_item,
+		get_doc,
+		get_company_defaults,
+		get_default_bom,
+		resolve_source_warehouse,
+		get_allocated_production_row,
+		create_via_pp,
+	):
+		from process_simplification.api.actions import create_work_order
+
+		def permission(doctype, permission_type, throw=False):
+			if (doctype, permission_type) == ("Production Plan", "submit"):
+				raise frappe.PermissionError
+			return True
+
+		has_permission.side_effect = permission
+		row_from_workbench.return_value = frappe._dict({"uncovered_qty": 0})
+
+		with self.assertRaises(frappe.PermissionError):
+			create_work_order("SO-001", "SOI-001", 1)
+
+		row_from_workbench.assert_not_called()
+		create_via_pp.assert_not_called()
+
+	@patch("process_simplification.api.actions.create_work_orders_via_production_plan")
+	@patch("process_simplification.api.actions.get_allocated_production_row")
+	@patch("process_simplification.api.actions.resolve_production_source_warehouse")
+	@patch("process_simplification.api.actions.get_default_bom")
+	@patch("process_simplification.api.actions.get_company_defaults")
+	@patch("process_simplification.api.actions.frappe.get_doc")
+	@patch("process_simplification.api.actions.get_sales_order_item")
+	@patch("process_simplification.api.actions._row_from_workbench")
+	@patch("process_simplification.api.actions.frappe.has_permission")
 	def test_create_work_order_prefers_bom_snapshotted_on_sales_order_item(
 		self,
 		has_permission,
