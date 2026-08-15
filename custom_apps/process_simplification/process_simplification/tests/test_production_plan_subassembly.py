@@ -483,14 +483,19 @@ class TestProductionPlanSubassemblyIntegration(IntegrationTestCase):
 		# sub-assembly, both linked to the Sales Order.
 		self.assertEqual(result["sub_assembly_count"], 1)
 		self.assertGreaterEqual(len(result["work_orders"]), 2)
+		self.assertEqual(
+			frappe.db.get_value("Production Plan", result["production_plan"], "docstatus"),
+			1,
+		)
 		produced = frappe.get_all(
 			"Work Order",
 			filters={"production_plan": result["production_plan"]},
-			fields=["production_item", "sales_order", "sales_order_item"],
+			fields=["production_item", "sales_order", "sales_order_item", "docstatus"],
 		)
 		items = {row.production_item for row in produced}
 		self.assertIn(fg.name, items)
 		self.assertIn(sub.name, items)
+		self.assertTrue(all(row.docstatus == 1 for row in produced))
 		for row in produced:
 			self.assertEqual(row.sales_order, sales_order.name)
 			self.assertEqual(row.sales_order_item, sales_order.items[0].name)
