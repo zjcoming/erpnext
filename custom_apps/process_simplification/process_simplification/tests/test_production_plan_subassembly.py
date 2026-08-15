@@ -45,6 +45,12 @@ class TestProductionPlanSubassemblyAdapter(UnitTestCase):
 				self.name = "PP-0001"
 				captured["inserted"] = True
 
+			def save(self):
+				pass
+
+			def submit(self):
+				pass
+
 			def get_sub_assembly_items(self):
 				captured["sub_called"] = True
 
@@ -107,6 +113,12 @@ class TestProductionPlanSubassemblyAdapter(UnitTestCase):
 			def insert(self, *a, **k):
 				pass
 
+			def save(self):
+				pass
+
+			def submit(self):
+				pass
+
 			def get_sub_assembly_items(self):
 				pass
 
@@ -151,6 +163,12 @@ class TestProductionPlanSubassemblyAdapter(UnitTestCase):
 			def insert(self, *a, **k):
 				pass
 
+			def save(self):
+				pass
+
+			def submit(self):
+				pass
+
 			def get_sub_assembly_items(self):
 				# Two in-house sub-assembly levels resolved by the engine.
 				self.sub_assembly_items = [frappe._dict(production_item="SA-1"), frappe._dict(production_item="SA-2")]
@@ -159,8 +177,13 @@ class TestProductionPlanSubassemblyAdapter(UnitTestCase):
 				pass
 
 		created = ["WO-FG", "WO-SA-1", "WO-SA-2"]
+		work_order_docs = {name: MagicMock(name=name) for name in created}
 		with patch.object(adapter.frappe, "new_doc", return_value=FakePP()), patch.object(
 			adapter, "_work_orders_for_plan", return_value=created
+		), patch.object(
+			adapter.frappe,
+			"get_doc",
+			side_effect=lambda _doctype, name: work_order_docs[name],
 		):
 			result = adapter.create_work_orders_via_production_plan(
 				sales_order="SO-001",
@@ -176,6 +199,149 @@ class TestProductionPlanSubassemblyAdapter(UnitTestCase):
 
 		self.assertEqual(result["work_orders"], created)
 		self.assertEqual(result["sub_assembly_count"], 2)
+
+	def test_adapter_submits_expanded_plan_and_every_generated_work_order(self):
+		adapter = self._adapter()
+		events = []
+
+		class FakePP:
+			def __init__(self):
+				self.name = None
+				self.docstatus = 0
+				self.po_items = []
+				self.sub_assembly_items = []
+				self.flags = frappe._dict()
+
+			def append(self, table, row):
+				child = frappe._dict(row)
+				child.name = "PP-ROW-1"
+				getattr(self, table).append(child)
+				return child
+
+			def insert(self, *args, **kwargs):
+				self.name = "PP-0004"
+				events.append("plan-insert")
+
+			def get_sub_assembly_items(self):
+				self.sub_assembly_items = [frappe._dict(name="PP-SA-1")]
+				events.append("plan-expand")
+
+			def save(self):
+				events.append("plan-save-expanded")
+
+			def submit(self):
+				self.docstatus = 1
+				events.append("plan-submit")
+
+			def make_work_order(self):
+				events.append("work-orders-generate")
+
+		class FakeWO:
+			def __init__(self, name):
+				self.name = name
+				self.docstatus = 0
+
+			def submit(self):
+				self.docstatus = 1
+				events.append("submit-" + self.name)
+
+		plan = FakePP()
+		work_orders = {name: FakeWO(name) for name in ("WO-FG", "WO-SA")}
+		with (
+			patch.object(adapter.frappe, "new_doc", return_value=plan),
+			patch.object(adapter, "_work_orders_for_plan", return_value=list(work_orders)),
+			patch.object(
+				adapter.frappe,
+				"get_doc",
+				side_effect=lambda _doctype, name: work_orders[name],
+			),
+			patch.object(adapter.frappe.db, "savepoint"),
+		):
+			result = adapter.create_work_orders_via_production_plan(
+				sales_order="SO-001",
+				sales_order_item="SOI-001",
+				company="_Test Company",
+				item_code="FG-001",
+				bom_no="BOM-FG-001",
+				planned_qty=10,
+				fg_warehouse="FG - TC",
+				sub_assembly_warehouse="Stores - TC",
+				delivery_date=None,
+			)
+
+		self.assertEqual(plan.docstatus, 1)
+		self.assertTrue(all(doc.docstatus == 1 for doc in work_orders.values()))
+		self.assertEqual(result["work_orders"], ["WO-FG", "WO-SA"])
+		self.assertLess(events.index("plan-submit"), events.index("work-orders-generate"))
+
+	def test_adapter_rolls_back_batch_when_any_work_order_submit_fails(self):
+		adapter = self._adapter()
+
+		class FakePP:
+			def __init__(self):
+				self.name = "PP-0005"
+				self.po_items = []
+				self.sub_assembly_items = []
+				self.flags = frappe._dict()
+
+			def append(self, table, row):
+				child = frappe._dict(row)
+				child.name = "PP-ROW-1"
+				getattr(self, table).append(child)
+				return child
+
+			def insert(self, *args, **kwargs):
+				pass
+
+			def get_sub_assembly_items(self):
+				pass
+
+			def save(self):
+				pass
+
+			def submit(self):
+				pass
+
+			def make_work_order(self):
+				pass
+
+		class FakeWO:
+			def __init__(self, error=None):
+				self.error = error
+
+			def submit(self):
+				if self.error:
+					raise self.error
+
+		work_orders = {
+			"WO-FG": FakeWO(),
+			"WO-SA": FakeWO(frappe.ValidationError("sub assembly invalid")),
+		}
+		with (
+			patch.object(adapter.frappe, "new_doc", return_value=FakePP()),
+			patch.object(adapter, "_work_orders_for_plan", return_value=list(work_orders)),
+			patch.object(
+				adapter.frappe,
+				"get_doc",
+				side_effect=lambda _doctype, name: work_orders[name],
+			),
+			patch.object(adapter.frappe.db, "savepoint"),
+			patch.object(adapter.frappe.db, "rollback") as rollback,
+		):
+			with self.assertRaisesRegex(frappe.ValidationError, "sub assembly invalid"):
+				adapter.create_work_orders_via_production_plan(
+					sales_order="SO-001",
+					sales_order_item="SOI-001",
+					company="_Test Company",
+					item_code="FG-001",
+					bom_no="BOM-FG-001",
+					planned_qty=10,
+					fg_warehouse="FG - TC",
+					sub_assembly_warehouse="Stores - TC",
+					delivery_date=None,
+				)
+
+		rollback.assert_called_once_with(save_point="production_task_auto_submit")
 
 
 class TestProductionPlanSubassemblyIntegration(IntegrationTestCase):

@@ -27,6 +27,9 @@ import frappe
 from frappe.utils import now_datetime
 
 
+_AUTO_SUBMIT_SAVEPOINT = "production_task_auto_submit"
+
+
 @contextmanager
 def _muted_messages():
 	"""Swallow the engine's English msgprint output ("N created", warnings)
@@ -50,6 +53,11 @@ def _work_orders_for_plan(production_plan: str):
 		pluck="name",
 		order_by="creation asc",
 	)
+
+
+def _submit_work_orders(work_orders: list[str]) -> None:
+	for name in work_orders:
+		frappe.get_doc("Work Order", name).submit()
 
 
 def create_work_orders_via_production_plan(
@@ -93,18 +101,25 @@ def create_work_orders_via_production_plan(
 		},
 	)
 
-	plan.flags.ignore_permissions = True
-	# Persist first so make_work_order can stamp production_plan back-references.
-	plan.insert(ignore_permissions=True)
-
-	with _muted_messages():
-		# Recursively resolve the multi-level BOM into sub_assembly_items,
-		# skipping levels already covered by stock.
+	frappe.db.savepoint(_AUTO_SUBMIT_SAVEPOINT)
+	try:
+		# Persist first so expanded sub-assembly rows receive stable names and
+		# Work Orders can keep valid Production Plan back-references.
+		plan.insert()
 		plan.get_sub_assembly_items()
-		# Create the finished-good WO plus one WO per remaining in-house level.
-		plan.make_work_order()
+		plan.save()
+		plan.submit()
 
-	work_orders = _work_orders_for_plan(plan.name)
+		with _muted_messages():
+			# Create the finished-good WO plus one WO per remaining in-house level.
+			plan.make_work_order()
+
+		work_orders = _work_orders_for_plan(plan.name)
+		_submit_work_orders(work_orders)
+	except Exception:
+		frappe.db.rollback(save_point=_AUTO_SUBMIT_SAVEPOINT)
+		raise
+
 	return {
 		"production_plan": plan.name,
 		"work_orders": work_orders,
