@@ -122,7 +122,7 @@ class TestProductionWorkbench(UnitTestCase):
 		):
 			return production.attach_priority_material_coverage(demands, "_Test Company")
 
-	def test_unplanned_demand_is_visible_without_a_work_order(self):
+	def test_demand_without_a_plan_guides_the_user_to_create_a_production_plan(self):
 		production = self._module()
 		self.assertTrue(hasattr(production, "build_production_demand"))
 
@@ -133,9 +133,35 @@ class TestProductionWorkbench(UnitTestCase):
 			today="2026-08-02",
 		)
 
-		self.assertEqual(demand["status_code"], "unplanned")
+		self.assertEqual(demand["status_code"], "planning_required")
 		self.assertEqual(demand["unplanned_production_qty"], 50)
 		self.assertEqual(demand["sales_order_item"], "SOI-001")
+		self.assertEqual(
+			[(row["label"], row["action"]) for row in demand["next_actions"]],
+			[("创建生产计划", "create_work_order"), ("查看销售订单", "view_sales_order")],
+		)
+
+	def test_legacy_work_order_without_a_production_plan_is_not_marked_ready(self):
+		production = self._module()
+
+		demand = production.build_production_demand(
+			self._order(),
+			self._row(unplanned_production_qty=0, active_work_order_qty=50),
+			work_orders=[
+				{
+					"name": "WO-LEGACY",
+					"status": "Not Started",
+					"qty": 50,
+					"produced_qty": 0,
+					"production_plan": None,
+				}
+			],
+			today="2026-08-02",
+		)
+
+		self.assertEqual(demand["status_code"], "legacy_work_order")
+		self.assertNotIn("check_materials", {row["action"] for row in demand["next_actions"]})
+		self.assertNotIn("create_work_order", {row["action"] for row in demand["next_actions"]})
 
 	def test_plan_readiness_replaces_finished_good_bom_shortage_with_executable_work_order_state(self):
 		production = self._module()
@@ -193,6 +219,7 @@ class TestProductionWorkbench(UnitTestCase):
 		self.assertEqual([row["name"] for row in result["work_orders"]], ["WO-SA", "WO-FG"])
 		self.assertEqual(result["material_summary"]["shortage_item_count"], 0)
 		self.assertEqual(result["materials"][1]["supply_type"], "manufactured")
+		self.assertIn("check_materials", {row["action"] for row in result["next_actions"]})
 
 	def test_plan_readiness_does_not_mark_work_order_ready_when_raw_material_is_in_transit(self):
 		production = self._module()

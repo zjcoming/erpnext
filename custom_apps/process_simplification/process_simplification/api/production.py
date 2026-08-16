@@ -23,6 +23,8 @@ from process_simplification.api.workbench import (
 STATUS_LABELS = {
 	"master_data_blocked": "基础资料异常",
 	"unplanned": "待安排",
+	"planning_required": "待创建生产计划",
+	"legacy_work_order": "旧工单未纳入计划",
 	"material_shortage": "缺料",
 	"awaiting_supply": "等待到料",
 	"waiting_subassembly": "等待半成品",
@@ -57,6 +59,8 @@ def _risk_for_demand(delivery_timing: str, status_code: str):
 		return "red", 90, "生产资料阻塞"
 	if delivery_timing in {"today", "within_7_days"} and status_code in {
 		"unplanned",
+		"planning_required",
+		"legacy_work_order",
 		"material_shortage",
 		"awaiting_supply",
 		"waiting_subassembly",
@@ -72,6 +76,10 @@ def _risk_for_demand(delivery_timing: str, status_code: str):
 		return "blue", 50, "等待下级生产"
 	if status_code == "unplanned":
 		return "orange", 70, "生产未安排"
+	if status_code == "planning_required":
+		return "orange", 70, "尚未创建生产计划"
+	if status_code == "legacy_work_order":
+		return "red", 85, "旧工单未纳入计划"
 	if status_code == "overplanned":
 		return "orange", 65, "生产超计划"
 	if status_code in {"in_production", "partially_completed"}:
@@ -186,32 +194,25 @@ def build_production_demand(order, row, work_orders=None, today=None):
 		getdate(today or now_datetime()),
 	)
 	has_bom = row.get("material_status") != "不涉及生产"
-	started = any(
-		wo.get("status") not in {"Submitted", "Not Started"} or _positive(wo, "produced_qty") > 0
-		for wo in work_orders
-	)
 	if row.get("unsupported") or (unplanned_production_qty > 0 and not has_bom):
 		status_code = "master_data_blocked"
 	elif unplanned_production_qty > 0:
-		status_code = "unplanned"
+		status_code = "planning_required"
 	elif overplanned_qty > 0:
 		status_code = "overplanned"
 	elif completed_unreserved_qty > 0 and production_required_qty <= 0:
 		status_code = "awaiting_order_reservation"
 	elif _positive(row, "completed_qty") > 0 and production_required_qty > 0:
 		status_code = "partially_completed"
-	elif active_work_order_qty > 0 and started:
-		status_code = "in_production"
 	elif active_work_order_qty > 0:
-		status_code = "ready_to_start"
+		status_code = "legacy_work_order"
 	else:
 		status_code = "awaiting_order_reservation"
 
 	risk_level, risk_score, risk_label = _risk_for_demand(delivery_timing, status_code)
 	actions = []
 	if unplanned_production_qty > 0 and status_code != "master_data_blocked":
-		_unique_action(actions, "创建生产任务", "create_work_order")
-	_unique_action(actions, "检查物料", "check_materials")
+		_unique_action(actions, "创建生产计划", "create_work_order")
 	if completed_unreserved_qty > 0:
 		_unique_action(actions, "回补订单", "reserve_completed_stock")
 	_unique_action(actions, "查看销售订单", "view_sales_order")
@@ -406,6 +407,7 @@ def attach_production_plan_readiness(demands, readiness_by_sales_order_item):
 		demand.risk_level, demand.risk_score, demand.risk_label = risk
 		if purchased_shortages:
 			_unique_action(demand.next_actions, "处理缺料", "handle_shortage")
+		_unique_action(demand.next_actions, "检查工单物料", "check_materials")
 	return result
 
 
@@ -698,7 +700,8 @@ def get_production_overview(page=1, page_size=DEFAULT_WORKBENCH_PAGE_SIZE, filte
 		covered_demands.extend(attach_production_plan_readiness(planned_demands, readiness))
 		# A demand without a Production Plan has no authoritative plan date and
 		# therefore must not consume shared stock or inbound supply by Sales Order
-		# delivery date. It remains unplanned until a plan creates executable tasks.
+		# delivery date. It remains planning-required or legacy-blocked until the
+		# plan graph provides executable Work Orders.
 		covered_demands.extend(legacy_demands)
 
 	covered_demands.sort(key=production_sort_key)

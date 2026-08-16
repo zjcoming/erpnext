@@ -89,7 +89,7 @@ function demand(key, overrides = {}) {
 			},
 		],
 		next_actions: [
-			{ label: "创建生产任务", action: "create_work_order", enabled: true },
+			{ label: "创建生产计划", action: "create_work_order", enabled: true },
 			{ label: "处理缺料", action: "handle_shortage", enabled: true },
 		],
 		...overrides,
@@ -202,6 +202,8 @@ test("production status meta uses colors for the actual production state", () =>
 	assert.deepEqual(productionWorkbench.productionStatusMeta("in_production"), { indicator: "blue" });
 	assert.deepEqual(productionWorkbench.productionStatusMeta("partially_completed"), { indicator: "blue" });
 	assert.deepEqual(productionWorkbench.productionStatusMeta("unplanned"), { indicator: "orange" });
+	assert.deepEqual(productionWorkbench.productionStatusMeta("planning_required"), { indicator: "orange" });
+	assert.deepEqual(productionWorkbench.productionStatusMeta("legacy_work_order"), { indicator: "red" });
 	assert.deepEqual(productionWorkbench.productionStatusMeta("material_shortage"), { indicator: "red" });
 	assert.deepEqual(productionWorkbench.productionStatusMeta("awaiting_supply"), { indicator: "blue" });
 	assert.deepEqual(productionWorkbench.productionStatusMeta("waiting_subassembly"), { indicator: "blue" });
@@ -209,6 +211,44 @@ test("production status meta uses colors for the actual production state", () =>
 	assert.deepEqual(productionWorkbench.productionStatusMeta("awaiting_order_reservation"), { indicator: "gray" });
 	assert.deepEqual(productionWorkbench.productionStatusMeta("overplanned"), { indicator: "gray" });
 	assert.deepEqual(productionWorkbench.productionStatusMeta("unknown"), { indicator: "gray" });
+});
+
+test("demand without a Production Plan explains the prerequisite instead of showing material checks", () => {
+	const html = productionWorkbench.productionDemandHtml(
+		demand("NO-PLAN", {
+			status_code: "planning_required",
+			status_label: "待创建生产计划",
+			production_plans: [],
+			work_orders: [],
+			materials: [],
+			next_actions: [{ label: "创建生产计划", action: "create_work_order", enabled: true }],
+		}),
+		helpers
+	);
+
+	assert.match(html, />创建生产计划<\/button>/);
+	assert.match(html, /请先创建生产计划/);
+	assert.doesNotMatch(html, />检查工单物料<\/button>/);
+});
+
+test("legacy Work Order explains that it must be handled before plan readiness is calculated", () => {
+	const html = productionWorkbench.productionDemandHtml(
+		demand("LEGACY-WO", {
+			status_code: "legacy_work_order",
+			status_label: "旧工单未纳入计划",
+			production_plans: [],
+			work_orders: [{ name: "WO-LEGACY", production_item: "FG" }],
+			materials: [],
+			next_actions: [{ label: "查看销售订单", action: "view_sales_order", enabled: true }],
+		}),
+		helpers
+	);
+
+	assert.match(html, /未关联 Production Plan 的旧工单/);
+	assert.match(html, /请先完成、停止或迁移旧工单/);
+	assert.match(html, /<span class="indicator-pill red">未纳入生产计划<\/span>/);
+	assert.doesNotMatch(html, />创建生产计划<\/button>/);
+	assert.doesNotMatch(html, />检查工单物料<\/button>/);
 });
 
 test("planned demand HTML shows Production Plan priority and Work Order readiness", () => {
