@@ -436,6 +436,313 @@ def calculate_material_coverage(
 	)
 
 
+def _direct_bom_items(bom_no: str, company: str, fact_cache) -> list:
+	cache = fact_cache.setdefault("direct_bom_items", {})
+	key = (company, bom_no)
+	if key not in cache:
+		try:
+			cache[key] = [
+				dict(row)
+				for row in get_bom_items_as_dict(
+					bom_no,
+					company,
+					qty=1,
+					fetch_exploded=0,
+				).values()
+			]
+		except Exception as exc:
+			raise MaterialCoverageBomExpansionError(bom_no) from exc
+	return [frappe._dict(deepcopy(row)) for row in cache[key]]
+
+
+def _manufacturing_bom_for_item(item, fact_cache) -> str | None:
+	if item.get("bom_no"):
+		return item.get("bom_no")
+	item_code = item.get("item_code")
+	default_boms = fact_cache.setdefault("default_boms", {})
+	if item_code not in default_boms:
+		default_boms[item_code] = get_default_bom(item_code)
+	return default_boms[item_code]
+
+
+def _allocate_multilevel_supply(
+	row,
+	company: str,
+	need_by_date: str | None,
+	fact_cache,
+	remaining_supply,
+):
+	mr_docs, po_docs = _coverage_supply_documents(
+		row.item_code,
+		row.warehouse,
+		company,
+		need_by_date,
+		fact_cache,
+	)
+	uncovered = normalize_qty(row.current_gap_qty)
+	allocated_purchase_orders = 0
+	allocated_material_requests = 0
+	documents = []
+	for doctype, source_documents in (
+		("Purchase Order", po_docs),
+		("Material Request", mr_docs),
+	):
+		for source_document in sorted(
+			source_documents,
+			key=lambda document: (
+				document.get("schedule_date") or "9999-12-31",
+				document.get("name") or "",
+				document.get("detail_name") or "",
+			),
+		):
+			document = frappe._dict(deepcopy(dict(source_document)))
+			document_key = (
+				row.item_code,
+				row.warehouse,
+				doctype,
+				document.get("detail_name") or document.get("name"),
+			)
+			available_supply = remaining_supply.setdefault(
+				document_key, normalize_qty(document.get("outstanding_qty"))
+			)
+			allocated = 0
+			if not document.get("is_late"):
+				allocated = min(uncovered, available_supply)
+				remaining_supply[document_key] = max(available_supply - allocated, 0)
+				uncovered = max(uncovered - allocated, 0)
+			document.allocated_qty = allocated
+			documents.append(document)
+			if doctype == "Purchase Order":
+				allocated_purchase_orders += allocated
+			else:
+				allocated_material_requests += allocated
+
+	row.open_purchase_order_qty = allocated_purchase_orders
+	row.open_material_request_qty = allocated_material_requests
+	row.supply_documents = documents
+	row.shortage_qty = uncovered
+	if row.current_gap_qty == 0:
+		row.status = "ready_now"
+	elif allocated_purchase_orders >= row.current_gap_qty:
+		row.status = "awaiting_purchase_receipt"
+	elif allocated_purchase_orders + allocated_material_requests >= row.current_gap_qty:
+		row.status = "purchase_request_pending"
+	else:
+		row.status = "new_purchase_required"
+
+
+def _aggregate_multilevel_purchased_rows(rows) -> list:
+	materials = {}
+	for source_row in rows:
+		key = (source_row.get("item_code"), source_row.get("warehouse"))
+		material = materials.setdefault(
+			key,
+			{
+				"item_code": source_row.get("item_code"),
+				"item_name": source_row.get("item_name"),
+				"stock_uom": source_row.get("stock_uom"),
+				"warehouse": source_row.get("warehouse"),
+				"supply_type": "purchased",
+				"required_qty": 0,
+				"actual_qty": 0,
+				"committed_qty": 0,
+				"available_qty": 0,
+				"open_material_request_qty": 0,
+				"open_purchase_order_qty": 0,
+				"current_gap_qty": 0,
+				"shortage_qty": 0,
+				"blocked": False,
+				"sources": [],
+				"supply_documents": [],
+				"_documents": {},
+			},
+		)
+		material["item_name"] = material.get("item_name") or source_row.get("item_name")
+		material["stock_uom"] = material.get("stock_uom") or source_row.get("stock_uom")
+		for field in (
+			"required_qty",
+			"available_qty",
+			"open_material_request_qty",
+			"open_purchase_order_qty",
+			"current_gap_qty",
+			"shortage_qty",
+		):
+			material[field] += normalize_qty(source_row.get(field))
+		material["actual_qty"] = max(
+			normalize_qty(material.get("actual_qty")), normalize_qty(source_row.get("actual_qty"))
+		)
+		material["committed_qty"] = max(
+			normalize_qty(material.get("committed_qty")),
+			normalize_qty(source_row.get("committed_qty")),
+		)
+		material["blocked"] = bool(material.get("blocked") or source_row.get("blocked"))
+		material["sources"].extend(deepcopy(source_row.get("sources") or []))
+		for source_document in source_row.get("supply_documents") or []:
+			document_key = (
+				source_document.get("doctype"),
+				source_document.get("detail_name") or source_document.get("name"),
+			)
+			if document_key not in material["_documents"]:
+				material["_documents"][document_key] = {
+					**dict(source_document),
+					"allocated_qty": 0,
+				}
+			document = material["_documents"][document_key]
+			document["allocated_qty"] += normalize_qty(source_document.get("allocated_qty"))
+			document["outstanding_qty"] = max(
+				normalize_qty(document.get("outstanding_qty")),
+				normalize_qty(source_document.get("outstanding_qty")),
+			)
+
+	result = []
+	for material in materials.values():
+		material["supply_documents"] = list(material.pop("_documents").values())
+		if material.get("blocked"):
+			material["status"] = "cannot_calculate"
+		elif material["current_gap_qty"] == 0:
+			material["status"] = "ready_now"
+		elif material["shortage_qty"] > 0:
+			material["status"] = "new_purchase_required"
+		elif material["open_purchase_order_qty"] >= material["current_gap_qty"]:
+			material["status"] = "awaiting_purchase_receipt"
+		else:
+			material["status"] = "purchase_request_pending"
+		result.append(frappe._dict(material))
+	return sorted(result, key=lambda material: (material.get("warehouse") or "", material.item_code))
+
+
+def calculate_multilevel_material_coverage(
+	demands,
+	company: str,
+	need_by_date: str | None = None,
+	defaults=None,
+	prior_demands=None,
+	*,
+	fact_cache=None,
+) -> frappe._dict:
+	"""Net a multi-level BOM one stock-managed level at a time.
+
+	Manufactured children consume their own stock first. Only the uncovered
+	quantity is expanded into the child's direct BOM requirements. Purchased
+	leaves are the only rows included in the procurement summary.
+	"""
+	fact_cache = fact_cache if fact_cache is not None else {}
+	defaults = _coverage_defaults(company, defaults, fact_cache)
+	remaining_stock = {}
+	remaining_supply = {}
+	requirements = []
+	purchased_rows = []
+
+	def walk_bom(demand, *, capture: bool):
+		demand = frappe._dict(demand or {})
+		root_qty = normalize_qty(demand.get("qty"))
+		if not demand.get("bom_no") or root_qty <= 0:
+			return
+		resolved_source = resolve_production_source_warehouse(
+			company,
+			defaults=defaults,
+			sales_order_item_warehouse=(demand.get("source") or {}).get(
+				"sales_order_item_warehouse"
+			),
+		)
+		root_source = dict(demand.get("source") or {})
+		root_source.setdefault("production_qty", root_qty)
+
+		def walk(bom_no, qty, parent_item_code, level, path):
+			if bom_no in path:
+				raise MaterialCoverageBomExpansionError(bom_no)
+			current_path = (*path, bom_no)
+			for bom_item in _direct_bom_items(bom_no, company, fact_cache):
+				required_qty = normalize_qty(bom_item.get("qty")) * normalize_qty(qty)
+				if required_qty <= 0:
+					continue
+				item_code = bom_item.get("item_code")
+				warehouse = resolved_source.warehouse
+				key = (item_code, warehouse)
+				snapshot = _coverage_stock_snapshot(item_code, warehouse, company, fact_cache)
+				available_stock = remaining_stock.setdefault(
+					key, max(normalize_qty(snapshot.get("available_qty")), 0)
+				)
+				allocated_stock = min(required_qty, available_stock)
+				remaining_stock[key] = max(available_stock - allocated_stock, 0)
+				child_bom = _manufacturing_bom_for_item(bom_item, fact_cache)
+				source = deepcopy(root_source)
+				source.update(
+					{
+						"required_qty": required_qty,
+						"bom_qty_per_unit": required_qty / root_qty,
+						"level": level,
+						"parent_item_code": parent_item_code,
+					}
+				)
+				row = frappe._dict(
+					{
+						"item_code": item_code,
+						"item_name": bom_item.get("item_name"),
+						"stock_uom": bom_item.get("stock_uom"),
+						"warehouse": warehouse,
+						"required_qty": required_qty,
+						"actual_qty": normalize_qty(snapshot.get("actual_qty")),
+						"committed_qty": normalize_qty(snapshot.get("committed_qty")),
+						"available_qty": allocated_stock,
+						"current_gap_qty": max(required_qty - allocated_stock, 0),
+						"open_material_request_qty": 0,
+						"open_purchase_order_qty": 0,
+						"shortage_qty": 0,
+						"supply_documents": [],
+						"blocked": not (
+							resolved_source.can_use and snapshot.get("can_calculate")
+						),
+						"supply_type": "manufactured" if child_bom else "purchased",
+						"bom_no": child_bom,
+						"parent_item_code": parent_item_code,
+						"level": level,
+						"sources": [source],
+					}
+				)
+				if row.blocked:
+					row.status = "cannot_calculate"
+					row.production_required_qty = 0
+				elif child_bom:
+					row.production_required_qty = row.current_gap_qty
+					row.status = "production_required" if row.current_gap_qty > 0 else "ready_now"
+				else:
+					row.production_required_qty = 0
+					_allocate_multilevel_supply(
+						row,
+						company,
+						need_by_date,
+						fact_cache,
+						remaining_supply,
+					)
+				if capture:
+					requirements.append(row)
+					if row.supply_type == "purchased":
+						purchased_rows.append(row)
+				if child_bom and not row.blocked and row.production_required_qty > 0:
+					walk(child_bom, row.production_required_qty, item_code, level + 1, current_path)
+
+		walk(demand.get("bom_no"), root_qty, root_source.get("finished_item"), 1, ())
+
+	for prior_demand in prior_demands or []:
+		walk_bom(prior_demand, capture=False)
+	for demand in demands or []:
+		walk_bom(demand, capture=True)
+
+	materials = _aggregate_multilevel_purchased_rows(purchased_rows)
+	return frappe._dict(
+		{
+			"requirements": requirements,
+			"materials": materials,
+			"shortages": [
+				material
+				for material in materials
+				if material.status == "new_purchase_required" and material.shortage_qty > 0
+			],
+		}
+	)
+
+
 def calculate_material_shortages(demands, company: str, defaults=None, need_by_date: str | None = None, prior_demands=None):
 	"""Return only material rows requiring a new purchase request."""
 	return calculate_material_coverage(demands, company, need_by_date, defaults, prior_demands)["shortages"]

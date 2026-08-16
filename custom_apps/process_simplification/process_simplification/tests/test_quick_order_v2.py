@@ -253,7 +253,7 @@ class TestQuickOrderV2(UnitTestCase):
 
 	@patch("process_simplification.api.quick_order._validate_commercial_rules", return_value=[])
 	@patch("process_simplification.api.quick_order._build_sales_order")
-	@patch("process_simplification.api.quick_order.calculate_material_coverage")
+	@patch("process_simplification.api.quick_order.calculate_multilevel_material_coverage")
 	@patch("process_simplification.api.quick_order.preview_quick_order_items")
 	@patch("process_simplification.api.quick_order._customer_po_issue", return_value=None)
 	@patch("process_simplification.api.quick_order._validate_customer", return_value=[])
@@ -302,6 +302,21 @@ class TestQuickOrderV2(UnitTestCase):
 		}
 		material_coverage.return_value = frappe._dict(
 			{
+				"requirements": [
+					{
+						"item_code": "RM-001",
+						"item_name": "Raw Material",
+						"warehouse": "Stores - TC",
+						"required_qty": 20,
+						"available_qty": 15,
+						"current_gap_qty": 5,
+						"shortage_qty": 5,
+						"status": "new_purchase_required",
+						"supply_type": "purchased",
+						"level": 1,
+						"sources": [{"row": 1, "required_qty": 20, "bom_qty_per_unit": 20}],
+					}
+				],
 				"materials": [
 					{
 						"item_code": "RM-001",
@@ -355,7 +370,7 @@ class TestQuickOrderV2(UnitTestCase):
 
 	@patch("process_simplification.api.quick_order._validate_commercial_rules", return_value=[])
 	@patch("process_simplification.api.quick_order._build_sales_order")
-	@patch("process_simplification.api.quick_order.calculate_material_coverage")
+	@patch("process_simplification.api.quick_order.calculate_multilevel_material_coverage")
 	@patch("process_simplification.api.quick_order.preview_quick_order_items")
 	@patch("process_simplification.api.quick_order._customer_po_issue", return_value=None)
 	@patch("process_simplification.api.quick_order._validate_customer", return_value=[])
@@ -394,6 +409,16 @@ class TestQuickOrderV2(UnitTestCase):
 		}
 		material_coverage.return_value = frappe._dict(
 			{
+				"requirements": [
+					{
+						"item_code": "RM-001",
+						"warehouse": None,
+						"status": "cannot_calculate",
+						"supply_type": "purchased",
+						"level": 1,
+						"sources": [{"row": 1, "required_qty": 1}],
+					}
+				],
 				"materials": [
 					{
 						"item_code": "RM-001",
@@ -415,7 +440,7 @@ class TestQuickOrderV2(UnitTestCase):
 		)
 		self.assertEqual(result["shortage_item_count"], 0)
 
-	@patch("process_simplification.api.quick_order.calculate_material_coverage")
+	@patch("process_simplification.api.quick_order.calculate_multilevel_material_coverage")
 	@patch("process_simplification.api.quick_order.preview_quick_order_items")
 	@patch("process_simplification.api.quick_order._customer_po_issue", return_value=None)
 	@patch("process_simplification.api.quick_order._validate_customer", return_value=[])
@@ -477,7 +502,7 @@ class TestQuickOrderV2(UnitTestCase):
 			},
 		)
 
-	@patch("process_simplification.api.quick_order.calculate_material_coverage")
+	@patch("process_simplification.api.quick_order.calculate_multilevel_material_coverage")
 	@patch("process_simplification.api.quick_order.preview_quick_order_items")
 	@patch("process_simplification.api.quick_order._customer_po_issue", return_value=None)
 	@patch("process_simplification.api.quick_order._validate_customer", return_value=[])
@@ -558,6 +583,19 @@ class TestQuickOrderV2(UnitTestCase):
 					"status": "new_purchase_required",
 				}
 			],
+			"material_requirements": [
+				{
+					"item_code": "SA-001",
+					"warehouse": "Stores - TC",
+					"required_qty": 7,
+					"available_qty": 2,
+					"current_gap_qty": 5,
+					"production_required_qty": 5,
+					"shortage_qty": 0,
+					"supply_type": "manufactured",
+					"status": "production_required",
+				}
+			],
 			"checked_at": "2026-08-01 10:00:00",
 		}
 		later = {**base, "checked_at": "2026-08-01 10:01:00"}
@@ -565,9 +603,19 @@ class TestQuickOrderV2(UnitTestCase):
 			**later,
 			"material_coverage": [{**later["material_coverage"][0], "available_qty": 4}],
 		}
+		changed_subassembly = {
+			**later,
+			"material_requirements": [
+				{**later["material_requirements"][0], "production_required_qty": 4}
+			],
+		}
 
 		self.assertEqual(quick_order_review_fingerprint(base), quick_order_review_fingerprint(later))
 		self.assertNotEqual(quick_order_review_fingerprint(base), quick_order_review_fingerprint(changed))
+		self.assertNotEqual(
+			quick_order_review_fingerprint(base),
+			quick_order_review_fingerprint(changed_subassembly),
+		)
 
 	def test_standard_sales_order_mapping_preserves_po_remark_and_bom_snapshot(self):
 		from process_simplification.api.quick_order import _build_sales_order
@@ -930,6 +978,112 @@ class TestQuickOrderV2(UnitTestCase):
 			[call.args[1]["warehouse"] for call in get_value.call_args_list],
 			["Stores A - TC", "Stores B - TC"],
 		)
+
+	@patch(
+		"process_simplification.api.shortage.get_default_bom",
+		side_effect=lambda item_code: "BOM-SA-001" if item_code == "SA-001" else None,
+	)
+	@patch("process_simplification.api.shortage._po_documents", return_value=[])
+	@patch("process_simplification.api.shortage._mr_documents", return_value=[])
+	@patch("process_simplification.api.shortage.get_material_stock_snapshot")
+	@patch("process_simplification.api.shortage.get_bom_items_as_dict")
+	def test_multilevel_coverage_nets_subassembly_stock_before_expanding_its_bom(
+		self, get_bom_items, stock_snapshot, mr_documents, po_documents, default_bom
+	):
+		from process_simplification.api.shortage import calculate_multilevel_material_coverage
+
+		get_bom_items.side_effect = lambda bom_no, company, qty, fetch_exploded: {
+			"BOM-FG-001": {
+				"SA-001": frappe._dict(
+					item_code="SA-001",
+					item_name="半成品",
+					stock_uom="Nos",
+					qty=4,
+				),
+				"RM-DIRECT": frappe._dict(
+					item_code="RM-DIRECT",
+					item_name="直接原料",
+					stock_uom="Nos",
+					qty=2,
+				),
+			},
+			"BOM-SA-001": {
+				"RM-IN-SA": frappe._dict(
+					item_code="RM-IN-SA",
+					item_name="半成品原料",
+					stock_uom="Nos",
+					qty=3,
+				),
+			},
+		}[bom_no]
+		stock_snapshot.side_effect = lambda item_code, warehouse: frappe._dict(
+			can_calculate=True,
+			actual_qty={"SA-001": 1, "RM-DIRECT": 2}.get(item_code, 0),
+			committed_qty=0,
+			available_qty={"SA-001": 1, "RM-DIRECT": 2}.get(item_code, 0),
+		)
+
+		result = calculate_multilevel_material_coverage(
+			[
+				{
+					"bom_no": "BOM-FG-001",
+					"qty": 1,
+					"source": {"row": 1, "finished_item": "FG-001", "production_qty": 1},
+				}
+			],
+			"_Test Company",
+			defaults=frappe._dict(source_warehouse="_Test Warehouse - _TC"),
+		)
+
+		self.assertTrue(all(call.kwargs["fetch_exploded"] == 0 for call in get_bom_items.call_args_list))
+		self.assertEqual(
+			[(row["item_code"], row["level"]) for row in result.requirements],
+			[("SA-001", 1), ("RM-IN-SA", 2), ("RM-DIRECT", 1)],
+		)
+		self.assertEqual(result.requirements[0]["supply_type"], "manufactured")
+		default_bom.assert_any_call("SA-001")
+		self.assertEqual(result.requirements[0]["available_qty"], 1)
+		self.assertEqual(result.requirements[0]["production_required_qty"], 3)
+		self.assertEqual(result.requirements[1]["required_qty"], 9)
+		self.assertEqual(
+			[row["item_code"] for row in result.materials], ["RM-DIRECT", "RM-IN-SA"]
+		)
+		self.assertEqual(
+			[row["item_code"] for row in result.shortages], ["RM-IN-SA"]
+		)
+
+	@patch("process_simplification.api.shortage._po_documents", return_value=[])
+	@patch("process_simplification.api.shortage._mr_documents", return_value=[])
+	@patch("process_simplification.api.shortage.get_material_stock_snapshot")
+	@patch("process_simplification.api.shortage.get_bom_items_as_dict")
+	def test_multilevel_coverage_does_not_expand_stock_covered_subassembly(
+		self, get_bom_items, stock_snapshot, mr_documents, po_documents
+	):
+		from process_simplification.api.shortage import calculate_multilevel_material_coverage
+
+		get_bom_items.return_value = {
+			"SA-001": frappe._dict(
+				item_code="SA-001",
+				item_name="半成品",
+				stock_uom="Nos",
+				qty=4,
+				bom_no="BOM-SA-001",
+			)
+		}
+		stock_snapshot.return_value = frappe._dict(
+			can_calculate=True, actual_qty=4, committed_qty=0, available_qty=4
+		)
+
+		result = calculate_multilevel_material_coverage(
+			[{"bom_no": "BOM-FG-001", "qty": 1, "source": {"row": 1}}],
+			"_Test Company",
+			defaults=frappe._dict(source_warehouse="_Test Warehouse - _TC"),
+		)
+
+		self.assertEqual(get_bom_items.call_count, 1)
+		self.assertEqual(result.requirements[0]["production_required_qty"], 0)
+		self.assertEqual(result.materials, [])
+		self.assertEqual(result.shortages, [])
 
 	@patch("process_simplification.api.shortage._po_documents", return_value=[])
 	@patch("process_simplification.api.shortage._mr_documents", return_value=[])

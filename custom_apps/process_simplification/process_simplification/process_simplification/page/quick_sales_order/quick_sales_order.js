@@ -1,6 +1,7 @@
 function materialStatusMeta(status, translate = (message) => message) {
 	const materialStatusCopy = {
 		ready_now: { label: translate("当前可生产"), indicator: "green" },
+		production_required: { label: translate("需生产"), indicator: "orange" },
 		awaiting_purchase_receipt: { label: translate("待采购到货"), indicator: "blue" },
 		purchase_request_pending: { label: translate("已提采购申请"), indicator: "orange" },
 		new_purchase_required: { label: translate("需新增采购"), indicator: "red" },
@@ -27,7 +28,10 @@ function buildMaterialRiskView(result = {}) {
 		return {
 			...group,
 			materials,
-			has_shortage: materials.some((material) => material.status === "new_purchase_required"),
+			has_production: materials.some((material) => material.status === "production_required"),
+			has_shortage: materials.some((material) =>
+				["new_purchase_required", "cannot_calculate"].includes(material.status)
+			),
 		};
 	});
 	return {
@@ -86,33 +90,30 @@ function materialRiskHtml(view, helpers) {
 		.filter((group) => Number(group.production_required || 0) > 0)
 		.map((group) => {
 			const rows = group.materials
-				.map(
-					(material) => `
+				.map((material) => {
+					const level = Math.max(Number(material.level || 1), 1);
+					const isManufactured = material.supply_type === "manufactured";
+					const handling = isManufactured
+						? `<div class="quick-material-handling">${statusPill(material.status)}${Number(material.production_required_qty || 0) > 0 ? `<span>${escape(translate("需生产"))} ${number(material.production_required_qty)}${unit(material)}</span>` : ""}${material.bom_no ? `<small>${escape(translate("BOM"))}: ${escape(material.bom_no)}</small>` : ""}</div>`
+						: `<div class="quick-material-handling">${statusPill(material.status)}${Number(material.shortage_qty || 0) > 0 ? `<span>${escape(translate("建议采购"))} ${number(material.shortage_qty)}${unit(material)}</span>` : ""}</div>`;
+					return `
 						<tr>
-							<td class="quick-material-name">${label(material.item_code, material.item_name)}</td>
-							<td class="quick-material-number">${number(material.bom_qty_per_unit)} / ${number(
-						material.required_qty
-					)}${unit(material)}</td>
+							<td class="quick-material-name"><div class="quick-material-tree-item" style="--quick-material-level: ${level - 1}"><small>${escape(translate("第 {0} 层", [level]))}</small>${label(material.item_code, material.item_name)}</div></td>
+							<td>${escape(translate(isManufactured ? "生产件" : "采购件"))}</td>
+							<td class="quick-material-number">${number(material.required_qty)}${unit(material)}</td>
 							<td>${escape(material.warehouse || translate("未设置"))}</td>
 							<td class="quick-material-number">${number(material.actual_qty)}</td>
 							<td class="quick-material-number">${number(material.committed_qty)}</td>
-							<td class="quick-material-number">${number(material.available_qty)}${
-						material.shared_inventory
-							? `<small class="quick-shared-stock">${escape(translate("本单汇总库存"))}</small>`
-							: ""
-					}</td>
-							<td class="quick-material-number">${number(material.open_material_request_qty)}</td>
-							<td class="quick-material-number">${number(material.open_purchase_order_qty)}</td>
+							<td class="quick-material-number">${number(material.available_qty)}</td>
 							<td class="quick-material-number">${number(material.current_gap_qty)}</td>
-							<td class="quick-material-number">${number(material.shortage_qty)}</td>
-							<td>${statusPill(material.status)}</td>
-						</tr>`
-				)
+							<td>${handling}</td>
+						</tr>`;
+				})
 				.join("");
 			return `
-				<details class="quick-material-group${
+				<details class="quick-material-group${group.has_production ? " has-production" : ""}${
 					group.has_shortage ? " has-shortage" : ""
-				}" data-material-group="${escape(group.row)}"${group.has_shortage ? " open" : ""}>
+				}" data-material-group="${escape(group.row)}"${group.has_shortage || group.has_production ? " open" : ""}>
 					<summary>
 						<div class="quick-material-product">${label(group.item_code, group.item_name)}</div>
 						<div class="quick-material-product-facts">
@@ -123,27 +124,25 @@ function materialRiskHtml(view, helpers) {
 							<span>${escape(translate("BOM"))} <strong>${escape(group.bom_no || translate("未设置"))}</strong></span>
 						</div>
 						<span class="quick-material-toggle">${escape(
-							group.has_shortage ? translate("收起用料") : translate("查看完整用料")
+							group.has_shortage || group.has_production
+								? translate("收起层级")
+								: translate("查看层级用料")
 						)}</span>
 					</summary>
 					<p class="quick-material-scope-note">${escape(
 						translate(
-							"除“本产品贡献需求”外，库存、采购申请、按时在途、缺口和结论均为全单汇总；采购判断以下方全单汇总为准。"
+							"先检查直接依赖；半成品先使用现货，只对不足数量继续检查下一级 BOM。采购判断以下方底层采购物料汇总为准。"
 						)
 					)}</p>
 					<div class="quick-material-table-wrap">
 						<table class="table quick-material-table">
 							<thead><tr>
-				<th>${escape(translate("物料"))}</th><th>${escape(translate("BOM 单耗/本产品贡献需求"))}</th><th>${escape(
-				translate("来源仓库")
-			)}</th><th>${escape(translate("全单汇总·账面"))}</th><th>${escape(
-				translate("全单汇总·已占用")
-			)}</th><th>${escape(translate("全单汇总·可用"))}</th><th>${escape(
-				translate("全单汇总·采购申请")
-			)}</th><th>${escape(translate("全单汇总·按时在途"))}</th><th>${escape(
-				translate("全单汇总·当前生产缺口")
-			)}</th><th>${escape(translate("全单汇总·建议新增申请"))}</th><th>${escape(
-				translate("全单汇总·结论")
+				<th>${escape(translate("层级需求"))}</th><th>${escape(translate("供应方式"))}</th><th>${escape(
+				translate("本层需求")
+			)}</th><th>${escape(translate("来源仓库"))}</th><th>${escape(translate("账面库存"))}</th><th>${escape(
+				translate("已占用")
+			)}</th><th>${escape(translate("本单分配"))}</th><th>${escape(translate("本层缺口"))}</th><th>${escape(
+				translate("处理方式")
 			)}</th>
 							</tr></thead>
 							<tbody>${rows}</tbody>
@@ -174,10 +173,10 @@ function materialRiskHtml(view, helpers) {
 	const summary = view.summary.length
 		? `<section class="quick-material-procurement" aria-labelledby="quick-material-procurement-title">
 			<div class="quick-material-summary-heading">
-				<h4 id="quick-material-procurement-title">${escape(translate("全单原料与采购汇总"))}</h4>
+				<h4 id="quick-material-procurement-title">${escape(translate("底层采购物料汇总"))}</h4>
 				<strong>${escape(translate("预计需新增采购 {0} 项", [view.shortages.length]))}</strong>
 			</div>
-			<p class="text-muted">${escape(translate("共享原料按物料和仓库合并计算，本单汇总库存仅展示一次。"))}</p>
+			<p class="text-muted">${escape(translate("这里只汇总采购件；半成品缺口在上方标记为需生产。共享采购物料按物料和仓库合并计算。"))}</p>
 			<div class="quick-material-table-wrap"><table class="table quick-material-table quick-material-summary-table">
 				<thead><tr><th>${escape(translate("物料"))}</th><th>${escape(translate("来源仓库"))}</th><th>${escape(
 				translate("本单需求")
@@ -185,13 +184,13 @@ function materialRiskHtml(view, helpers) {
 				translate("本单可用")
 		  )}</th><th>${escape(translate("采购申请"))}</th><th>${escape(
 				translate("按时在途")
-		  )}</th><th>${escape(translate("当前生产缺口"))}</th><th>${escape(
+			  )}</th><th>${escape(translate("即时采购缺口"))}</th><th>${escape(
 				translate("建议新增申请")
 		  )}</th><th>${escape(translate("结论"))}</th></tr></thead>
 				<tbody>${summaryRows}</tbody>
 			</table></div>
 		</section>`
-		: `<div class="quick-material-risk-empty">${escape(translate("尚无可用的物料检查结果"))}</div>`;
+		: `<div class="quick-material-risk-empty">${escape(translate("当前没有需要采购的底层物料"))}</div>`;
 
 	return `${banner}${blockers}<div class="quick-material-groups">${groupCards}</div>${summary}`;
 }
@@ -220,7 +219,7 @@ function confirmationHtml(result, helpers) {
 			<div class="quick-material-table-wrap"><table class="table"><thead><tr><th>${escape(
 				translate("物料")
 			)}</th><th>${escape(translate("来源仓库"))}</th><th>${escape(
-				translate("当前生产缺口")
+				translate("即时采购缺口")
 		  )}</th><th>${escape(translate("现有采购覆盖"))}</th><th>${escape(
 				translate("建议新增申请")
 		  )}</th></tr></thead><tbody>${shortageRows}</tbody></table></div>
@@ -314,7 +313,7 @@ frappe.pages["quick-sales-order"].on_page_load = function (wrapper) {
 				<div class="quick-material-risk-heading">
 					<div>
 						<h3 id="quick-material-risk-title">${__("生产与物料风险")}</h3>
-						<p>${__("完成库存与缺料检查后，将按产品 BOM 显示本单用料。")}</p>
+						<p>${__("按多级 BOM 逐层检查：半成品先用现货，不足部分转为生产需求，再检查下一层用料。")}</p>
 					</div>
 					<span class="quick-material-risk-time">${__("尚未检查")}</span>
 				</div>

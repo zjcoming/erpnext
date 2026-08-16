@@ -133,6 +133,7 @@ test("builds product BOM cards and one aggregated shared-material summary", () =
 test("maps every backend material status without deriving severity", () => {
 	const cases = [
 		["ready_now", "当前可生产", "green"],
+		["production_required", "需生产", "orange"],
 		["awaiting_purchase_receipt", "待采购到货", "blue"],
 		["purchase_request_pending", "已提采购申请", "orange"],
 		["new_purchase_required", "需新增采购", "red"],
@@ -190,24 +191,73 @@ test("explains shared inventory once at order level and expands only shortage pr
 		helpers
 	);
 
-	assert.match(html, /本单汇总库存/);
+	assert.match(html, /共享采购物料按物料和仓库合并计算/);
 	assert.match(html, /预计需新增采购 1 项/);
 	assert.match(html, /<details[^>]*data-material-group="1"[^>]* open>/);
 	assert.match(html, /<details[^>]*data-material-group="2"(?![^>]* open)>/);
-	assert.match(html, /查看完整用料/);
+	assert.match(html, /查看层级用料/);
 });
 
 test("product cards distinguish this-product demand from every order-level coverage figure", () => {
 	const html = materialRiskHtml(buildMaterialRiskView(fixtureWithSharedMaterial), helpers);
 
-	assert.match(html, /BOM 单耗\/本产品贡献需求/);
+	assert.match(html, /层级需求/);
 	assert.match(
 		html,
-		/除“本产品贡献需求”外，库存、采购申请、按时在途、缺口和结论均为全单汇总；采购判断以下方全单汇总为准。/
+		/先检查直接依赖；半成品先使用现货，只对不足数量继续检查下一级 BOM。/
 	);
-	assert.match(html, /全单汇总·账面/);
-	assert.match(html, /全单汇总·采购申请/);
-	assert.match(html, /全单汇总·建议新增申请/);
+	assert.match(html, /供应方式/);
+	assert.match(html, /本层需求/);
+	assert.match(html, /底层采购物料汇总/);
+});
+
+test("shows stock-netted subassembly production before its purchased child materials", () => {
+	const semiFinished = {
+		item_code: "SA-001",
+		item_name: "半成品",
+		stock_uom: "Nos",
+		warehouse: "Stores - TC",
+		required_qty: 4,
+		actual_qty: 1,
+		available_qty: 1,
+		current_gap_qty: 3,
+		production_required_qty: 3,
+		shortage_qty: 0,
+		status: "production_required",
+		supply_type: "manufactured",
+		bom_no: "BOM-SA-001",
+		level: 1,
+	};
+	const purchasedChild = {
+		...coverage({
+			item_code: "RM-IN-SA",
+			item_name: "半成品原料",
+			required_qty: 9,
+			actual_qty: 0,
+			available_qty: 0,
+			current_gap_qty: 9,
+			shortage_qty: 9,
+		}),
+		supply_type: "purchased",
+		level: 2,
+		parent_item_code: "SA-001",
+	};
+	const view = buildMaterialRiskView({
+		...fixtureWithSharedMaterial,
+		material_groups: [group(1, { materials: [semiFinished, purchasedChild] })],
+		material_coverage: [purchasedChild],
+		shortages: [purchasedChild],
+	});
+	const html = materialRiskHtml(view, helpers);
+	const purchaseSummary = html.match(/<section class="quick-material-procurement"([\s\S]*?)<\/section>/)?.[1] || "";
+
+	assert.match(html, /SA-001/);
+	assert.match(html, /BOM-SA-001/);
+	assert.match(html, /需生产 3\.00/);
+	assert.match(html, /第 2 层/);
+	assert.match(html, /RM-IN-SA/);
+	assert.doesNotMatch(purchaseSummary, /SA-001/);
+	assert.match(purchaseSummary, /RM-IN-SA/);
 });
 
 test("renders explicit zero-production copy instead of an empty material table", () => {
@@ -281,7 +331,7 @@ test("confirmation shows at most five shortage rows and points to the lower deta
 	assert.match(html, /RM-5/);
 	assert.doesNotMatch(html, /RM-6/);
 	assert.match(html, /另有 2 项，请查看页面下方明细/);
-	assert.match(html, /当前生产缺口/);
+	assert.match(html, /即时采购缺口/);
 	assert.match(html, /现有采购覆盖/);
 	assert.match(html, /建议新增申请/);
 	assert.match(html, /不会自动预留库存、创建生产任务或采购申请/);

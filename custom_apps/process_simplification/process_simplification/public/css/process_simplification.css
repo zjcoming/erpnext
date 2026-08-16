@@ -280,6 +280,10 @@
 	background: var(--control-bg);
 }
 
+.quick-material-group.has-production {
+	border-left: 4px solid var(--orange-500);
+}
+
 .quick-material-group.has-shortage {
 	border-left: 4px solid var(--red-500);
 }
@@ -374,6 +378,10 @@
 	margin-bottom: 0;
 }
 
+.quick-material-group .quick-material-table {
+	min-width: 1000px;
+}
+
 .quick-material-table th,
 .quick-material-table td {
 	padding: 9px 10px;
@@ -395,6 +403,30 @@
 .quick-material-number {
 	text-align: right;
 	font-variant-numeric: tabular-nums;
+}
+
+.quick-material-tree-item {
+	display: grid;
+	gap: 2px;
+	padding-left: calc(var(--quick-material-level, 0) * 18px);
+}
+
+.quick-material-tree-item > small:first-child {
+	color: var(--primary);
+	font-weight: 600;
+}
+
+.quick-material-handling {
+	display: grid;
+	justify-items: start;
+	gap: 3px;
+	min-width: 130px;
+}
+
+.quick-material-handling > span:not(.indicator-pill),
+.quick-material-handling > small {
+	color: var(--text-muted);
+	font-size: var(--text-xs);
 }
 
 .quick-material-risk .indicator-pill {

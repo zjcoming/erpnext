@@ -15,14 +15,14 @@ from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry impor
 from process_simplification.api.setup import get_company_defaults, get_default_bom
 from process_simplification.api.shortage import (
 	MaterialCoverageBomExpansionError,
-	calculate_material_coverage,
+	calculate_multilevel_material_coverage,
 )
 from process_simplification.api.utils import SimplifiedFlowError, normalize_qty, throw_chinese
 
 
 REVIEW_TOKEN_TTL_SECONDS = 15 * 60
 IDEMPOTENCY_RETENTION_DAYS = 30
-QUICK_ORDER_SCHEMA_VERSION = 2
+QUICK_ORDER_SCHEMA_VERSION = 3
 SUPPORTED_ORDER_FIELDS = {"customer", "delivery_date", "po_no", "remarks", "items"}
 SUPPORTED_ITEM_FIELDS = {"item_code", "qty", "rate"}
 
@@ -525,6 +525,22 @@ def quick_order_review_fingerprint(result) -> str:
 			}
 			for row in result.get("material_coverage") or []
 		],
+		"material_requirements": [
+			{
+				"item_code": row.get("item_code"),
+				"warehouse": row.get("warehouse"),
+				"required_qty": normalize_qty(row.get("required_qty")),
+				"available_qty": normalize_qty(row.get("available_qty")),
+				"current_gap_qty": normalize_qty(row.get("current_gap_qty")),
+				"production_required_qty": normalize_qty(
+					row.get("production_required_qty")
+				),
+				"shortage_qty": normalize_qty(row.get("shortage_qty")),
+				"supply_type": row.get("supply_type"),
+				"status": row.get("status"),
+			}
+			for row in result.get("material_requirements") or []
+		],
 	}
 	return _canonical_hash(stable)
 
@@ -573,7 +589,7 @@ def _evaluate_quick_order(payload):
 			prior_demands = get_prior_material_demands(
 				company, target_delivery_date=data.delivery_date
 			)
-			coverage = calculate_material_coverage(
+			coverage = calculate_multilevel_material_coverage(
 				demands,
 				company,
 				need_by_date=data.delivery_date,
@@ -586,12 +602,13 @@ def _evaluate_quick_order(payload):
 					_issue(
 						"BOM_EXPLOSION_FAILED",
 						"blocker",
-						"BOM 展开失败，无法评估原料风险，请检查 BOM 后重试。",
+						"BOM 层级读取失败，无法评估生产与采购风险，请检查 BOM 后重试。",
 						"line",
 						demand["source"]["row"],
 					)
 				)
 	material_coverage = coverage.get("materials") or []
+	material_requirements = coverage.get("requirements") or []
 	shortages = coverage.get("shortages") or []
 	material_groups = []
 	material_groups_by_row = {}
@@ -610,19 +627,19 @@ def _evaluate_quick_order(payload):
 		material_groups.append(group)
 		material_groups_by_row[group["row"]] = group
 
-	for material in material_coverage:
-		for source in material.get("sources") or []:
+	for requirement in material_requirements:
+		for source in requirement.get("sources") or []:
 			group = material_groups_by_row.get(source.get("row"))
 			if not group:
 				continue
-			contribution = dict(material)
+			contribution = dict(requirement)
 			contribution["required_qty"] = normalize_qty(source.get("required_qty"))
 			contribution["bom_qty_per_unit"] = normalize_qty(source.get("bom_qty_per_unit"))
 			contribution["sources"] = [source]
 			group["materials"].append(contribution)
 
-		if material.get("status") == "cannot_calculate":
-			for source in material.get("sources") or []:
+		if requirement.get("status") == "cannot_calculate":
+			for source in requirement.get("sources") or []:
 				if source.get("row") is not None:
 					blockers.append(
 						_issue(
@@ -638,7 +655,7 @@ def _evaluate_quick_order(payload):
 			_issue(
 				"RAW_MATERIAL_SHORTAGE",
 				"warning",
-				"原料存在 {0} 项采购缺口，不阻止下单。".format(len(shortages)),
+				"底层采购物料存在 {0} 项采购缺口，不阻止下单。".format(len(shortages)),
 			)
 		)
 
@@ -666,6 +683,7 @@ def _evaluate_quick_order(payload):
 		"shortage_item_count": len(shortages),
 		"shortages": shortages,
 		"material_coverage": material_coverage,
+		"material_requirements": material_requirements,
 		"material_groups": material_groups,
 		"rows": preview["rows"],
 		"blockers": blockers,
