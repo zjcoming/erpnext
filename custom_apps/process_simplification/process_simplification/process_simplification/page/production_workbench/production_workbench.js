@@ -2,12 +2,15 @@ function isProductionDueWithin7Days(demand) {
 	return ["today", "within_7_days"].includes(demand.delivery_timing);
 }
 
-function productionMaterialStatusMeta(status, translate = (message) => message) {
+function productionMaterialStatusMeta(status, translate = (message) => message, executionMode = false) {
 	const statusCopy = {
-		ready_now: { label: translate("当前可生产"), indicator: "green" },
+		ready_now: { label: translate(executionMode ? "可发料" : "预计齐料"), indicator: "green" },
 		awaiting_purchase_receipt: { label: translate("待采购到货"), indicator: "blue" },
 		purchase_request_pending: { label: translate("已提采购申请"), indicator: "orange" },
-		new_purchase_required: { label: translate("需新采购"), indicator: "red" },
+		new_purchase_required: {
+			label: translate(executionMode ? "发料缺料" : "预计缺料"),
+			indicator: "red",
+		},
 		cannot_calculate: { label: translate("无法判断"), indicator: "gray" },
 	};
 	return statusCopy[status] || statusCopy.cannot_calculate;
@@ -141,6 +144,7 @@ function productionDemandHtml(demand, helpers) {
 	const esc = helpers.escapeHtml;
 	const number = helpers.formatNumber;
 	const date = helpers.formatDate;
+	const executionMode = Number(demand.active_work_order_qty || 0) > 0;
 	const quantityFacts = [
 		[t("订单待交"), demand.pending_qty],
 		[t("有效预留"), demand.reserved_qty],
@@ -182,7 +186,7 @@ function productionDemandHtml(demand, helpers) {
 					<thead><tr><th>${esc(t("物料"))}</th><th>${esc(t("本需求"))}</th><th>${esc(t("全部需求"))}</th><th>${esc(t("仓库库存"))}</th><th>${esc(t("已占用"))}</th><th>${esc(t("本次可用"))}</th><th>${esc(t("采购申请"))}</th><th>${esc(t("在途采购"))}</th><th>${esc(t("即时缺口"))}</th><th>${esc(t("采购缺口"))}</th><th>${esc(t("状态"))}</th></tr></thead>
 					<tbody>${(demand.materials || [])
 						.map((row) => {
-							const statusMeta = productionMaterialStatusMeta(row.status, t);
+							const statusMeta = productionMaterialStatusMeta(row.status, t, executionMode);
 							const hasCurrentGap = Number(row.current_gap_qty || 0) > 0;
 							const docs = (row.supply_documents || []).filter(
 								(doc) => hasCurrentGap || Number(doc.allocated_qty || 0) > 0
@@ -274,7 +278,7 @@ if (typeof frappe !== "undefined") {
 				<div class="production-filter-bar">
 					<input class="form-control production-search" data-filter="search" placeholder="${__("搜索订单、客户、产品或生产任务")}">
 					<select class="form-control" data-filter="deliveryWindow"><option value="">${__("全部交期")}</option><option value="overdue">${__("已逾期")}</option><option value="today">${__("今日交期")}</option><option value="within_7_days">${__("7 天内交期")}</option><option value="later">${__("稍后交期")}</option><option value="missing">${__("缺少交期")}</option></select>
-					<select class="form-control" data-filter="status"><option value="">${__("全部状态")}</option><option value="master_data_blocked">${__("基础资料异常")}</option><option value="unplanned">${__("待安排")}</option><option value="material_shortage">${__("缺料")}</option><option value="ready_to_start">${__("可开工")}</option><option value="in_production">${__("生产中")}</option><option value="partially_completed">${__("部分完工")}</option><option value="awaiting_order_reservation">${__("待回补订单")}</option><option value="overplanned">${__("超计划生产")}</option></select>
+					<select class="form-control" data-filter="status"><option value="">${__("全部状态")}</option><option value="master_data_blocked">${__("基础资料异常")}</option><option value="unplanned">${__("待安排")}</option><option value="material_shortage">${__("发料缺料")}</option><option value="ready_to_start">${__("可发料开工")}</option><option value="in_production">${__("生产中")}</option><option value="partially_completed">${__("部分完工")}</option><option value="awaiting_order_reservation">${__("待回补订单")}</option><option value="overplanned">${__("超计划生产")}</option></select>
 					<select class="form-control" data-filter="risk"><option value="">${__("全部风险")}</option><option value="red">${__("高风险")}</option><option value="orange">${__("需关注")}</option><option value="blue">${__("处理中")}</option><option value="green">${__("正常")}</option></select>
 					<select class="form-control" data-filter="customer"><option value="">${__("全部客户")}</option></select>
 					<label><input type="checkbox" data-filter="shortageOnly"> ${__("只看缺料")}</label>

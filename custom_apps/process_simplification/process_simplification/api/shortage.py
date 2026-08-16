@@ -325,23 +325,31 @@ def calculate_material_coverage(
 	for demand in demands or []:
 		demand = frappe._dict(demand)
 		qty = normalize_qty(demand.get("qty"))
-		if not demand.get("bom_no") or qty <= 0:
+		direct_materials = demand.get("materials") or []
+		if not direct_materials and (not demand.get("bom_no") or qty <= 0):
 			continue
 
-		try:
-			bom_items = get_bom_items_as_dict(demand.bom_no, company, qty=qty, fetch_exploded=1)
-		except Exception as exc:
-			raise MaterialCoverageBomExpansionError(demand.bom_no) from exc
-		resolved_source = resolve_production_source_warehouse(
-			company,
-			defaults=defaults,
-			sales_order_item_warehouse=(demand.get("source") or {}).get(
-				"sales_order_item_warehouse"
-			),
-		)
-		for bom_item in bom_items.values():
+		if direct_materials:
+			bom_items = direct_materials
+			resolved_source = None
+		else:
+			try:
+				bom_items = get_bom_items_as_dict(demand.bom_no, company, qty=qty, fetch_exploded=1).values()
+			except Exception as exc:
+				raise MaterialCoverageBomExpansionError(demand.bom_no) from exc
+			resolved_source = resolve_production_source_warehouse(
+				company,
+				defaults=defaults,
+				sales_order_item_warehouse=(demand.get("source") or {}).get(
+					"sales_order_item_warehouse"
+				),
+			)
+
+		for bom_item in bom_items:
+			bom_item = frappe._dict(bom_item)
 			item_code = bom_item.get("item_code")
-			warehouse = resolved_source.warehouse
+			warehouse = bom_item.get("warehouse") if direct_materials else resolved_source.warehouse
+			warehouse_can_use = bool(warehouse) if direct_materials else bool(resolved_source.can_use)
 			key = (item_code, warehouse)
 			if key not in materials:
 				materials[key] = {
@@ -359,19 +367,19 @@ def calculate_material_coverage(
 					"shortage_qty": 0,
 					"status": "cannot_calculate",
 					"blocked": False,
-					"warehouse_can_use": bool(resolved_source.can_use),
+					"warehouse_can_use": warehouse_can_use,
 					"sources": [],
 					"supply_documents": [],
 				}
 			else:
 				materials[key]["warehouse_can_use"] = bool(
-					materials[key]["warehouse_can_use"] and resolved_source.can_use
+					materials[key]["warehouse_can_use"] and warehouse_can_use
 				)
 			contribution_qty = normalize_qty(bom_item.get("qty"))
 			materials[key]["required_qty"] += contribution_qty
 			source = dict(demand.get("source") or {})
 			source["required_qty"] = contribution_qty
-			source["bom_qty_per_unit"] = contribution_qty / qty
+			source["bom_qty_per_unit"] = contribution_qty / qty if qty else 0
 			materials[key]["sources"].append(source)
 
 	for material in materials.values():

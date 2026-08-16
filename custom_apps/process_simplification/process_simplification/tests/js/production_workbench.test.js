@@ -179,7 +179,7 @@ test("production demand HTML escapes server values and exposes complete labelled
 		assert.match(html, new RegExp(`data-label="${materialLabel}"`));
 	}
 	assert.match(html, /共享物料/);
-	assert.match(html, /需新采购/);
+	assert.match(html, /发料缺料/);
 	assert.doesNotMatch(html, />new_purchase_required</);
 	assert.match(html, /\/app\/work-order\/WO-001/);
 });
@@ -209,6 +209,25 @@ test("production status meta uses colors for the actual production state", () =>
 	assert.deepEqual(productionWorkbench.productionStatusMeta("unknown"), { indicator: "gray" });
 });
 
+test("material copy distinguishes planning estimates from executable work orders", () => {
+	assert.deepEqual(productionWorkbench.productionMaterialStatusMeta("ready_now"), {
+		label: "预计齐料",
+		indicator: "green",
+	});
+	assert.deepEqual(productionWorkbench.productionMaterialStatusMeta("new_purchase_required"), {
+		label: "预计缺料",
+		indicator: "red",
+	});
+	assert.deepEqual(productionWorkbench.productionMaterialStatusMeta("ready_now", helpers.translate, true), {
+		label: "可发料",
+		indicator: "green",
+	});
+	assert.deepEqual(
+		productionWorkbench.productionMaterialStatusMeta("new_purchase_required", helpers.translate, true),
+		{ label: "发料缺料", indicator: "red" }
+	);
+});
+
 test("overdue ready demand keeps delivery risk red and production state green", () => {
 	const html = productionWorkbench.productionDemandHtml(
 		demand("OVERDUE-READY", {
@@ -216,13 +235,13 @@ test("overdue ready demand keeps delivery risk red and production state green", 
 			risk_level: "red",
 			risk_label: "\u5df2\u903e\u671f",
 			status_code: "ready_to_start",
-			status_label: "\u53ef\u5f00\u5de5",
+			status_label: "可发料开工",
 		}),
 		helpers
 	);
 
 	assert.match(html, /indicator-pill red">\u5df2\u903e\u671f/);
-	assert.match(html, /indicator-pill green">\u53ef\u5f00\u5de5/);
+	assert.match(html, /indicator-pill green">可发料开工/);
 });
 
 test("material rows show linked purchase documents and status, or a no-purchase hint", () => {

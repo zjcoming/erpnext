@@ -18,13 +18,14 @@ from process_simplification.api.workbench import (
 	get_work_orders,
 	paginate_workbench_rows,
 )
+from process_simplification.api.utils import TERMINAL_WORK_ORDER_STATUSES
 
 
 STATUS_LABELS = {
 	"master_data_blocked": "基础资料异常",
 	"unplanned": "待安排",
-	"material_shortage": "缺料",
-	"ready_to_start": "可开工",
+	"material_shortage": "发料缺料",
+	"ready_to_start": "可发料开工",
 	"in_production": "生产中",
 	"partially_completed": "部分完工",
 	"awaiting_order_reservation": "待回补订单",
@@ -61,7 +62,7 @@ def _risk_for_demand(delivery_timing: str, status_code: str):
 	}:
 		return "orange", 80, "临近交期"
 	if status_code == "material_shortage":
-		return "orange", 75, "原料短缺"
+		return "orange", 75, "发料缺料"
 	if status_code == "unplanned":
 		return "orange", 70, "生产未安排"
 	if status_code == "overplanned":
@@ -70,6 +71,8 @@ def _risk_for_demand(delivery_timing: str, status_code: str):
 		return "blue", 50, STATUS_LABELS[status_code]
 	if status_code == "awaiting_order_reservation":
 		return "blue", 40, "完工待回补"
+	if status_code == "ready_to_start":
+		return "green", 20, "物料已齐"
 	return "green", 20, "计划已覆盖"
 
 
@@ -259,9 +262,18 @@ def attach_material_coverage(demands, coverage):
 	for material in (coverage or {}).get("materials") or []:
 		material = dict(material)
 		sources = [dict(source) for source in material.pop("sources", [])]
-		is_shared = len({source.get("demand_key") for source in sources if source.get("demand_key")}) > 1
+		sources_by_demand = {}
 		for source in sources:
-			demand = by_key.get(source.get("demand_key") or source.get("sales_order_item"))
+			source_key = source.get("demand_key") or source.get("sales_order_item")
+			if not source_key:
+				continue
+			grouped = sources_by_demand.setdefault(source_key, {**source, "required_qty": 0})
+			grouped["required_qty"] += flt(source.get("required_qty") or 0)
+			if source.get("work_order"):
+				grouped.setdefault("work_orders", []).append(source["work_order"])
+		is_shared = len(sources_by_demand) > 1
+		for source_key, source in sources_by_demand.items():
+			demand = by_key.get(source_key)
 			if not demand:
 				continue
 			demand["materials"].append(
@@ -270,7 +282,7 @@ def attach_material_coverage(demands, coverage):
 					"source_required_qty": flt(source.get("required_qty") or 0),
 					"total_required_qty": flt(material.get("required_qty") or 0),
 					"is_shared": is_shared,
-					"source_count": len(sources),
+					"source_count": len(sources_by_demand),
 				}
 			)
 
@@ -410,27 +422,89 @@ def attach_priority_material_coverage(demands, company):
 	return result
 
 
+def _attach_pending_work_order_materials(demands):
+	for demand in demands or []:
+		has_active_work_order = any(
+			wo.get("status") not in TERMINAL_WORK_ORDER_STATUSES
+			for wo in demand.get("work_orders") or []
+		)
+		demand["work_order_materials_loaded"] = (
+			has_active_work_order or _positive(demand, "active_work_order_qty") <= 0
+		)
+
+	work_orders = [
+		wo
+		for demand in demands or []
+		for wo in demand.get("work_orders") or []
+		if wo.get("status") not in TERMINAL_WORK_ORDER_STATUSES
+	]
+	if not work_orders:
+		return demands
+
+	required_by_work_order = {}
+	for row in frappe.get_all(
+		"Work Order Item",
+		filters={"parent": ["in", [wo.get("name") for wo in work_orders]]},
+		fields=[
+			"parent",
+			"item_code",
+			"item_name",
+			"stock_uom",
+			"source_warehouse",
+			"required_qty",
+			"transferred_qty",
+		],
+	):
+		pending_qty = max(flt(row.required_qty) - flt(row.transferred_qty), 0)
+		if pending_qty <= 0:
+			continue
+		required_by_work_order.setdefault(row.parent, []).append(
+			{
+				"item_code": row.item_code,
+				"item_name": row.item_name,
+				"stock_uom": row.stock_uom,
+				"warehouse": row.source_warehouse,
+				"qty": pending_qty,
+			}
+		)
+
+	for demand in demands or []:
+		for work_order in demand.get("work_orders") or []:
+			work_order["pending_materials"] = required_by_work_order.get(work_order.get("name"), [])
+	return demands
+
+
 def _material_demands(demands):
 	rows = []
 	for demand in demands:
-		qty = _positive(demand, "production_required_qty")
-		bom_no = get_default_bom(demand.get("item_code")) if qty > 0 else None
-		if not bom_no:
-			continue
-		rows.append(
-			{
-				"bom_no": bom_no,
-				"qty": qty,
-				"source": {
-					"demand_key": demand.get("demand_key"),
-					"sales_order": demand.get("sales_order"),
-					"sales_order_item": demand.get("sales_order_item"),
-					"finished_item": demand.get("item_code"),
-					"delivery_date": demand.get("delivery_date"),
-					"sales_order_item_warehouse": demand.get("warehouse"),
-				},
-			}
+		qty_field = (
+			"unplanned_production_qty"
+			if demand.get("work_order_materials_loaded")
+			else "production_required_qty"
 		)
+		qty = _positive(demand, qty_field)
+		bom_no = get_default_bom(demand.get("item_code")) if qty > 0 else None
+		source = {
+			"demand_key": demand.get("demand_key"),
+			"sales_order": demand.get("sales_order"),
+			"sales_order_item": demand.get("sales_order_item"),
+			"finished_item": demand.get("item_code"),
+			"delivery_date": demand.get("delivery_date"),
+			"sales_order_item_warehouse": demand.get("warehouse"),
+		}
+		if bom_no:
+			rows.append({"bom_no": bom_no, "qty": qty, "source": source})
+
+		for work_order in demand.get("work_orders") or []:
+			materials = work_order.get("pending_materials") or []
+			if not materials:
+				continue
+			rows.append(
+				{
+					"materials": materials,
+					"source": {**source, "work_order": work_order.get("name")},
+				}
+			)
 	return rows
 
 
@@ -476,7 +550,7 @@ def get_all_material_demands(company: str):
 	unfinished order so one Material Request can cover the combined quantity."""
 	demands = [
 		demand
-		for demand in get_production_overview().get("demands") or []
+		for demand in get_production_overview(page_size=0).get("demands") or []
 		if demand.get("company") == company
 	]
 	return _material_demands(demands)
@@ -588,6 +662,7 @@ def get_production_overview(page=1, page_size=DEFAULT_WORKBENCH_PAGE_SIZE, filte
 		demand = build_production_demand(order, row, work_orders, today=checked_at)
 		if demand:
 			demands.append(demand)
+	_attach_pending_work_order_materials(demands)
 
 	by_company = {}
 	for demand in demands:

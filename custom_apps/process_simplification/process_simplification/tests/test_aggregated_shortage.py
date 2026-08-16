@@ -12,6 +12,24 @@ from frappe.tests import UnitTestCase
 
 
 class TestAggregatedShortage(UnitTestCase):
+	def test_all_material_demands_disable_workbench_pagination(self):
+		from process_simplification.api import production
+
+		overview = {
+			"demands": [
+				{"company": "_Test Company", "demand_key": f"SOI-{index}"}
+				for index in range(25)
+			]
+		}
+		with (
+			patch.object(production, "get_production_overview", return_value=overview) as get_overview,
+			patch.object(production, "_material_demands", side_effect=lambda demands: demands),
+		):
+			demands = production.get_all_material_demands("_Test Company")
+
+		get_overview.assert_called_once_with(page_size=0)
+		self.assertEqual(len(demands), 25)
+
 	def test_check_all_shortages_merges_demand_across_orders(self):
 		from process_simplification.api import shortage
 

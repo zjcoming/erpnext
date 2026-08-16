@@ -137,6 +137,131 @@ class TestProductionWorkbench(UnitTestCase):
 		self.assertEqual(demand["unplanned_production_qty"], 50)
 		self.assertEqual(demand["sales_order_item"], "SOI-001")
 
+	def test_material_demands_merge_unplanned_bom_with_pending_work_order_items(self):
+		production = self._module()
+		demand = {
+			"demand_key": "SOI-001",
+			"sales_order": "SO-001",
+			"sales_order_item": "SOI-001",
+			"item_code": "FG-001",
+			"warehouse": "Finished Goods - TC",
+			"delivery_date": "2026-08-08",
+			"production_required_qty": 10,
+			"unplanned_production_qty": 3,
+			"work_order_materials_loaded": True,
+			"work_orders": [
+				{
+					"name": "WO-001",
+					"pending_materials": [
+						{
+							"item_code": "RM-WO",
+							"item_name": "工单原料",
+							"stock_uom": "Nos",
+							"warehouse": "WO Stores - TC",
+							"qty": 7,
+						}
+					],
+				}
+			],
+		}
+
+		with patch.object(production, "get_default_bom", return_value="BOM-FG-001"):
+			rows = production._material_demands([demand])
+
+		self.assertEqual(len(rows), 2)
+		self.assertEqual(rows[0]["bom_no"], "BOM-FG-001")
+		self.assertEqual(rows[0]["qty"], 3)
+		self.assertEqual(rows[1]["materials"][0]["item_code"], "RM-WO")
+		self.assertEqual(rows[1]["materials"][0]["warehouse"], "WO Stores - TC")
+		self.assertEqual(rows[1]["materials"][0]["qty"], 7)
+		self.assertEqual(rows[1]["source"]["work_order"], "WO-001")
+
+	def test_pending_work_order_materials_use_required_minus_transferred(self):
+		production = self._module()
+		demands = [
+			{
+				"active_work_order_qty": 8,
+				"work_orders": [{"name": "WO-001", "status": "Not Started"}],
+			}
+		]
+		required_items = [
+			frappe._dict(
+				parent="WO-001",
+				item_code="RM-001",
+				item_name="原料 001",
+				stock_uom="Nos",
+				source_warehouse="Execution Stores - TC",
+				required_qty=10,
+				transferred_qty=4,
+			),
+			frappe._dict(
+				parent="WO-001",
+				item_code="RM-DONE",
+				item_name="已转原料",
+				stock_uom="Nos",
+				source_warehouse="Execution Stores - TC",
+				required_qty=5,
+				transferred_qty=5,
+			),
+		]
+
+		with patch.object(production.frappe, "get_all", return_value=required_items):
+			production._attach_pending_work_order_materials(demands)
+
+		self.assertTrue(demands[0]["work_order_materials_loaded"])
+		self.assertEqual(
+			demands[0]["work_orders"][0]["pending_materials"],
+			[
+				{
+					"item_code": "RM-001",
+					"item_name": "原料 001",
+					"stock_uom": "Nos",
+					"warehouse": "Execution Stores - TC",
+					"qty": 6.0,
+				}
+			],
+		)
+
+	def test_direct_work_order_material_coverage_uses_exact_source_warehouse(self):
+		from process_simplification.api import shortage
+
+		with (
+			patch.object(shortage, "get_company_defaults", return_value=frappe._dict({"company": "_Test Company"})),
+			patch.object(shortage, "get_bom_items_as_dict") as bom_query,
+			patch.object(
+				shortage,
+				"get_material_stock_snapshot",
+				return_value=frappe._dict(
+					{"can_calculate": True, "actual_qty": 2, "committed_qty": 0, "available_qty": 2}
+				),
+			) as stock_query,
+			patch.object(shortage, "_mr_documents", return_value=[]),
+			patch.object(shortage, "_po_documents", return_value=[]),
+		):
+			coverage = shortage.calculate_material_coverage(
+				[
+					{
+						"materials": [
+							{
+								"item_code": "RM-WO",
+								"item_name": "工单原料",
+								"stock_uom": "Nos",
+								"warehouse": "Execution Stores - TC",
+								"qty": 5,
+							}
+						],
+						"source": {"demand_key": "SOI-001", "work_order": "WO-001"},
+					}
+				],
+				"_Test Company",
+			)
+
+		bom_query.assert_not_called()
+		stock_query.assert_called_once_with("RM-WO", "Execution Stores - TC")
+		self.assertEqual(coverage["materials"][0]["required_qty"], 5)
+		self.assertEqual(coverage["materials"][0]["current_gap_qty"], 3)
+		self.assertEqual(coverage["materials"][0]["status"], "new_purchase_required")
+
 	def test_stock_only_row_is_excluded_from_production_overview(self):
 		production = self._module()
 		self.assertTrue(hasattr(production, "build_production_demand"))
