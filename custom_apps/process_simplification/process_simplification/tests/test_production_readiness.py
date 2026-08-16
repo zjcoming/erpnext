@@ -218,6 +218,59 @@ class TestWorkOrderReadiness(UnitTestCase):
 		self.assertEqual(late_work_order.required_items[0].available_qty, 3)
 		self.assertEqual(late_work_order.required_items[0].current_gap_qty, 4)
 
+	def test_earlier_plan_date_consumes_shared_in_transit_supply_first(self):
+		from process_simplification.api.production_readiness import allocate_work_order_readiness
+
+		def plan(name, planned_date):
+			return self._graph(
+				plan_name=f"PP-{name}",
+				planned_date=planned_date,
+				creation="2026-08-01 08:00:00",
+				work_orders=[
+					{
+						"name": f"WO-{name}",
+						"production_item": f"FG-{name}",
+						"production_plan_item": f"PPI-{name}",
+						"status": "Not Started",
+					}
+				],
+				required_items=[
+					{
+						"parent": f"WO-{name}",
+						"item_code": "RM-SHARED",
+						"source_warehouse": "Stores - TC",
+						"required_qty": 10,
+						"transferred_qty": 0,
+					}
+				],
+				active_bom_items={f"FG-{name}"},
+			)
+
+		supply = {
+			("RM-SHARED", "Stores - TC"): [
+				{
+					"doctype": "Purchase Order",
+					"name": "PO-001",
+					"detail_name": "POI-001",
+					"outstanding_qty": 10,
+					"schedule_date": "2026-08-09",
+				}
+			]
+		}
+		result = allocate_work_order_readiness(
+			[plan("LATER", "2026-08-20"), plan("EARLY", "2026-08-10")],
+			{("RM-SHARED", "Stores - TC"): {"actual_qty": 0, "available_qty": 0}},
+			supply,
+		)
+		by_plan = {row.name: row for row in result}
+		early_item = by_plan["PP-EARLY"].work_orders_by_name["WO-EARLY"].required_items[0]
+		later_item = by_plan["PP-LATER"].work_orders_by_name["WO-LATER"].required_items[0]
+
+		self.assertEqual(early_item.status, "awaiting_purchase_receipt")
+		self.assertEqual(early_item.shortage_qty, 0)
+		self.assertEqual(later_item.status, "new_purchase_required")
+		self.assertEqual(later_item.shortage_qty, 10)
+
 	def test_manufactured_item_without_child_task_is_not_a_purchase_shortage(self):
 		from process_simplification.api.production_readiness import allocate_work_order_readiness
 
@@ -332,6 +385,8 @@ class TestProductionReadinessLoading(UnitTestCase):
 		with (
 			patch.object(production_readiness.frappe, "get_all", side_effect=get_all),
 			patch("process_simplification.api.shortage.get_material_stock_snapshot", side_effect=stock),
+			patch("process_simplification.api.shortage._mr_documents", return_value=[]),
+			patch("process_simplification.api.shortage._po_documents", return_value=[]),
 		):
 			result = production_readiness.get_production_plan_readiness(
 				company="_Test Company",

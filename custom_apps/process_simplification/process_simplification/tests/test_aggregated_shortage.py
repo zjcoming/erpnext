@@ -12,56 +12,104 @@ from frappe.tests import UnitTestCase
 
 
 class TestAggregatedShortage(UnitTestCase):
+	def test_plan_shortages_purchase_only_leaf_materials_even_if_subassembly_is_purchasable(self):
+		from process_simplification.api import shortage
+
+		readiness = {
+			"SOI-001": [
+				{
+					"name": "PP-001",
+					"planned_date": "2026-08-20",
+					"work_orders": [
+						{
+							"name": "WO-FG",
+							"sales_order": "SO-001",
+							"sales_order_item": "SOI-001",
+							"production_item": "FG",
+							"required_items": [
+								{
+									"item_code": "SA",
+									"item_name": "可采购半成品",
+									"source_warehouse": "Stores - TC",
+									"required_qty": 5,
+									"current_gap_qty": 5,
+									"shortage_qty": 0,
+									"supply_type": "manufactured",
+									"is_purchase_item": 1,
+								},
+							],
+						},
+						{
+							"name": "WO-SA",
+							"sales_order": "SO-001",
+							"sales_order_item": "SOI-001",
+							"production_item": "SA",
+							"required_items": [
+								{
+									"item_code": "RM",
+									"item_name": "底层原料",
+									"stock_uom": "Nos",
+									"source_warehouse": "Stores - TC",
+									"required_qty": 10,
+									"current_gap_qty": 10,
+									"shortage_qty": 10,
+									"status": "new_purchase_required",
+									"supply_type": "purchased",
+								},
+							],
+						},
+					],
+				}
+			]
+		}
+
+		rows = shortage.calculate_plan_purchase_shortages(readiness, {"SOI-001"})
+
+		self.assertEqual([row["item_code"] for row in rows], ["RM"])
+		self.assertEqual(rows[0]["shortage_qty"], 10)
+		self.assertEqual(rows[0]["sources"][0]["work_order"], "WO-SA")
+
 	def test_check_all_shortages_merges_demand_across_orders(self):
 		from process_simplification.api import shortage
 
-		# Two orders, each needing 100 of finished goods that share RM-SHARED
-		# (10 per unit) from the same warehouse.
-		all_demands = [
-			{
-				"bom_no": "BOM-A",
-				"qty": 100,
-				"source": {
-					"sales_order": "SO-A",
-					"sales_order_item": "SOI-A",
-					"finished_item": "FG-A",
-					"sales_order_item_warehouse": "Stores - TC",
-				},
-			},
-			{
-				"bom_no": "BOM-B",
-				"qty": 100,
-				"source": {
-					"sales_order": "SO-B",
-					"sales_order_item": "SOI-B",
-					"finished_item": "FG-B",
-					"sales_order_item_warehouse": "Stores - TC",
-				},
-			},
-		]
-
-		def bom_items(bom_no, company, qty, fetch_exploded):
+		def plan(plan_name, work_order, sales_order, sales_order_item, available_qty, shortage_qty):
 			return {
-				"RM-SHARED": frappe._dict(
+				"name": plan_name,
+				"planned_date": "2026-08-20",
+				"work_orders": [
 					{
-						"item_code": "RM-SHARED",
-						"item_name": "共享原料",
-						"stock_uom": "Nos",
-						"source_warehouse": "Stores - TC",
-						"qty": 10 * qty,
-					}
-				)
+						"name": work_order,
+						"sales_order": sales_order,
+						"sales_order_item": sales_order_item,
+						"production_item": f"FG-{sales_order_item}",
+						"required_items": [
+							{
+								"item_code": "RM-SHARED",
+								"item_name": "共享原料",
+								"stock_uom": "Nos",
+								"source_warehouse": "Stores - TC",
+								"required_qty": 1000,
+								"available_qty": available_qty,
+								"current_gap_qty": shortage_qty,
+								"shortage_qty": shortage_qty,
+								"status": "new_purchase_required",
+								"supply_type": "purchased",
+							}
+						],
+					},
+				],
 			}
 
+		readiness = {
+			"SOI-A": [plan("PP-A", "WO-A", "SO-A", "SOI-A", 500, 500)],
+			"SOI-B": [plan("PP-B", "WO-B", "SO-B", "SOI-B", 0, 1000)],
+		}
+
 		with (
-			patch.object(shortage, "get_all_material_demands", return_value=all_demands),
-			patch("process_simplification.api.shortage.resolve_production_source_warehouse",
-				return_value=frappe._dict({"warehouse": "Stores - TC", "can_use": True, "reason": None})),
-			patch("process_simplification.api.shortage.get_bom_items_as_dict", side_effect=bom_items),
-			patch("process_simplification.api.shortage.get_material_stock_snapshot",
-				return_value=frappe._dict({"can_calculate": True, "actual_qty": 500, "committed_qty": 0, "available_qty": 500})),
-			patch("process_simplification.api.shortage._mr_documents", return_value=[]),
-			patch("process_simplification.api.shortage._po_documents", return_value=[]),
+			patch(
+				"process_simplification.api.production_readiness.get_production_plan_readiness",
+				return_value=readiness,
+			),
 			patch("process_simplification.api.shortage.frappe.has_permission", return_value=True),
 		):
 			result = shortage.check_all_shortages(company="_Test Company")
@@ -82,10 +130,36 @@ class TestAggregatedShortage(UnitTestCase):
 		from process_simplification.api import shortage
 
 		with (
-			patch.object(shortage, "get_all_material_demands", return_value=[]),
+			patch(
+				"process_simplification.api.production_readiness.get_production_plan_readiness",
+				return_value={},
+			),
 			patch("process_simplification.api.shortage.frappe.has_permission", return_value=True),
 		):
 			result = shortage.check_all_shortages(company="_Test Company")
 
 		self.assertEqual(result["shortages"], [])
 		self.assertIn("message", result)
+
+	def test_material_request_rows_are_rejected_when_plan_shortage_has_changed(self):
+		from process_simplification.api import shortage
+		from process_simplification.api.utils import SimplifiedFlowError
+
+		with self.assertRaises(SimplifiedFlowError):
+			shortage.revalidate_purchase_rows(
+				[
+					{
+						"item_code": "RM",
+						"warehouse": "Stores - TC",
+						"purchase_qty": 10,
+						"shortage_qty": 10,
+					}
+				],
+				[
+					{
+						"item_code": "RM",
+						"warehouse": "Stores - TC",
+						"shortage_qty": 4,
+					}
+				],
+			)

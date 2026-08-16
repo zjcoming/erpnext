@@ -194,6 +194,44 @@ class TestProductionWorkbench(UnitTestCase):
 		self.assertEqual(result["material_summary"]["shortage_item_count"], 0)
 		self.assertEqual(result["materials"][1]["supply_type"], "manufactured")
 
+	def test_plan_readiness_does_not_mark_work_order_ready_when_raw_material_is_in_transit(self):
+		production = self._module()
+		demand = production.build_production_demand(
+			self._order(),
+			self._row(unplanned_production_qty=0, active_work_order_qty=50),
+			work_orders=[],
+			today="2026-08-02",
+		)
+		readiness = {
+			"SOI-001": [
+				{
+					"name": "PP-001",
+					"planned_date": "2026-08-05",
+					"work_orders": [
+						{
+							"name": "WO-001",
+							"readiness_status": "awaiting_purchase_receipt",
+							"required_items": [
+								{
+									"item_code": "RM",
+									"supply_type": "purchased",
+									"status": "awaiting_purchase_receipt",
+									"current_gap_qty": 10,
+									"shortage_qty": 0,
+								}
+							],
+						}
+					],
+				}
+			]
+		}
+
+		result = production.attach_production_plan_readiness([demand], readiness)[0]
+
+		self.assertEqual(result["status_code"], "awaiting_supply")
+		self.assertEqual(result["material_summary"]["status_code"], "awaiting_supply")
+		self.assertEqual(result["material_summary"]["awaiting_supply_item_count"], 1)
+
 	def test_stock_only_row_is_excluded_from_production_overview(self):
 		production = self._module()
 		self.assertTrue(hasattr(production, "build_production_demand"))

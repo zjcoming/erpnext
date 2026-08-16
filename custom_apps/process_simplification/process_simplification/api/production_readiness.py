@@ -4,7 +4,7 @@ from collections import defaultdict
 from copy import deepcopy
 
 import frappe
-from frappe.utils import flt
+from frappe.utils import flt, getdate
 
 
 TERMINAL_WORK_ORDER_STATUSES = {"Completed", "Stopped", "Closed", "Cancelled"}
@@ -127,10 +127,14 @@ def _work_order_readiness_status(work_order):
 	if any(not item.get("child_work_order") for item in manufactured_gaps):
 		return "production_task_missing"
 	if any(
-		item.get("supply_type") == "purchased" and flt(item.get("current_gap_qty")) > 0
+		item.get("supply_type") == "purchased" and item.get("status") == "new_purchase_required"
 		for item in items
 	):
 		return "purchase_shortage"
+	if any(item.get("status") == "awaiting_purchase_receipt" for item in items):
+		return "awaiting_purchase_receipt"
+	if any(item.get("status") == "purchase_request_pending" for item in items):
+		return "purchase_request_pending"
 	if manufactured_gaps:
 		return "waiting_subassembly"
 	return "ready_now"
@@ -152,14 +156,16 @@ def summarize_plan(plan) -> dict:
 	}
 
 
-def allocate_work_order_readiness(plans, stock_snapshots):
+def allocate_work_order_readiness(plans, stock_snapshots, supply_documents=None):
 	"""Allocate current stock once, by Production Plan date and deepest Work Order first."""
 	result = [deepcopy(plan) for plan in plans or []]
 	result.sort(key=lambda plan: tuple(plan.get("priority_key") or ()))
+	supply_documents = supply_documents or {}
 	remaining_stock = {
 		key: max(flt((snapshot or {}).get("available_qty")), 0)
 		for key, snapshot in (stock_snapshots or {}).items()
 	}
+	remaining_supply = {}
 
 	for plan in result:
 		for work_order_name in plan.execution_order:
@@ -189,6 +195,64 @@ def allocate_work_order_readiness(plans, stock_snapshots):
 					if item.supply_type == "manufactured"
 					else None
 				)
+				item.open_purchase_order_qty = 0
+				item.open_material_request_qty = 0
+				item.supply_documents = []
+				if item.supply_type == "manufactured":
+					item.shortage_qty = 0
+					item.status = "waiting_subassembly" if item.current_gap_qty > 0 else "ready_now"
+				else:
+					uncovered = item.current_gap_qty
+					for doctype in ("Purchase Order", "Material Request"):
+						for source_document in sorted(
+							[
+								document
+								for document in supply_documents.get(key, [])
+								if document.get("doctype") == doctype
+							],
+							key=lambda document: (
+								str(document.get("schedule_date") or "9999-12-31"),
+								str(document.get("name") or ""),
+								str(document.get("detail_name") or ""),
+							),
+						):
+							document = frappe._dict(deepcopy(dict(source_document)))
+							document_key = (
+								key,
+								document.get("doctype"),
+								document.get("detail_name") or document.get("name"),
+							)
+							available_supply = remaining_supply.setdefault(
+								document_key,
+								max(flt(document.get("outstanding_qty")), 0),
+							)
+							document.is_late = bool(
+								document.get("schedule_date")
+								and plan.get("planned_date")
+								and getdate(document.get("schedule_date")) > getdate(plan.get("planned_date"))
+							)
+							document.allocated_qty = (
+								0 if document.is_late else min(uncovered, available_supply)
+							)
+							remaining_supply[document_key] = max(
+								available_supply - document.allocated_qty,
+								0,
+							)
+							uncovered = max(uncovered - document.allocated_qty, 0)
+							if doctype == "Purchase Order":
+								item.open_purchase_order_qty += document.allocated_qty
+							else:
+								item.open_material_request_qty += document.allocated_qty
+							item.supply_documents.append(document)
+					item.shortage_qty = uncovered
+					if item.current_gap_qty <= 0:
+						item.status = "ready_now"
+					elif item.shortage_qty > 0:
+						item.status = "new_purchase_required"
+					elif item.open_material_request_qty > 0:
+						item.status = "purchase_request_pending"
+					else:
+						item.status = "awaiting_purchase_receipt"
 				allocated_items.append(item)
 			work_order.required_items = allocated_items
 			work_order.readiness_status = _work_order_readiness_status(work_order)
@@ -401,6 +465,22 @@ def get_production_plan_readiness(company=None, sales_order_items=None):
 			sub_assemblies_by_plan[plan.name],
 		)
 		plan_work_orders = work_orders_by_plan[plan.name]
+		plan_item_by_name = {
+			row.get("name"): row for row in plan_items_by_plan[plan.name]
+		}
+		sub_assembly_by_name = {
+			row.get("name"): row for row in sub_assemblies_by_plan[plan.name]
+		}
+		for work_order in plan_work_orders:
+			linked_row = (
+				plan_item_by_name.get(work_order.get("production_plan_item"))
+				or sub_assembly_by_name.get(work_order.get("production_plan_sub_assembly_item"))
+				or {}
+			)
+			work_order.sales_order = work_order.get("sales_order") or linked_row.get("sales_order")
+			work_order.sales_order_item = work_order.get("sales_order_item") or linked_row.get(
+				"sales_order_item"
+			)
 		graph = build_work_order_graph(
 			plan,
 			plan_work_orders,
@@ -417,17 +497,28 @@ def get_production_plan_readiness(company=None, sales_order_items=None):
 		graph.status = plan.get("status")
 		graphs.append(graph)
 
-	from process_simplification.api.shortage import get_material_stock_snapshot
+	from process_simplification.api.shortage import (
+		_mr_documents,
+		_po_documents,
+		get_material_stock_snapshot,
+	)
 
 	stock_snapshots = {}
+	supply_documents = {}
 	for graph in graphs:
 		for work_order in graph.work_orders_by_name.values():
 			for item in work_order.get("required_items") or []:
 				key = (item.get("item_code"), item.get("source_warehouse"))
 				if key not in stock_snapshots:
 					stock_snapshots[key] = get_material_stock_snapshot(*key)
+				if not item.get("is_manufactured") and key not in supply_documents:
+					supply_company = graph.get("company") or company
+					supply_documents[key] = [
+						*_po_documents(*key, supply_company, None),
+						*_mr_documents(*key, supply_company, None),
+					]
 
-	readiness_plans = allocate_work_order_readiness(graphs, stock_snapshots)
+	readiness_plans = allocate_work_order_readiness(graphs, stock_snapshots, supply_documents)
 	result = defaultdict(list)
 	for plan in readiness_plans:
 		serialized = _serialize_readiness_plan(plan)

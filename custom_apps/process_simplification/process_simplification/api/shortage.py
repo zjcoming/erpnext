@@ -441,6 +441,84 @@ def calculate_material_shortages(demands, company: str, defaults=None, need_by_d
 	return calculate_material_coverage(demands, company, need_by_date, defaults, prior_demands)["shortages"]
 
 
+def calculate_plan_purchase_shortages(readiness_by_sales_order_item, selected_sales_order_items=None):
+	"""Aggregate only leaf purchased items from Production Plan Work Orders."""
+	selected_sales_order_items = set(selected_sales_order_items or [])
+	materials = {}
+	seen_work_orders = set()
+	for mapped_sales_order_item, plans in (readiness_by_sales_order_item or {}).items():
+		if selected_sales_order_items and mapped_sales_order_item not in selected_sales_order_items:
+			continue
+		for plan in plans or []:
+			for work_order in plan.get("work_orders") or []:
+				work_order_sales_order_item = (
+					work_order.get("sales_order_item") or mapped_sales_order_item
+				)
+				if (
+					selected_sales_order_items
+					and work_order_sales_order_item not in selected_sales_order_items
+				):
+					continue
+				work_order_key = (plan.get("name"), work_order.get("name"))
+				if work_order_key in seen_work_orders:
+					continue
+				seen_work_orders.add(work_order_key)
+				for item in work_order.get("required_items") or []:
+					if (
+						item.get("supply_type") != "purchased"
+						or item.get("status") != "new_purchase_required"
+						or normalize_qty(item.get("shortage_qty")) <= 0
+					):
+						continue
+					key = (item.get("item_code"), item.get("source_warehouse"))
+					material = materials.setdefault(
+						key,
+						{
+							"item_code": item.get("item_code"),
+							"item_name": item.get("item_name"),
+							"stock_uom": item.get("stock_uom"),
+							"warehouse": item.get("source_warehouse"),
+							"required_qty": 0,
+							"actual_qty": 0,
+							"committed_qty": 0,
+							"available_qty": 0,
+							"open_material_request_qty": 0,
+							"open_purchase_order_qty": 0,
+							"current_gap_qty": 0,
+							"shortage_qty": 0,
+							"status": "new_purchase_required",
+							"blocked": False,
+							"sources": [],
+							"supply_documents": [],
+						},
+					)
+					material["required_qty"] += normalize_qty(item.get("required_qty"))
+					material["actual_qty"] = max(
+						material["actual_qty"], normalize_qty(item.get("actual_qty"))
+					)
+					material["available_qty"] += normalize_qty(item.get("available_qty"))
+					material["open_material_request_qty"] += normalize_qty(
+						item.get("open_material_request_qty")
+					)
+					material["open_purchase_order_qty"] += normalize_qty(
+						item.get("open_purchase_order_qty")
+					)
+					material["current_gap_qty"] += normalize_qty(item.get("current_gap_qty"))
+					material["shortage_qty"] += normalize_qty(item.get("shortage_qty"))
+					material["sources"].append(
+						{
+							"production_plan": plan.get("name"),
+							"planned_date": plan.get("planned_date"),
+							"work_order": work_order.get("name"),
+							"sales_order": work_order.get("sales_order"),
+							"sales_order_item": work_order_sales_order_item,
+							"finished_item": work_order.get("production_item"),
+							"required_qty": normalize_qty(item.get("required_qty")),
+						}
+					)
+	return sorted(materials.values(), key=lambda row: (row.get("warehouse") or "", row.get("item_code") or ""))
+
+
 def get_all_material_demands(company: str):
 	"""All open production demands for the company as material-coverage rows.
 
@@ -453,19 +531,17 @@ def get_all_material_demands(company: str):
 
 @frappe.whitelist()
 def check_all_shortages(company: str | None = None):
-	"""Aggregate raw-material shortage across every open order.
-
-	Pulls all open production demands, so ``calculate_material_coverage`` merges
-	each raw material by (item, warehouse) across orders and returns a single
-	consolidated shortage line per material for one combined purchase."""
+	"""Aggregate leaf raw-material shortage across Production Plan Work Orders."""
 	frappe.has_permission("Material Request", "read", throw=True)
 	defaults = get_company_defaults(company)
 	company = company or defaults.company
 	if not company:
 		throw_chinese("默认公司缺失，请先设置公司。")
 
-	demands = get_all_material_demands(company)
-	shortages = calculate_material_shortages(demands, company, defaults)
+	from process_simplification.api.production_readiness import get_production_plan_readiness
+
+	readiness = get_production_plan_readiness(company=company)
+	shortages = calculate_plan_purchase_shortages(readiness)
 	if not shortages:
 		return {"shortages": [], "message": "当前所有订单没有需要采购的缺料。"}
 	return {"shortages": shortages}
@@ -480,49 +556,13 @@ def check_shortage(selected_rows, company: str | None = None):
 	if not company:
 		throw_chinese("默认公司缺失，请先设置公司。")
 
-	demands = []
-	selected_items = set()
-	boundary_delivery_date = None
-	for selected in rows:
-		workbench_row = _workbench_row(selected.sales_order, selected.sales_order_item)
-		if workbench_row.get("unsupported"):
-			continue
+	selected_items = {row.get("sales_order_item") for row in rows if row.get("sales_order_item")}
+	from process_simplification.api.production_readiness import get_production_plan_readiness
 
-		demand_qty = normalize_qty(selected.get("qty")) or normalize_qty(workbench_row.uncovered_qty)
-		if demand_qty <= 0:
-			demand_qty = normalize_qty(workbench_row.active_work_order_qty)
-		if demand_qty <= 0:
-			continue
-
-		bom_no = get_default_bom(workbench_row.item_code)
-		if not bom_no:
-			continue
-
-		selected_items.add(selected.sales_order_item)
-		delivery_date = workbench_row.get("delivery_date")
-		if delivery_date and (boundary_delivery_date is None or delivery_date > boundary_delivery_date):
-			boundary_delivery_date = delivery_date
-
-		demands.append(
-			{
-				"bom_no": bom_no,
-				"qty": demand_qty,
-				"source": {
-					"sales_order": selected.sales_order,
-					"sales_order_item": selected.sales_order_item,
-					"finished_item": workbench_row.item_code,
-					"qty": demand_qty,
-					"sales_order_item_warehouse": workbench_row.get("warehouse"),
-				},
-			}
-		)
-
-	prior_demands = _prior_demands_for(
-		company,
-		target_delivery_date=boundary_delivery_date,
-		exclude_sales_order_items=selected_items,
-	)
-	shortages = calculate_material_shortages(demands, company, defaults, prior_demands=prior_demands)
+	# Load every company plan first so non-selected earlier plans consume shared
+	# stock and inbound supply before the selected plans are reported.
+	readiness = get_production_plan_readiness(company=company)
+	shortages = calculate_plan_purchase_shortages(readiness, selected_items)
 	if not shortages:
 		return {"shortages": [], "message": "当前选择的订单没有需要采购的缺料。"}
 	return {"shortages": shortages}
@@ -544,6 +584,30 @@ def _prior_demands_for(company, *, target_delivery_date, exclude_sales_order_ite
 	return prior
 
 
+def revalidate_purchase_rows(shortage_rows, current_shortages):
+	current_by_key = {
+		(row.get("item_code"), row.get("warehouse")): frappe._dict(row)
+		for row in current_shortages or []
+	}
+	validated = []
+	for index, source_row in enumerate(shortage_rows or [], start=1):
+		row = frappe._dict(deepcopy(dict(source_row)))
+		current = current_by_key.get((row.get("item_code"), row.get("warehouse")))
+		current_shortage_qty = normalize_qty((current or {}).get("shortage_qty"))
+		purchase_qty = normalize_qty(row.get("purchase_qty") or row.get("shortage_qty"))
+		if current_shortage_qty <= 0:
+			throw_chinese("第 {0} 行已不再缺料，请刷新后重试。".format(index))
+		if purchase_qty > current_shortage_qty:
+			throw_chinese(
+				"第 {0} 行采购数量超过最新采购缺口 {1}，请刷新后重试。".format(
+					index, current_shortage_qty
+				)
+			)
+		row.shortage_qty = current_shortage_qty
+		validated.append(row)
+	return validated
+
+
 @frappe.whitelist()
 def create_material_request(shortage_rows, company: str | None = None, schedule_date: str | None = None):
 	frappe.has_permission("Material Request", "create", throw=True)
@@ -555,6 +619,12 @@ def create_material_request(shortage_rows, company: str | None = None, schedule_
 	company = company or defaults.company
 	if not company:
 		throw_chinese("默认公司缺失，请先设置公司。")
+	from process_simplification.api.production_readiness import get_production_plan_readiness
+
+	current_shortages = calculate_plan_purchase_shortages(
+		get_production_plan_readiness(company=company)
+	)
+	shortage_rows = revalidate_purchase_rows(shortage_rows, current_shortages)
 
 	mr = frappe.new_doc("Material Request")
 	mr.material_request_type = "Purchase"

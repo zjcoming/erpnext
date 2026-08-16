@@ -25,6 +25,7 @@ STATUS_LABELS = {
 	"master_data_blocked": "基础资料异常",
 	"unplanned": "待安排",
 	"material_shortage": "缺料",
+	"awaiting_supply": "等待到料",
 	"waiting_subassembly": "等待半成品",
 	"ready_to_start": "可开工",
 	"in_production": "生产中",
@@ -58,12 +59,18 @@ def _risk_for_demand(delivery_timing: str, status_code: str):
 	if delivery_timing in {"today", "within_7_days"} and status_code in {
 		"unplanned",
 		"material_shortage",
+		"awaiting_supply",
+		"waiting_subassembly",
 		"in_production",
 		"partially_completed",
 	}:
 		return "orange", 80, "临近交期"
 	if status_code == "material_shortage":
 		return "orange", 75, "原料短缺"
+	if status_code == "awaiting_supply":
+		return "blue", 55, "采购在途"
+	if status_code == "waiting_subassembly":
+		return "blue", 50, "等待下级生产"
 	if status_code == "unplanned":
 		return "orange", 70, "生产未安排"
 	if status_code == "overplanned":
@@ -354,7 +361,14 @@ def attach_production_plan_readiness(demands, readiness_by_sales_order_item):
 		purchased_shortages = [
 			row
 			for row in demand.materials
-			if row.get("supply_type") == "purchased" and _positive(row, "current_gap_qty") > 0
+			if row.get("supply_type") == "purchased"
+			and row.get("status") == "new_purchase_required"
+			and _positive(row, "shortage_qty") > 0
+		]
+		awaiting_supply = [
+			row
+			for row in demand.materials
+			if row.get("status") in {"awaiting_purchase_receipt", "purchase_request_pending"}
 		]
 		blocked = [
 			row for row in demand.work_orders if row.get("readiness_status") in {"blocked", "production_task_missing"}
@@ -364,13 +378,15 @@ def attach_production_plan_readiness(demands, readiness_by_sales_order_item):
 			if blocked
 			else "shortage"
 			if purchased_shortages
+			else "awaiting_supply"
+			if awaiting_supply
 			else "waiting_subassembly"
 			if "waiting_subassembly" in statuses and "ready_now" not in statuses
 			else "ready",
 			"material_count": len(demand.materials),
 			"shortage_item_count": len(purchased_shortages),
 			"blocked_item_count": len(blocked),
-			"awaiting_supply_item_count": 0,
+			"awaiting_supply_item_count": len(awaiting_supply),
 		}
 
 		if demand.get("status_code") not in {"in_production", "partially_completed"}:
@@ -380,6 +396,8 @@ def attach_production_plan_readiness(demands, readiness_by_sales_order_item):
 				demand.status_code = "ready_to_start"
 			elif purchased_shortages:
 				demand.status_code = "material_shortage"
+			elif awaiting_supply:
+				demand.status_code = "awaiting_supply"
 			elif blocked:
 				demand.status_code = "master_data_blocked"
 			elif "waiting_subassembly" in statuses:
