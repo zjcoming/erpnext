@@ -61,7 +61,7 @@
 - 层级辅助事实：`Production Plan Sub Assembly Item.parent_item_code`、`production_item` 和 `bom_level`。
 - 缺失关系：直接物料具有有效默认 BOM、按工厂规则应自产，但同计划没有活动子工单时，标记 `production_task_missing`，不得转成采购缺口。
 
-同计划内执行顺序由最深 BOM 层级向顶层推进。跨订单竞争共享物料时，先按销售订单明细交期升序，再按计划开始时间、计划创建时间和单据名称稳定排序；没有交期的订单排在有明确交期的订单之后，并作为资料风险单独提示。
+同计划内执行顺序由最深 BOM 层级向顶层推进。跨计划竞争原材料现货、半成品现货或在途供应时，统一以 Production Plan 的计划日期为第一优先级：优先使用对应 Production Plan Item / Sub Assembly Item 的 `planned_start_date` 或 `schedule_date`，缺失时回退到 Production Plan `posting_date`，再以计划创建时间和单据名称稳定排序。该计划日期通常继承销售订单交付日期，所以业务结果仍是交付更早的订单优先占料；如果生产计划经过人工排程调整，则以调整后的计划日期为准。
 
 ## 逐工单当前就绪度
 
@@ -112,10 +112,10 @@
 
 1. 读取计划下全部未完成 Work Order 的直接物料。
 2. 对每行扣除已经转移的数量。
-3. 如果物料按工厂规则为自产半成品，则该行是工单依赖，不进入采购需求；它的下级工单外购物料会单独进入汇总。
-4. 只有明确允许采购且不属于计划内自产依赖的物料进入采购候选。
+3. 如果物料存在有效 BOM，或出现在 Production Plan 的自产半成品层级中，则无条件按自产处理：即使 Item 被误勾选 `is_purchase_item`，该行仍然只是工单依赖，不进入采购需求；它的下级工单用料会继续向下解析。
+4. 只有到达没有有效 BOM、也不属于任何自产层级的最终底层物料时，才允许进入采购候选。采购标志用于校验底层物料是否允许采购，不能覆盖“有 BOM 默认生产”的工厂规则。
 5. 按 `(item_code, source_warehouse)` 汇总候选，并保留 Production Plan、Work Order、Sales Order Item 和需要日期等来源说明。
-6. 按订单交期优先分配共享现货，再按计划逐一分配可按期到达的 Purchase Order 和 Material Request 数量，禁止多个计划重复占用同一供应行。
+6. 按 Production Plan 计划日期优先分配共享原材料现货、半成品现货，再按同一顺序逐计划分配可按期到达的 Purchase Order 和 Material Request 数量，禁止多个计划重复占用同一库存池或供应行。
 7. 最终只把仍为 `new_purchase_required` 的数量交给一键采购。
 
 “当前库存不足但已有未来供应”和“仍需新增采购”必须分别展示。一键采购不得为了让当前工单显示可开工而把在途数量当作现货。
@@ -174,7 +174,9 @@ Quick Sales Order 在尚未创建 Production Plan 时仍属于下单前预测，
 - 多层计划中只有最底层工单在直接原料有库存时为 `ready_now`。
 - 顶层工单的自产半成品库存为零时为 `waiting_subassembly`，即使全部底层原料齐全也不能为 `ready_now`。
 - 自产半成品缺少子工单时为 `production_task_missing`，不会进入采购缺口。
-- 外购物料跨计划按交期只分配一次共享现货和一次 MR/PO 数量。
+- 半成品即使勾选允许采购，只要存在有效 BOM，仍继续向下解析并只采购最终底层原材料。
+- 两份计划竞争同一原材料或半成品时，较早的 Production Plan 计划日期优先取得库存。
+- 外购物料跨计划按 Production Plan 计划日期只分配一次共享现货和一次 MR/PO 数量。
 - PO/MR 覆盖只改变未来供应状态，不改变当前可开工状态。
 - 已转移数量不再重复进入采购需求。
 
