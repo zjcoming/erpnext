@@ -330,11 +330,14 @@ class TestProductionReadinessLoading(UnitTestCase):
 	def test_loads_plan_work_orders_and_current_stock_as_one_order_item_snapshot(self):
 		from process_simplification.api import production_readiness
 
+		work_order_field_queries = []
+
 		rows = {
 			"Work Order": [
 				frappe._dict(
 					name="WO-FG",
 					production_item="FG",
+					bom_no="BOM-FG-001",
 					production_plan="PP-001",
 					production_plan_item="PPI-1",
 					production_plan_sub_assembly_item=None,
@@ -350,6 +353,7 @@ class TestProductionReadinessLoading(UnitTestCase):
 				frappe._dict(
 					name="WO-SA",
 					production_item="SA",
+					bom_no="BOM-SA-001",
 					production_plan="PP-001",
 					production_plan_item=None,
 					production_plan_sub_assembly_item="PPSA-1",
@@ -376,11 +380,14 @@ class TestProductionReadinessLoading(UnitTestCase):
 		def get_all(doctype, **kwargs):
 			if doctype == "BOM":
 				return ["FG", "SA"]
+			if doctype == "Work Order":
+				work_order_field_queries.append(kwargs.get("fields") or [])
 			return rows.get(doctype, [])
 
 		def stock(item_code, warehouse):
-			qty = 10 if item_code == "RM" else 0
-			return frappe._dict(can_calculate=True, actual_qty=qty, committed_qty=0, available_qty=qty)
+			if item_code == "RM":
+				return frappe._dict(can_calculate=True, actual_qty=12, committed_qty=2, available_qty=10)
+			return frappe._dict(can_calculate=True, actual_qty=0, committed_qty=0, available_qty=0)
 
 		with (
 			patch.object(production_readiness.frappe, "get_all", side_effect=get_all),
@@ -398,6 +405,10 @@ class TestProductionReadinessLoading(UnitTestCase):
 		self.assertEqual(plans[0]["name"], "PP-001")
 		self.assertEqual(plans[0]["planned_date"], "2026-08-20 08:00:00")
 		self.assertEqual([row["name"] for row in plans[0]["work_orders"]], ["WO-SA", "WO-FG"])
+		self.assertEqual([row["bom_no"] for row in plans[0]["work_orders"]], ["BOM-SA-001", "BOM-FG-001"])
 		self.assertEqual(plans[0]["work_orders"][0]["readiness_status"], "ready_now")
+		self.assertEqual(plans[0]["work_orders"][0]["required_items"][0]["committed_qty"], 2)
 		self.assertEqual(plans[0]["work_orders"][1]["readiness_status"], "waiting_subassembly")
 		self.assertEqual(plans[0]["summary"]["ready_work_order_count"], 1)
+		self.assertEqual(len(work_order_field_queries), 2)
+		self.assertTrue(all("bom_no" in fields for fields in work_order_field_queries))

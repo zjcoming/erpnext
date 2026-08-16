@@ -187,6 +187,7 @@ def allocate_work_order_readiness(plans, stock_snapshots, supply_documents=None)
 				item.original_required_qty = flt(item.get("required_qty"))
 				item.required_qty = remaining_required
 				item.actual_qty = flt((stock_snapshots or {}).get(key, {}).get("actual_qty"))
+				item.committed_qty = flt((stock_snapshots or {}).get(key, {}).get("committed_qty"))
 				item.available_qty = allocated
 				item.current_gap_qty = max(remaining_required - allocated, 0)
 				item.supply_type = "manufactured" if item.get("is_manufactured") else "purchased"
@@ -312,6 +313,7 @@ def get_production_plan_readiness(company=None, sales_order_items=None):
 		fields=[
 			"name",
 			"production_item",
+			"bom_no",
 			"production_plan",
 			"production_plan_item",
 			"production_plan_sub_assembly_item",
@@ -348,6 +350,7 @@ def get_production_plan_readiness(company=None, sales_order_items=None):
 			fields=[
 				"name",
 				"production_item",
+				"bom_no",
 				"production_plan",
 				"production_plan_item",
 				"production_plan_sub_assembly_item",

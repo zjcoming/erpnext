@@ -57,6 +57,13 @@ function demand(key, overrides = {}) {
 			blocked_item_count: 0,
 			awaiting_supply_item_count: 0,
 		},
+		production_plans: [
+			{
+				name: `PP-${key}`,
+				planned_date: "2026-08-07 08:00:00",
+				summary: { ready_work_order_count: 0, waiting_subassembly_count: 0 },
+			},
+		],
 		materials: [
 			{
 				item_code: "RM-001",
@@ -73,6 +80,8 @@ function demand(key, overrides = {}) {
 				current_gap_qty: 27,
 				shortage_qty: 18,
 				status: "new_purchase_required",
+				supply_type: "purchased",
+				work_order: "WO-001",
 				is_shared: true,
 			},
 		],
@@ -166,11 +175,10 @@ test("production demand HTML escapes server values and exposes complete labelled
 		assert.match(html, new RegExp(`data-label="${label}"`));
 	}
 	for (const materialLabel of [
-		"本需求",
-		"全部需求",
+		"需求数量",
+		"来源工单",
 		"仓库库存",
-		"已占用",
-		"本次可用",
+		"已分配库存",
 		"采购申请",
 		"在途采购",
 		"即时缺口",
@@ -178,7 +186,7 @@ test("production demand HTML escapes server values and exposes complete labelled
 	]) {
 		assert.match(html, new RegExp(`data-label="${materialLabel}"`));
 	}
-	assert.match(html, /共享物料/);
+	assert.match(html, /多工单共用/);
 	assert.match(html, /需新采购/);
 	assert.doesNotMatch(html, />new_purchase_required</);
 	assert.match(html, /\/app\/work-order\/WO-001/);
@@ -211,6 +219,60 @@ test("production status meta uses colors for the actual production state", () =>
 	assert.deepEqual(productionWorkbench.productionStatusMeta("awaiting_order_reservation"), { indicator: "gray" });
 	assert.deepEqual(productionWorkbench.productionStatusMeta("overplanned"), { indicator: "gray" });
 	assert.deepEqual(productionWorkbench.productionStatusMeta("unknown"), { indicator: "gray" });
+});
+
+test("purchase summary excludes manufactured items and aggregates their source Work Orders", () => {
+	const result = productionWorkbench.aggregatePurchasedMaterials([
+		{
+			item_code: "RM-SHARED",
+			item_name: "共享原料",
+			warehouse: "Stores - TC",
+			stock_uom: "Kg",
+			supply_type: "purchased",
+			work_order: "WO-SA-1",
+			production_item: "SA-1",
+			required_qty: 5,
+			actual_qty: 20,
+			available_qty: 5,
+			current_gap_qty: 0,
+			shortage_qty: 0,
+			status: "ready_now",
+		},
+		{
+			item_code: "RM-SHARED",
+			item_name: "共享原料",
+			warehouse: "Stores - TC",
+			stock_uom: "Kg",
+			supply_type: "purchased",
+			work_order: "WO-SA-2",
+			production_item: "SA-2",
+			required_qty: 7,
+			actual_qty: 20,
+			available_qty: 3,
+			current_gap_qty: 4,
+			shortage_qty: 4,
+			status: "new_purchase_required",
+		},
+		{
+			item_code: "SA-1",
+			supply_type: "manufactured",
+			work_order: "WO-FG",
+			required_qty: 5,
+		},
+	]);
+
+	assert.equal(result.length, 1);
+	assert.equal(result[0].item_code, "RM-SHARED");
+	assert.equal(result[0].required_qty, 12);
+	assert.equal(result[0].actual_qty, 20);
+	assert.equal(result[0].available_qty, 8);
+	assert.equal(result[0].current_gap_qty, 4);
+	assert.equal(result[0].shortage_qty, 4);
+	assert.equal(result[0].status, "new_purchase_required");
+	assert.deepEqual(result[0].source_work_orders, [
+		{ name: "WO-SA-1", production_item: "SA-1" },
+		{ name: "WO-SA-2", production_item: "SA-2" },
+	]);
 });
 
 test("demand without a Production Plan explains the prerequisite instead of showing material checks", () => {
@@ -262,8 +324,65 @@ test("planned demand HTML shows Production Plan priority and Work Order readines
 				},
 			],
 			work_orders: [
-				{ name: "WO-SA", production_item: "SA", readiness_status: "ready_now", required_items: [] },
-				{ name: "WO-FG", production_item: "FG", readiness_status: "waiting_subassembly", required_items: [] },
+				{
+					name: "WO-SA",
+					production_item: "SA",
+					bom_no: "BOM-SA-001",
+					parent_work_order: "WO-FG",
+					readiness_status: "ready_now",
+					required_items: [
+						{
+							item_code: "RM",
+							item_name: "原材料",
+							required_qty: 10,
+							available_qty: 10,
+							current_gap_qty: 0,
+							source_warehouse: "Stores - TC",
+							supply_type: "purchased",
+							status: "ready_now",
+						},
+					],
+				},
+				{
+					name: "WO-FG",
+					production_item: "FG",
+					bom_no: "BOM-FG-001",
+					readiness_status: "waiting_subassembly",
+					required_items: [
+						{
+							item_code: "SA",
+							item_name: "半成品",
+							required_qty: 5,
+							available_qty: 0,
+							current_gap_qty: 5,
+							source_warehouse: "Stores - TC",
+							supply_type: "manufactured",
+							child_work_order: "WO-SA",
+							status: "waiting_subassembly",
+						},
+					],
+				},
+			],
+			materials: [
+				{
+					item_code: "RM",
+					item_name: "原材料",
+					warehouse: "Stores - TC",
+					supply_type: "purchased",
+					work_order: "WO-SA",
+					production_item: "SA",
+					required_qty: 10,
+					available_qty: 10,
+					current_gap_qty: 0,
+					shortage_qty: 0,
+					status: "ready_now",
+				},
+				{
+					item_code: "SA",
+					supply_type: "manufactured",
+					work_order: "WO-FG",
+					required_qty: 5,
+				},
 			],
 		}),
 		helpers
@@ -273,7 +392,19 @@ test("planned demand HTML shows Production Plan priority and Work Order readines
 	assert.match(html, /计划优先日期/);
 	assert.match(html, /当前可开工/);
 	assert.match(html, /等待半成品/);
-	assert.match(html, /工单直接用料/);
+	assert.match(html, /生产执行链/);
+	assert.match(html, /第 1 步/);
+	assert.ok(html.includes("/app/bom/BOM-SA-001"));
+	assert.match(html, /供给上级工单/);
+	assert.ok(html.includes("/app/work-order/WO-FG"));
+	assert.match(html, /本工单直接用料/);
+	assert.match(html, /采购件/);
+	assert.match(html, /由下级工单/);
+	assert.ok(html.includes("/app/work-order/WO-SA"));
+	assert.match(html, /底层采购物料汇总/);
+	const purchaseSummary = html.match(/<section class="production-purchase-summary">([\s\S]*?)<\/section>/)?.[1] || "";
+	assert.match(purchaseSummary, />RM</);
+	assert.doesNotMatch(purchaseSummary, /<td data-label="物料"><strong>SA<\/strong>/);
 });
 
 test("overdue ready demand keeps delivery risk red and production state green", () => {

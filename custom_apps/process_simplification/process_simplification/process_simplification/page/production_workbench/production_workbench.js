@@ -107,6 +107,94 @@ function productionSummary(demands) {
 	);
 }
 
+function aggregatePurchasedMaterials(materials) {
+	const groups = new Map();
+	for (const source of materials || []) {
+		if (source.supply_type === "manufactured") continue;
+		const warehouse = source.warehouse || source.source_warehouse || "";
+		const key = `${source.item_code || ""}\u0000${warehouse}`;
+		if (!groups.has(key)) {
+			groups.set(key, {
+				item_code: source.item_code,
+				item_name: source.item_name,
+				stock_uom: source.stock_uom,
+				warehouse,
+				supply_type: "purchased",
+				required_qty: 0,
+				actual_qty: 0,
+				committed_qty: 0,
+				available_qty: 0,
+				open_material_request_qty: 0,
+				open_purchase_order_qty: 0,
+				current_gap_qty: 0,
+				shortage_qty: 0,
+				blocked: false,
+				is_shared: false,
+				source_work_orders: [],
+				supply_documents: [],
+				_source_work_order_names: new Set(),
+				_supply_documents: new Map(),
+			});
+		}
+		const group = groups.get(key);
+		group.item_name = group.item_name || source.item_name;
+		group.stock_uom = group.stock_uom || source.stock_uom;
+		group.required_qty += Number(source.source_required_qty ?? source.required_qty ?? 0);
+		group.actual_qty = Math.max(group.actual_qty, Number(source.actual_qty || 0));
+		group.committed_qty = Math.max(group.committed_qty, Number(source.committed_qty || 0));
+		group.available_qty += Number(source.available_qty || 0);
+		group.open_material_request_qty += Number(source.open_material_request_qty || 0);
+		group.open_purchase_order_qty += Number(source.open_purchase_order_qty || 0);
+		group.current_gap_qty += Number(source.current_gap_qty || 0);
+		group.shortage_qty += Number(source.shortage_qty || 0);
+		group.blocked ||= Boolean(source.blocked);
+		group.is_shared ||= Boolean(source.is_shared);
+		if (source.work_order && !group._source_work_order_names.has(source.work_order)) {
+			group._source_work_order_names.add(source.work_order);
+			group.source_work_orders.push({
+				name: source.work_order,
+				production_item: source.production_item || "",
+			});
+		}
+		for (const sourceDocument of source.supply_documents || []) {
+			const documentKey = `${sourceDocument.doctype || ""}\u0000${sourceDocument.detail_name || sourceDocument.name || ""}`;
+			if (!group._supply_documents.has(documentKey)) {
+				group._supply_documents.set(documentKey, {
+					...sourceDocument,
+					allocated_qty: 0,
+				});
+			}
+			const document = group._supply_documents.get(documentKey);
+			document.allocated_qty += Number(sourceDocument.allocated_qty || 0);
+			document.outstanding_qty = Math.max(
+				Number(document.outstanding_qty || 0),
+				Number(sourceDocument.outstanding_qty || 0)
+			);
+			document.is_late ||= Boolean(sourceDocument.is_late);
+		}
+	}
+
+	return [...groups.values()]
+		.map((group) => {
+			group.source_work_orders.sort((left, right) => left.name.localeCompare(right.name));
+			group.supply_documents = [...group._supply_documents.values()];
+			group.is_shared ||= group.source_work_orders.length > 1;
+			group.status = group.blocked
+				? "cannot_calculate"
+				: group.current_gap_qty <= 0
+					? "ready_now"
+					: group.shortage_qty > 0
+						? "new_purchase_required"
+						: group.open_purchase_order_qty >= group.current_gap_qty
+							? "awaiting_purchase_receipt"
+							: "purchase_request_pending";
+			delete group._source_work_order_names;
+			delete group._supply_documents;
+			return group;
+		})
+		.sort((left, right) => `${left.warehouse}\u0000${left.item_code}`.localeCompare(`${right.warehouse}\u0000${right.item_code}`));
+}
+
 function workbenchPaginationHtml(pagination = {}, helpers) {
 	const t = helpers.translate;
 	const esc = helpers.escapeHtml;
@@ -157,6 +245,122 @@ function workbenchPaginationHtmlSafe(pagination = {}, helpers) {
 		</div>`;
 }
 
+function workOrderDirectMaterialsHtml(workOrder, helpers, hasProductionPlan) {
+	const t = helpers.translate;
+	const esc = helpers.escapeHtml;
+	const number = helpers.formatNumber;
+	const items = workOrder.required_items || [];
+	if (!items.length) {
+		const message = hasProductionPlan
+			? t("当前工单没有剩余直接用料。")
+			: t("旧工单未纳入生产计划，不在此计算直接用料。");
+		return `<div class="text-muted production-work-order-material-empty">${esc(message)}</div>`;
+	}
+	return `<div class="production-work-order-material-list">${items
+		.map((item) => {
+			const status = productionMaterialStatusMeta(item.status, t);
+			const isManufactured = item.supply_type === "manufactured";
+			const supply = isManufactured
+				? item.child_work_order
+					? `${esc(t("由下级工单"))} <a href="/app/work-order/${encodeURIComponent(item.child_work_order)}"><strong>${esc(item.child_work_order)}</strong></a>`
+					: `<span class="text-danger">${esc(t("缺少下级工单"))}</span>`
+				: esc(t("采购件"));
+			return `<div class="production-work-order-material-row">
+				<div class="production-work-order-material-name"><strong>${esc(item.item_code || "")}</strong><span>${esc(item.item_name || "")}</span></div>
+				<div data-label="${esc(t("需求"))}">${number(item.original_required_qty ?? item.required_qty)} ${esc(item.stock_uom || "")}</div>
+				<div data-label="${esc(t("已发料"))}">${number(item.transferred_qty)}</div>
+				<div data-label="${esc(t("待备料"))}">${number(item.required_qty)}</div>
+				<div data-label="${esc(t("本次可用"))}">${number(item.available_qty)}</div>
+				<div data-label="${esc(t("即时缺口"))}">${number(item.current_gap_qty)}</div>
+				<div data-label="${esc(t("供应方式"))}">${supply}</div>
+				<div data-label="${esc(t("状态"))}"><span class="indicator-pill ${esc(status.indicator)}">${esc(status.label)}</span></div>
+			</div>`;
+		})
+		.join("")}</div>`;
+}
+
+function workOrderCardHtml(workOrder, sequence, helpers, hasProductionPlan) {
+	const t = helpers.translate;
+	const esc = helpers.escapeHtml;
+	const number = helpers.formatNumber;
+	const readiness = !hasProductionPlan && !workOrder.readiness_status
+		? { label: t("未纳入生产计划"), indicator: "red" }
+		: workOrderReadinessMeta(workOrder.readiness_status, t);
+	const bom = workOrder.bom_no
+		? `<a href="/app/bom/${encodeURIComponent(workOrder.bom_no)}"><strong>${esc(workOrder.bom_no)}</strong></a>`
+		: esc(t("未设置"));
+	const outputTarget = workOrder.parent_work_order
+		? `${esc(t("供给上级工单"))}: <a href="/app/work-order/${encodeURIComponent(workOrder.parent_work_order)}"><strong>${esc(workOrder.parent_work_order)}</strong></a>${workOrder.parent_item_code ? ` · ${esc(workOrder.parent_item_code)}` : ""}`
+		: esc(t("最终成品工单"));
+	return `<article class="production-work-order-card">
+		<div class="production-work-order-summary">
+			<div class="production-work-order-heading"><span class="production-work-order-sequence">${esc(t("第"))} ${sequence} ${esc(t("步"))}</span><a href="/app/work-order/${encodeURIComponent(workOrder.name || "")}"><strong>${esc(workOrder.name || "")}</strong></a><span class="indicator-pill ${esc(readiness.indicator)}">${esc(readiness.label)}</span></div>
+			<div data-label="${esc(t("生产物料"))}">${esc(workOrder.production_item || "")}</div>
+			<div data-label="${esc(t("计划数量"))}">${number(workOrder.qty)}</div>
+			<div data-label="${esc(t("已生产"))}">${number(workOrder.produced_qty)}</div>
+			<div data-label="${esc(t("剩余"))}">${number(Math.max(Number(workOrder.qty || 0) - Number(workOrder.produced_qty || 0), 0))}</div>
+			<div data-label="BOM">${bom}</div>
+			<div data-label="${esc(t("原料仓"))}">${esc(workOrder.source_warehouse || t("未设置"))}</div>
+			<div data-label="${esc(t("在制仓"))}">${esc(workOrder.wip_warehouse || t("未设置"))}</div>
+			<div data-label="${esc(t("成品仓"))}">${esc(workOrder.fg_warehouse || t("未设置"))}</div>
+		</div>
+		<div class="production-work-order-output">${outputTarget}</div>
+		<div class="production-work-order-materials"><div class="production-work-order-material-heading">${esc(t("本工单直接用料"))}</div>${workOrderDirectMaterialsHtml(workOrder, helpers, hasProductionPlan)}</div>
+	</article>`;
+}
+
+function purchaseMaterialSummaryHtml(materials, helpers) {
+	const t = helpers.translate;
+	const esc = helpers.escapeHtml;
+	const number = helpers.formatNumber;
+	if (!materials.length) {
+		return `<div class="text-muted production-empty-section">${esc(t("当前计划没有需要采购的底层物料。"))}</div>`;
+	}
+	return `<div class="production-material-table-wrap">
+		<table class="table table-bordered production-material-table">
+			<thead><tr><th>${esc(t("物料"))}</th><th>${esc(t("需求数量"))}</th><th>${esc(t("来源工单"))}</th><th>${esc(t("仓库库存"))}</th><th>${esc(t("已分配库存"))}</th><th>${esc(t("采购申请"))}</th><th>${esc(t("在途采购"))}</th><th>${esc(t("即时缺口"))}</th><th>${esc(t("采购缺口"))}</th><th>${esc(t("状态"))}</th></tr></thead>
+			<tbody>${materials
+				.map((row) => {
+					const statusMeta = productionMaterialStatusMeta(row.status, t);
+					const hasCurrentGap = Number(row.current_gap_qty || 0) > 0;
+					const documents = (row.supply_documents || []).filter(
+						(document) => hasCurrentGap || Number(document.allocated_qty || 0) > 0
+					);
+					const documentList = documents.length
+						? `<tr class="production-supply-docs"><td colspan="10" data-label="${esc(t("采购单据"))}"><div class="production-supply-doc-list">${documents
+							.map((document) => {
+								const typeLabel = document.doctype === "Material Request" ? t("采购申请") : t("采购单");
+								const lateTag = document.is_late ? ` · <span class="indicator-pill red">${esc(t("晚于计划日期"))}</span>` : "";
+								const allocation = Number(document.allocated_qty || 0) > 0
+									? ` · ${esc(t("已分配给本单"))} ${number(document.allocated_qty)}`
+									: ` · ${esc(t("未分配给本单"))}`;
+								return `<a class="production-supply-doc${document.is_late ? " is-late" : ""}" href="/app/${esc(frappe.router.slug(document.doctype))}/${esc(document.name)}" target="_blank"><span class="production-supply-doc-type">${esc(typeLabel)}</span> <strong>${esc(document.name)}</strong> · <span class="indicator-pill grey">${esc(document.status || "")}</span> · ${esc(t("未完成"))} ${number(document.outstanding_qty)}${allocation}${document.schedule_date ? ` · ${esc(t("交期"))} ${esc(frappe.datetime.str_to_user(document.schedule_date))}` : ""}${lateTag}</a>`;
+							})
+							.join("")}</div></td></tr>`
+						: "";
+					const sources = row.source_work_orders.length
+						? row.source_work_orders
+							.map((source) => `<a href="/app/work-order/${encodeURIComponent(source.name)}"><strong>${esc(source.name)}</strong>${source.production_item ? `<small>${esc(source.production_item)}</small>` : ""}</a>`)
+							.join("")
+						: `<span class="text-muted">${esc(t("未设置工单"))}</span>`;
+					return `<tr>
+						<td data-label="${esc(t("物料"))}"><strong>${esc(row.item_code || "")}</strong><br><small>${esc(row.item_name || "")} · ${esc(row.warehouse || t("未设置仓库"))}${row.is_shared ? ` · <span class="production-shared-material">${esc(t("多工单共用"))}</span>` : ""} · ${esc(t("采购件"))}</small></td>
+						<td data-label="${esc(t("需求数量"))}">${number(row.required_qty)} ${esc(row.stock_uom || "")}</td>
+						<td data-label="${esc(t("来源工单"))}"><div class="production-material-sources">${sources}</div></td>
+						<td data-label="${esc(t("仓库库存"))}">${number(row.actual_qty)}</td>
+						<td data-label="${esc(t("已分配库存"))}">${number(row.available_qty)}</td>
+						<td data-label="${esc(t("采购申请"))}">${number(row.open_material_request_qty)}</td>
+						<td data-label="${esc(t("在途采购"))}">${number(row.open_purchase_order_qty)}</td>
+						<td data-label="${esc(t("即时缺口"))}">${number(row.current_gap_qty)}</td>
+						<td data-label="${esc(t("采购缺口"))}">${number(row.shortage_qty)}</td>
+						<td data-label="${esc(t("状态"))}"><span class="indicator-pill ${esc(statusMeta.indicator)}">${esc(statusMeta.label)}</span>${Number(row.shortage_qty || 0) > 0 && !documents.length ? `<br><small class="text-muted">${esc(t("尚未发起采购"))}</small>` : ""}</td>
+					</tr>${documentList}`;
+				})
+				.join("")}</tbody>
+		</table>
+	</div>`;
+}
+
 function productionDemandHtml(demand, helpers) {
 	const t = helpers.translate;
 	const esc = helpers.escapeHtml;
@@ -194,72 +398,16 @@ function productionDemandHtml(demand, helpers) {
 		: `<div class="text-muted production-empty-section">${esc(t("尚未关联生产计划。"))}</div>`;
 	const workOrders = (demand.work_orders || []).length
 		? (demand.work_orders || [])
-				.map((row) => {
-					const readiness = !hasProductionPlan && !row.readiness_status
-						? { label: t("未纳入生产计划"), indicator: "red" }
-						: workOrderReadinessMeta(row.readiness_status, t);
-					return `
-						<div class="production-work-order-card">
-							<div class="production-work-order-heading"><a href="/app/work-order/${encodeURIComponent(row.name || "")}"><strong>${esc(row.name || "")}</strong></a><span class="indicator-pill ${esc(readiness.indicator)}">${esc(readiness.label)}</span></div>
-							<div data-label="${esc(t("生产物料"))}">${esc(row.production_item || "")}</div>
-							<div data-label="${esc(t("计划数量"))}">${number(row.qty)}</div>
-							<div data-label="${esc(t("已生产"))}">${number(row.produced_qty)}</div>
-							<div data-label="${esc(t("剩余"))}">${number(Math.max(Number(row.qty || 0) - Number(row.produced_qty || 0), 0))}</div>
-							<div data-label="BOM">${esc(row.bom_no || t("未设置"))}</div>
-							<div data-label="${esc(t("原料仓"))}">${esc(row.source_warehouse || t("未设置"))}</div>
-							<div data-label="${esc(t("在制仓"))}">${esc(row.wip_warehouse || t("未设置"))}</div>
-							<div data-label="${esc(t("成品仓"))}">${esc(row.fg_warehouse || t("未设置"))}</div>
-						</div>`;
-				})
+				.map((row, index) => workOrderCardHtml(row, index + 1, helpers, hasProductionPlan))
 				.join("")
 		: `<div class="text-muted production-empty-section">${esc(t("尚未创建工单。"))}</div>`;
 	const emptyMaterialsMessage = !hasProductionPlan && (demand.work_orders || []).length
 		? t("存在未关联 Production Plan 的旧工单。请先完成、停止或迁移旧工单；在此之前不计算可开工和缺料。")
 		: !hasProductionPlan
 			? t("请先创建生产计划；计划生成层级工单后才能检查工单直接用料和采购缺口。")
-			: t("当前工单没有可展示的直接用料。");
-	const materials = (demand.materials || []).length
-		? `
-			<div class="production-material-table-wrap">
-				<table class="table table-bordered production-material-table">
-					<thead><tr><th>${esc(t("物料"))}</th><th>${esc(t("本需求"))}</th><th>${esc(t("全部需求"))}</th><th>${esc(t("仓库库存"))}</th><th>${esc(t("已占用"))}</th><th>${esc(t("本次可用"))}</th><th>${esc(t("采购申请"))}</th><th>${esc(t("在途采购"))}</th><th>${esc(t("即时缺口"))}</th><th>${esc(t("采购缺口"))}</th><th>${esc(t("状态"))}</th></tr></thead>
-					<tbody>${(demand.materials || [])
-						.map((row) => {
-							const statusMeta = productionMaterialStatusMeta(row.status, t);
-							const hasCurrentGap = Number(row.current_gap_qty || 0) > 0;
-							const docs = (row.supply_documents || []).filter(
-								(doc) => hasCurrentGap || Number(doc.allocated_qty || 0) > 0
-							);
-							const docList = docs.length
-								? `<tr class="production-supply-docs"><td colspan="11" data-label="${esc(t("采购单据"))}"><div class="production-supply-doc-list">${docs
-									.map((doc) => {
-										const typeLabel = doc.doctype === "Material Request" ? t("采购申请") : t("采购单");
-										const lateTag = doc.is_late ? ` · <span class="indicator-pill red">${esc(t("晚于计划日期"))}</span>` : "";
-										const allocation = Number(doc.allocated_qty || 0) > 0
-											? ` · ${esc(t("已分配给本单"))} ${number(doc.allocated_qty)}`
-											: ` · ${esc(t("未分配给本单"))}`;
-										return `<a class="production-supply-doc${doc.is_late ? " is-late" : ""}" href="/app/${esc(frappe.router.slug(doc.doctype))}/${esc(doc.name)}" target="_blank"><span class="production-supply-doc-type">${esc(typeLabel)}</span> <strong>${esc(doc.name)}</strong> · <span class="indicator-pill grey">${esc(doc.status || "")}</span> · ${esc(t("未完成"))} ${number(doc.outstanding_qty)}${allocation}${doc.schedule_date ? ` · ${esc(t("交期"))} ${esc(frappe.datetime.str_to_user(doc.schedule_date))}` : ""}${lateTag}</a>`;
-									})
-									.join("")}</div></td></tr>`
-								: "";
-							return `
-								<tr>
-									<td data-label="${esc(t("物料"))}"><strong>${esc(row.item_code || "")}</strong><br><small>${esc(row.item_name || "")} · ${esc(row.warehouse || row.source_warehouse || t("未设置仓库"))}${row.is_shared ? ` · <span class="production-shared-material">${esc(t("共享物料"))}</span>` : ""}${row.supply_type === "manufactured" ? ` · <span class="production-shared-material">${esc(t("生产件"))}</span>` : ` · ${esc(t("采购件"))}`}</small></td>
-									<td data-label="${esc(t("本需求"))}">${number(row.source_required_qty ?? row.required_qty)}</td>
-									<td data-label="${esc(t("全部需求"))}">${number(row.total_required_qty ?? row.required_qty)}</td>
-									<td data-label="${esc(t("仓库库存"))}">${number(row.actual_qty)}</td>
-									<td data-label="${esc(t("已占用"))}">${number(row.committed_qty)}</td>
-									<td data-label="${esc(t("本次可用"))}">${number(row.available_qty)}</td>
-									<td data-label="${esc(t("采购申请"))}">${number(row.open_material_request_qty)}</td>
-									<td data-label="${esc(t("在途采购"))}">${number(row.open_purchase_order_qty)}</td>
-									<td data-label="${esc(t("即时缺口"))}">${number(row.current_gap_qty)}</td>
-									<td data-label="${esc(t("采购缺口"))}">${number(row.shortage_qty)}</td>
-									<td data-label="${esc(t("状态"))}"><span class="indicator-pill ${esc(statusMeta.indicator)}">${esc(statusMeta.label)}</span>${Number(row.shortage_qty || 0) > 0 && !docs.length ? `<br><small class="text-muted">${esc(t("尚未发起采购"))}</small>` : ""}</td>
-								</tr>${docList}`;
-						})
-						.join("")}</tbody>
-				</table>
-			</div>`
+			: t("当前计划没有需要采购的底层物料。");
+	const purchaseMaterials = hasProductionPlan
+		? purchaseMaterialSummaryHtml(aggregatePurchasedMaterials(demand.materials || []), helpers)
 		: `<div class="text-muted production-empty-section">${esc(emptyMaterialsMessage)}</div>`;
 	return `
 		<details class="production-demand production-risk-${esc(demand.risk_level || "gray")}" data-demand-key="${esc(demand.demand_key)}">
@@ -279,8 +427,8 @@ function productionDemandHtml(demand, helpers) {
 					.map(([label, value]) => `<div data-label="${esc(label)}"><span>${esc(label)}</span><strong>${number(value)}</strong></div>`)
 					.join("")}</div></section>
 				<section><h5>${esc(t("关联生产计划"))}</h5><p class="text-muted">${esc(t("现货与在途供应统一按 Production Plan 的计划日期优先分配。"))}</p><div class="production-plan-list">${productionPlans}</div></section>
-				<section><h5>${esc(t("关联工单"))}</h5><div class="production-work-order-list">${workOrders}</div></section>
-				<section><h5>${esc(t("工单直接用料"))}</h5><p class="text-muted">${esc(t("半成品由下级工单生产；只有底层采购件会进入采购缺口。采购动作提交前会再次复核。"))}</p>${materials}</section>
+				<section><h5>${esc(t("生产执行链"))}</h5><p class="text-muted">${esc(t("按可执行顺序排列：下级半成品工单优先；每张工单只显示其 BOM 直接用料。"))}</p><div class="production-work-order-list">${workOrders}</div></section>
+				<section class="production-purchase-summary"><h5>${esc(t("底层采购物料汇总"))}</h5><p class="text-muted">${esc(t("只汇总采购件；半成品在上方生产执行链中由下级工单供应。采购动作提交前会再次复核。"))}</p>${purchaseMaterials}</section>
 			</div>
 		</details>`;
 }
@@ -301,6 +449,7 @@ const productionWorkbenchApi = {
 	workOrderReadinessMeta,
 	productionStatusMeta,
 	productionSummary,
+	aggregatePurchasedMaterials,
 	workbenchPaginationHtml: workbenchPaginationHtmlSafe,
 	productionDemandHtml,
 	refreshProductionOverview,

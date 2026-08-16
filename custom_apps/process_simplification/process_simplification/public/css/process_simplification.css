@@ -960,7 +960,8 @@
 
 .production-demand-fact strong,
 .production-quantity-grid strong,
-.production-work-order-card > div:not(.production-work-order-heading),
+.production-work-order-summary > div:not(.production-work-order-heading),
+.production-work-order-material-row > div:not(.production-work-order-material-name),
 .production-material-table td:not(:first-child) {
 	font-variant-numeric: tabular-nums;
 }
@@ -1046,12 +1047,19 @@
 
 .production-work-order-card {
 	display: grid;
+	gap: 0;
+	overflow: hidden;
+	border: 1px solid var(--border-color);
+	border-radius: var(--border-radius);
+	background: var(--card-bg);
+}
+
+.production-work-order-summary {
+	display: grid;
 	grid-template-columns: minmax(180px, 1.4fr) repeat(8, minmax(90px, 1fr));
 	align-items: center;
 	gap: 8px 12px;
 	padding: 10px 12px;
-	border: 1px solid var(--border-color);
-	border-radius: var(--border-radius);
 }
 
 .production-work-order-heading {
@@ -1061,10 +1069,66 @@
 	gap: 6px;
 }
 
-.production-work-order-card > div:not(.production-work-order-heading)::before {
+.production-work-order-sequence {
+	padding: 2px 7px;
+	border-radius: 999px;
+	background: var(--subtle-fg);
+	color: var(--text-muted);
+	font-size: var(--text-xs);
+	font-weight: 600;
+}
+
+.production-work-order-summary > div:not(.production-work-order-heading)::before,
+.production-work-order-material-row > div:not(.production-work-order-material-name)::before {
 	content: attr(data-label);
 	display: block;
 	color: var(--text-muted);
+	font-size: var(--text-xs);
+}
+
+.production-work-order-output {
+	padding: 7px 12px;
+	border-top: 1px solid var(--border-color);
+	background: var(--subtle-fg);
+	color: var(--text-muted);
+	font-size: var(--text-xs);
+}
+
+.production-work-order-materials {
+	display: grid;
+	gap: 8px;
+	padding: 10px 12px 12px;
+	border-top: 1px solid var(--border-color);
+}
+
+.production-work-order-material-heading {
+	font-size: var(--text-sm);
+	font-weight: 600;
+}
+
+.production-work-order-material-list {
+	display: grid;
+	gap: 6px;
+}
+
+.production-work-order-material-row {
+	display: grid;
+	grid-template-columns: minmax(180px, 1.4fr) repeat(7, minmax(80px, 1fr));
+	align-items: center;
+	gap: 8px 12px;
+	padding: 8px 10px;
+	border-radius: var(--border-radius);
+	background: var(--subtle-fg);
+}
+
+.production-work-order-material-name {
+	display: grid;
+	gap: 2px;
+	min-width: 0;
+}
+
+.production-work-order-material-name span,
+.production-work-order-material-empty {
 	font-size: var(--text-xs);
 }
 
@@ -1076,7 +1140,7 @@
 }
 
 .production-material-table {
-	min-width: 1320px;
+	min-width: 1180px;
 	margin-bottom: 0;
 }
 
@@ -1090,6 +1154,11 @@
 	text-align: right;
 }
 
+.production-material-table td:nth-child(3),
+.production-material-table th:nth-child(3) {
+	text-align: left;
+}
+
 .production-material-table td:first-child {
 	min-width: 190px;
 }
@@ -1097,6 +1166,21 @@
 .production-material-table td small {
 	display: block;
 	color: var(--text-muted);
+}
+
+.production-material-sources {
+	display: grid;
+	gap: 3px;
+}
+
+.production-material-sources a {
+	display: grid;
+	gap: 1px;
+	text-decoration: none;
+}
+
+.production-material-sources small {
+	font-size: var(--text-xs);
 }
 
 .production-shared-material {
@@ -1214,11 +1298,13 @@
 		grid-template-columns: repeat(3, minmax(90px, 1fr));
 	}
 
-	.production-work-order-card {
+	.production-work-order-summary,
+	.production-work-order-material-row {
 		grid-template-columns: repeat(4, minmax(0, 1fr));
 	}
 
-	.production-work-order-heading {
+	.production-work-order-heading,
+	.production-work-order-material-name {
 		grid-column: 1 / -1;
 	}
 }
@@ -1490,8 +1576,14 @@
 		grid-template-columns: repeat(2, minmax(0, 1fr));
 	}
 
-	.production-work-order-card {
+	.production-work-order-summary,
+	.production-work-order-material-row {
 		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+
+	.production-work-order-summary,
+	.production-work-order-materials {
+		padding: 10px;
 	}
 
 	.production-material-table-wrap {
