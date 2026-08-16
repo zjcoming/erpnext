@@ -101,3 +101,171 @@ class TestProductionPlanGraph(UnitTestCase):
 		self.assertEqual(graph.work_orders_by_name["WO-LEAF"].bom_level, 2)
 		self.assertTrue(graph.work_orders_by_name["WO-FG"].is_finished_good)
 		self.assertIsInstance(graph.work_orders_by_name["WO-FG"], frappe._dict)
+
+
+class TestWorkOrderReadiness(UnitTestCase):
+	def _graph(self, *, plan_name, planned_date, creation, work_orders, required_items, sub_assemblies=None, active_bom_items=None):
+		from process_simplification.api.production_readiness import build_work_order_graph
+
+		return build_work_order_graph(
+			{
+				"name": plan_name,
+				"planned_date": planned_date,
+				"posting_date": "2026-08-16",
+				"creation": creation,
+			},
+			work_orders,
+			required_items,
+			sub_assemblies or [],
+			active_bom_items=active_bom_items or set(),
+		)
+
+	def test_only_deepest_work_order_is_ready_when_parent_waits_for_its_output(self):
+		from process_simplification.api.production_readiness import allocate_work_order_readiness
+
+		graph = self._graph(
+			plan_name="PP-001",
+			planned_date="2026-08-20",
+			creation="2026-08-01 09:00:00",
+			work_orders=[
+				{"name": "WO-FG", "production_item": "FG", "production_plan_item": "PPI-1", "status": "Not Started"},
+				{
+					"name": "WO-SA",
+					"production_item": "SA",
+					"production_plan_sub_assembly_item": "PPSA-1",
+					"status": "Not Started",
+				},
+			],
+			required_items=[
+				{
+					"parent": "WO-FG",
+					"item_code": "SA",
+					"source_warehouse": "Stores - TC",
+					"required_qty": 5,
+					"transferred_qty": 0,
+					"is_purchase_item": 1,
+				},
+				{
+					"parent": "WO-SA",
+					"item_code": "RM",
+					"source_warehouse": "Stores - TC",
+					"required_qty": 10,
+					"transferred_qty": 0,
+					"is_purchase_item": 1,
+				},
+			],
+			sub_assemblies=[
+				{
+					"name": "PPSA-1",
+					"production_item": "SA",
+					"parent_item_code": "FG",
+					"bom_level": 0,
+					"schedule_date": "2026-08-20",
+				}
+			],
+			active_bom_items={"FG", "SA"},
+		)
+
+		result = allocate_work_order_readiness(
+			[graph],
+			{
+				("RM", "Stores - TC"): {"available_qty": 10, "actual_qty": 10},
+				("SA", "Stores - TC"): {"available_qty": 0, "actual_qty": 0},
+			},
+		)[0]
+		by_name = result.work_orders_by_name
+
+		self.assertEqual(by_name["WO-SA"].readiness_status, "ready_now")
+		self.assertEqual(by_name["WO-FG"].readiness_status, "waiting_subassembly")
+		self.assertEqual(by_name["WO-FG"].required_items[0].supply_type, "manufactured")
+		self.assertEqual(by_name["WO-FG"].required_items[0].child_work_order, "WO-SA")
+
+	def test_earlier_plan_date_consumes_shared_raw_material_first(self):
+		from process_simplification.api.production_readiness import allocate_work_order_readiness
+
+		def plan(name, planned_date, creation):
+			return self._graph(
+				plan_name=f"PP-{name}",
+				planned_date=planned_date,
+				creation=creation,
+				work_orders=[{"name": f"WO-{name}", "production_item": f"FG-{name}", "production_plan_item": f"PPI-{name}", "status": "Not Started"}],
+				required_items=[
+					{
+						"parent": f"WO-{name}",
+						"item_code": "RM-SHARED",
+						"source_warehouse": "Stores - TC",
+						"required_qty": 7,
+						"transferred_qty": 0,
+						"is_purchase_item": 1,
+					}
+				],
+				active_bom_items={f"FG-{name}"},
+			)
+
+		late = plan("LATE", "2026-08-25", "2026-08-01 08:00:00")
+		early = plan("EARLY", "2026-08-20", "2026-08-02 08:00:00")
+		result = allocate_work_order_readiness(
+			[late, early],
+			{("RM-SHARED", "Stores - TC"): {"available_qty": 10, "actual_qty": 10}},
+		)
+		by_plan = {row.name: row for row in result}
+
+		self.assertEqual(by_plan["PP-EARLY"].work_orders_by_name["WO-EARLY"].readiness_status, "ready_now")
+		late_work_order = by_plan["PP-LATE"].work_orders_by_name["WO-LATE"]
+		self.assertEqual(late_work_order.readiness_status, "purchase_shortage")
+		self.assertEqual(late_work_order.required_items[0].available_qty, 3)
+		self.assertEqual(late_work_order.required_items[0].current_gap_qty, 4)
+
+	def test_manufactured_item_without_child_task_is_not_a_purchase_shortage(self):
+		from process_simplification.api.production_readiness import allocate_work_order_readiness
+
+		graph = self._graph(
+			plan_name="PP-001",
+			planned_date="2026-08-20",
+			creation="2026-08-01 09:00:00",
+			work_orders=[{"name": "WO-FG", "production_item": "FG", "production_plan_item": "PPI-1", "status": "Not Started"}],
+			required_items=[
+				{
+					"parent": "WO-FG",
+					"item_code": "SA-MISSING",
+					"source_warehouse": "Stores - TC",
+					"required_qty": 5,
+					"transferred_qty": 0,
+					"is_purchase_item": 1,
+				}
+			],
+			active_bom_items={"FG", "SA-MISSING"},
+		)
+
+		work_order = allocate_work_order_readiness(
+			[graph],
+			{("SA-MISSING", "Stores - TC"): {"available_qty": 0, "actual_qty": 0}},
+		)[0].work_orders_by_name["WO-FG"]
+
+		self.assertEqual(work_order.readiness_status, "production_task_missing")
+		self.assertEqual(work_order.required_items[0].supply_type, "manufactured")
+
+	def test_fully_transferred_direct_materials_do_not_consume_stock_again(self):
+		from process_simplification.api.production_readiness import allocate_work_order_readiness
+
+		graph = self._graph(
+			plan_name="PP-001",
+			planned_date="2026-08-20",
+			creation="2026-08-01 09:00:00",
+			work_orders=[{"name": "WO-FG", "production_item": "FG", "production_plan_item": "PPI-1", "status": "Not Started"}],
+			required_items=[
+				{
+					"parent": "WO-FG",
+					"item_code": "RM",
+					"source_warehouse": "Stores - TC",
+					"required_qty": 10,
+					"transferred_qty": 10,
+				}
+			],
+			active_bom_items={"FG"},
+		)
+
+		work_order = allocate_work_order_readiness([graph], {})[0].work_orders_by_name["WO-FG"]
+
+		self.assertEqual(work_order.readiness_status, "materials_transferred")
+		self.assertEqual(work_order.required_items[0].required_qty, 0)
