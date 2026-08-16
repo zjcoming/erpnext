@@ -45,10 +45,10 @@
   {
    "child": 0,
    "collapsible": 1,
-   "icon": "manufacturing",
+   "icon": "factory",
    "indent": 0,
    "keep_closed": 0,
-   "label": "生产工作台",
+   "label": "生产计划中心",
    "link_to": "production-workbench",
    "link_type": "Page",
    "show_arrow": 0,

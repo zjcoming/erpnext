@@ -7,3 +7,4 @@ process_simplification.patches.v0_0.fix_desktop_navigation
 
 [post_model_sync]
 process_simplification.patches.v0_0.add_production_workbench_navigation
+process_simplification.patches.v0_0.rename_production_workbench_to_plan_center

@@ -312,7 +312,7 @@ if (typeof module !== "undefined" && module.exports) {
 
 if (typeof frappe !== "undefined") {
 	frappe.pages["production-workbench"].on_page_load = function (wrapper) {
-		const page = frappe.ui.make_app_page({ parent: wrapper, title: __("生产工作台"), single_column: true });
+		const page = frappe.ui.make_app_page({ parent: wrapper, title: __("生产计划中心"), single_column: true });
 		page.main.html(`
 			<div class="process-simplification-page production-workbench">
 				<div class="production-kpis"></div>

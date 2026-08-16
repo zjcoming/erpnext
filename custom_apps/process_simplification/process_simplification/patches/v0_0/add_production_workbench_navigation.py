@@ -3,6 +3,10 @@ from __future__ import annotations
 import frappe
 
 
+PRODUCTION_CENTER_LABEL = "生产计划中心"
+PRODUCTION_CENTER_ICON = "factory"
+
+
 def _move_before(rows, row, before_link_to: str):
 	rows.remove(row)
 	before_index = next(
@@ -32,19 +36,19 @@ def _repair_sidebar():
 			"items",
 			{
 				"type": "Link",
-				"label": "生产工作台",
+				"label": PRODUCTION_CENTER_LABEL,
 				"link_type": "Page",
 				"link_to": "production-workbench",
-				"icon": "manufacturing",
+				"icon": PRODUCTION_CENTER_ICON,
 				"collapsible": 1,
 			},
 		)
 	else:
 		production.update(
 			{
-				"label": "生产工作台",
+				"label": PRODUCTION_CENTER_LABEL,
 				"link_type": "Page",
-				"icon": "manufacturing",
+				"icon": PRODUCTION_CENTER_ICON,
 			}
 		)
 	_move_before(sidebar.items, production, "shortage-purchase-planning")
@@ -71,7 +75,7 @@ def _repair_workspace():
 			"links",
 			{
 				"type": "Link",
-				"label": "生产工作台",
+				"label": PRODUCTION_CENTER_LABEL,
 				"link_type": "Page",
 				"link_to": "production-workbench",
 				"onboard": 1,
@@ -80,7 +84,7 @@ def _repair_workspace():
 	else:
 		production.update(
 			{
-				"label": "生产工作台",
+				"label": PRODUCTION_CENTER_LABEL,
 				"link_type": "Page",
 				"onboard": 1,
 			}
@@ -92,7 +96,7 @@ def _repair_workspace():
 def _repair_page_titles():
 	for page_name, title in {
 		"order-workbench": "订单工作台",
-		"production-workbench": "生产工作台",
+		"production-workbench": PRODUCTION_CENTER_LABEL,
 	}.items():
 		if frappe.db.exists("Page", page_name):
 			frappe.db.set_value("Page", page_name, "title", title, update_modified=False)
