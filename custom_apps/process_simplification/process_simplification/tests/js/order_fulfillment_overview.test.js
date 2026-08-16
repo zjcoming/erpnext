@@ -162,6 +162,23 @@ test("expanded product rows explain stock coverage and production demand", () =>
 	}
 });
 
+test("expanded product rows link their Production Plans and priority dates", () => {
+	const plannedOrder = order("SO-PLANNED");
+	plannedOrder.rows[0].production_plans = [
+		{
+			name: "PP-001",
+			planned_date: "2026-08-20 08:00:00",
+			work_order_count: 2,
+			summary: { ready_work_order_count: 1 },
+		},
+	];
+	const html = orderOverviewHtml(plannedOrder, helpers);
+
+	assert.match(html, /\/app\/production-plan\/PP-001/);
+	assert.match(html, /计划优先日期/);
+	assert.match(html, /2 个工单/);
+});
+
 test("order HTML shows the multiple delivery dates badge", () => {
 	const html = orderOverviewHtml(order("SO-MULTI", { has_multiple_delivery_dates: true }), helpers);
 

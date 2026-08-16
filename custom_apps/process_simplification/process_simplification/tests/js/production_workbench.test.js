@@ -203,10 +203,37 @@ test("production status meta uses colors for the actual production state", () =>
 	assert.deepEqual(productionWorkbench.productionStatusMeta("partially_completed"), { indicator: "blue" });
 	assert.deepEqual(productionWorkbench.productionStatusMeta("unplanned"), { indicator: "orange" });
 	assert.deepEqual(productionWorkbench.productionStatusMeta("material_shortage"), { indicator: "red" });
+	assert.deepEqual(productionWorkbench.productionStatusMeta("awaiting_supply"), { indicator: "blue" });
+	assert.deepEqual(productionWorkbench.productionStatusMeta("waiting_subassembly"), { indicator: "blue" });
 	assert.deepEqual(productionWorkbench.productionStatusMeta("master_data_blocked"), { indicator: "red" });
 	assert.deepEqual(productionWorkbench.productionStatusMeta("awaiting_order_reservation"), { indicator: "gray" });
 	assert.deepEqual(productionWorkbench.productionStatusMeta("overplanned"), { indicator: "gray" });
 	assert.deepEqual(productionWorkbench.productionStatusMeta("unknown"), { indicator: "gray" });
+});
+
+test("planned demand HTML shows Production Plan priority and Work Order readiness", () => {
+	const html = productionWorkbench.productionDemandHtml(
+		demand("PLANNED", {
+			production_plans: [
+				{
+					name: "PP-001",
+					planned_date: "2026-08-20 08:00:00",
+					summary: { ready_work_order_count: 1, waiting_subassembly_count: 1 },
+				},
+			],
+			work_orders: [
+				{ name: "WO-SA", production_item: "SA", readiness_status: "ready_now", required_items: [] },
+				{ name: "WO-FG", production_item: "FG", readiness_status: "waiting_subassembly", required_items: [] },
+			],
+		}),
+		helpers
+	);
+
+	assert.match(html, /\/app\/production-plan\/PP-001/);
+	assert.match(html, /计划优先日期/);
+	assert.match(html, /当前可开工/);
+	assert.match(html, /等待半成品/);
+	assert.match(html, /工单直接用料/);
 });
 
 test("overdue ready demand keeps delivery risk red and production state green", () => {
@@ -250,7 +277,7 @@ test("material rows show linked purchase documents and status, or a no-purchase 
 	assert.match(html, /To Receive/);
 	assert.match(html, /未完成 10\.00 · 已分配给本单 4\.00/);
 	// The late Purchase Order is still shown and flagged.
-	assert.match(html, /晚于本单交期/);
+	assert.match(html, /晚于计划日期/);
 
 	// A material with no supply documents shows the no-purchase hint.
 	const noDocs = demand("NODOC");
@@ -277,7 +304,7 @@ test("material-ready rows hide unallocated supply documents and their late marke
 	);
 
 	assert.doesNotMatch(html, /PORD-UNALLOCATED/);
-	assert.doesNotMatch(html, /晚于本单交期/);
+	assert.doesNotMatch(html, /晚于计划日期/);
 	assert.doesNotMatch(html, /尚未发起采购/);
 });
 
@@ -301,7 +328,7 @@ test("current material gaps retain unallocated documents with allocation and dea
 
 	assert.match(html, /PORD-GAP/);
 	assert.match(html, /未分配给本单/);
-	assert.match(html, /晚于本单交期/);
+	assert.match(html, /晚于计划日期/);
 });
 
 test("allocated supply documents keep total outstanding quantity and identify their allocation", () => {

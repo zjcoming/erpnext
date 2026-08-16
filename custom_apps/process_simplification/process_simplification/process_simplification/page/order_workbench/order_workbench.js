@@ -153,10 +153,17 @@ function orderOverviewHtml(order, helpers) {
 			)
 			.join(" ");
 	const itemRows = (order.rows || [])
-		.map(
-			(row) => `
+		.map((row) => {
+			const productionPlans = (row.production_plans || []).length
+				? `<div class="fulfillment-production-plans">${(row.production_plans || [])
+						.map(
+							(plan) => `<a href="/app/production-plan/${encodeURIComponent(plan.name || "")}"><strong>${esc(plan.name || "")}</strong></a> · ${esc(t("计划优先日期"))} ${esc(date(plan.planned_date)) || esc(t("未设置"))} · ${Number(plan.work_order_count || 0)} ${esc(t("个工单"))}`
+						)
+						.join("<br>")}</div>`
+				: `<div class="text-muted fulfillment-production-plans">${esc(t("未关联生产计划"))}</div>`;
+			return `
 				<tr class="${row.unsupported ? "text-muted" : ""}">
-					<td data-label="${esc(t("产品"))}"><a href="/app/item/${encodeURIComponent(row.item_code || "")}">${esc(row.item_code || "")}</a><br><small>${esc(row.item_name || "")}</small></td>
+					<td data-label="${esc(t("产品"))}"><a href="/app/item/${encodeURIComponent(row.item_code || "")}">${esc(row.item_code || "")}</a><br><small>${esc(row.item_name || "")}</small>${productionPlans}</td>
 					<td data-label="${esc(t("交期"))}">${esc(date(row.delivery_date)) || esc(t("未设置"))}</td>
 					<td class="fulfillment-number" data-label="${esc(t("待交"))}">${number(row.pending_qty)}</td>
 					<td class="fulfillment-number" data-label="${esc(t("有效预留"))}">${number(row.reserved_qty)}</td>
@@ -167,8 +174,8 @@ function orderOverviewHtml(order, helpers) {
 					<td class="fulfillment-number" data-label="${esc(t("未安排"))}">${number(row.unplanned_production_qty ?? row.uncovered_qty)}</td>
 					<td data-label="${esc(t("状态"))}"><span class="indicator-pill gray">${esc(row.status || "")}</span>${row.unsupported_reason ? `<br><small>${esc(row.unsupported_reason)}</small>` : ""}</td>
 					<td class="fulfillment-item-actions" data-label="${esc(t("下一步"))}">${actions(row)}</td>
-				</tr>`
-		)
+				</tr>`;
+		})
 		.join("");
 	const statusLabel = order.status_label || "";
 	const riskLabel = order.risk_label || "";

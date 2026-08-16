@@ -8,9 +8,26 @@ function productionMaterialStatusMeta(status, translate = (message) => message) 
 		awaiting_purchase_receipt: { label: translate("待采购到货"), indicator: "blue" },
 		purchase_request_pending: { label: translate("已提采购申请"), indicator: "orange" },
 		new_purchase_required: { label: translate("需新采购"), indicator: "red" },
+		waiting_subassembly: { label: translate("等待半成品"), indicator: "blue" },
 		cannot_calculate: { label: translate("无法判断"), indicator: "gray" },
 	};
 	return statusCopy[status] || statusCopy.cannot_calculate;
+}
+
+function workOrderReadinessMeta(status, translate = (message) => message) {
+	const statuses = {
+		ready_now: { label: translate("当前可开工"), indicator: "green" },
+		waiting_subassembly: { label: translate("等待半成品"), indicator: "blue" },
+		awaiting_purchase_receipt: { label: translate("等待采购到货"), indicator: "blue" },
+		purchase_request_pending: { label: translate("等待采购下单"), indicator: "orange" },
+		purchase_shortage: { label: translate("缺底层原材料"), indicator: "red" },
+		production_task_missing: { label: translate("缺少下级生产任务"), indicator: "red" },
+		materials_transferred: { label: translate("已发料"), indicator: "green" },
+		in_progress: { label: translate("生产中"), indicator: "blue" },
+		completed: { label: translate("已完成"), indicator: "green" },
+		blocked: { label: translate("已阻塞"), indicator: "red" },
+	};
+	return statuses[status] || { label: translate("待判断"), indicator: "gray" };
 }
 
 function productionStatusMeta(status) {
@@ -20,6 +37,8 @@ function productionStatusMeta(status) {
 		partially_completed: { indicator: "blue" },
 		unplanned: { indicator: "orange" },
 		material_shortage: { indicator: "red" },
+		awaiting_supply: { indicator: "blue" },
+		waiting_subassembly: { indicator: "blue" },
 		master_data_blocked: { indicator: "red" },
 		awaiting_order_reservation: { indicator: "gray" },
 		overplanned: { indicator: "gray" },
@@ -158,12 +177,26 @@ function productionDemandHtml(demand, helpers) {
 				`<button class="btn btn-sm btn-default production-action" data-action="${esc(row.action)}" data-sales-order="${esc(demand.sales_order)}" data-row="${esc(demand.sales_order_item)}" ${row.enabled === false ? "disabled" : ""}>${esc(t(row.label))}</button>`
 		)
 		.join(" ");
+	const productionPlans = (demand.production_plans || []).length
+		? (demand.production_plans || [])
+				.map(
+					(plan) => `<div class="production-plan-card">
+						<a href="/app/production-plan/${encodeURIComponent(plan.name || "")}"><strong>${esc(plan.name || "")}</strong></a>
+						<span>${esc(t("计划优先日期"))}: ${esc(date(plan.planned_date)) || esc(t("未设置"))}</span>
+						<span>${esc(t("可开工工单"))}: ${number(plan.summary?.ready_work_order_count)}</span>
+						<span>${esc(t("等待半成品"))}: ${number(plan.summary?.waiting_subassembly_count)}</span>
+					</div>`
+				)
+				.join("")
+		: `<div class="text-muted production-empty-section">${esc(t("尚未关联生产计划。"))}</div>`;
 	const workOrders = (demand.work_orders || []).length
 		? (demand.work_orders || [])
-				.map(
-					(row) => `
+				.map((row) => {
+					const readiness = workOrderReadinessMeta(row.readiness_status, t);
+					return `
 						<div class="production-work-order-card">
-							<div class="production-work-order-heading"><a href="/app/work-order/${encodeURIComponent(row.name || "")}"><strong>${esc(row.name || "")}</strong></a><span class="indicator-pill gray">${esc(t(row.status || ""))}</span></div>
+							<div class="production-work-order-heading"><a href="/app/work-order/${encodeURIComponent(row.name || "")}"><strong>${esc(row.name || "")}</strong></a><span class="indicator-pill ${esc(readiness.indicator)}">${esc(readiness.label)}</span></div>
+							<div data-label="${esc(t("生产物料"))}">${esc(row.production_item || "")}</div>
 							<div data-label="${esc(t("计划数量"))}">${number(row.qty)}</div>
 							<div data-label="${esc(t("已生产"))}">${number(row.produced_qty)}</div>
 							<div data-label="${esc(t("剩余"))}">${number(Math.max(Number(row.qty || 0) - Number(row.produced_qty || 0), 0))}</div>
@@ -171,8 +204,8 @@ function productionDemandHtml(demand, helpers) {
 							<div data-label="${esc(t("原料仓"))}">${esc(row.source_warehouse || t("未设置"))}</div>
 							<div data-label="${esc(t("在制仓"))}">${esc(row.wip_warehouse || t("未设置"))}</div>
 							<div data-label="${esc(t("成品仓"))}">${esc(row.fg_warehouse || t("未设置"))}</div>
-						</div>`
-				)
+						</div>`;
+				})
 				.join("")
 		: `<div class="text-muted production-empty-section">${esc(t("尚未创建生产任务。"))}</div>`;
 	const materials = (demand.materials || []).length
@@ -191,7 +224,7 @@ function productionDemandHtml(demand, helpers) {
 								? `<tr class="production-supply-docs"><td colspan="11" data-label="${esc(t("采购单据"))}"><div class="production-supply-doc-list">${docs
 									.map((doc) => {
 										const typeLabel = doc.doctype === "Material Request" ? t("采购申请") : t("采购单");
-										const lateTag = doc.is_late ? ` · <span class="indicator-pill red">${esc(t("晚于本单交期"))}</span>` : "";
+										const lateTag = doc.is_late ? ` · <span class="indicator-pill red">${esc(t("晚于计划日期"))}</span>` : "";
 										const allocation = Number(doc.allocated_qty || 0) > 0
 											? ` · ${esc(t("已分配给本单"))} ${number(doc.allocated_qty)}`
 											: ` · ${esc(t("未分配给本单"))}`;
@@ -201,9 +234,9 @@ function productionDemandHtml(demand, helpers) {
 								: "";
 							return `
 								<tr>
-									<td data-label="${esc(t("物料"))}"><strong>${esc(row.item_code || "")}</strong><br><small>${esc(row.item_name || "")} · ${esc(row.warehouse || t("未设置仓库"))}${row.is_shared ? ` · <span class="production-shared-material">${esc(t("共享物料"))}</span>` : ""}</small></td>
-									<td data-label="${esc(t("本需求"))}">${number(row.source_required_qty)}</td>
-									<td data-label="${esc(t("全部需求"))}">${number(row.total_required_qty)}</td>
+									<td data-label="${esc(t("物料"))}"><strong>${esc(row.item_code || "")}</strong><br><small>${esc(row.item_name || "")} · ${esc(row.warehouse || row.source_warehouse || t("未设置仓库"))}${row.is_shared ? ` · <span class="production-shared-material">${esc(t("共享物料"))}</span>` : ""}${row.supply_type === "manufactured" ? ` · <span class="production-shared-material">${esc(t("生产件"))}</span>` : ` · ${esc(t("采购件"))}`}</small></td>
+									<td data-label="${esc(t("本需求"))}">${number(row.source_required_qty ?? row.required_qty)}</td>
+									<td data-label="${esc(t("全部需求"))}">${number(row.total_required_qty ?? row.required_qty)}</td>
 									<td data-label="${esc(t("仓库库存"))}">${number(row.actual_qty)}</td>
 									<td data-label="${esc(t("已占用"))}">${number(row.committed_qty)}</td>
 									<td data-label="${esc(t("本次可用"))}">${number(row.available_qty)}</td>
@@ -235,8 +268,9 @@ function productionDemandHtml(demand, helpers) {
 				<section><h5>${esc(t("数量关系"))}</h5><div class="production-quantity-grid">${quantityFacts
 					.map(([label, value]) => `<div data-label="${esc(label)}"><span>${esc(label)}</span><strong>${number(value)}</strong></div>`)
 					.join("")}</div></section>
+				<section><h5>${esc(t("关联生产计划"))}</h5><p class="text-muted">${esc(t("现货与在途供应统一按 Production Plan 的计划日期优先分配。"))}</p><div class="production-plan-list">${productionPlans}</div></section>
 				<section><h5>${esc(t("关联生产任务"))}</h5><div class="production-work-order-list">${workOrders}</div></section>
-				<section><h5>${esc(t("BOM 物料风险"))}</h5><p class="text-muted">${esc(t("共享物料按当前全部生产需求汇总，采购动作会再次复核。"))}</p>${materials}</section>
+				<section><h5>${esc(t("工单直接用料"))}</h5><p class="text-muted">${esc(t("半成品由下级工单生产；只有底层采购件会进入采购缺口。采购动作提交前会再次复核。"))}</p>${materials}</section>
 			</div>
 		</details>`;
 }
@@ -254,6 +288,7 @@ function refreshProductionOverview(page, demandKey) {
 const productionWorkbenchApi = {
 	filterProductionDemands,
 	productionMaterialStatusMeta,
+	workOrderReadinessMeta,
 	productionStatusMeta,
 	productionSummary,
 	workbenchPaginationHtml: workbenchPaginationHtmlSafe,
@@ -274,7 +309,7 @@ if (typeof frappe !== "undefined") {
 				<div class="production-filter-bar">
 					<input class="form-control production-search" data-filter="search" placeholder="${__("搜索订单、客户、产品或生产任务")}">
 					<select class="form-control" data-filter="deliveryWindow"><option value="">${__("全部交期")}</option><option value="overdue">${__("已逾期")}</option><option value="today">${__("今日交期")}</option><option value="within_7_days">${__("7 天内交期")}</option><option value="later">${__("稍后交期")}</option><option value="missing">${__("缺少交期")}</option></select>
-					<select class="form-control" data-filter="status"><option value="">${__("全部状态")}</option><option value="master_data_blocked">${__("基础资料异常")}</option><option value="unplanned">${__("待安排")}</option><option value="material_shortage">${__("缺料")}</option><option value="ready_to_start">${__("可开工")}</option><option value="in_production">${__("生产中")}</option><option value="partially_completed">${__("部分完工")}</option><option value="awaiting_order_reservation">${__("待回补订单")}</option><option value="overplanned">${__("超计划生产")}</option></select>
+					<select class="form-control" data-filter="status"><option value="">${__("全部状态")}</option><option value="master_data_blocked">${__("基础资料异常")}</option><option value="unplanned">${__("待安排")}</option><option value="material_shortage">${__("缺底层原材料")}</option><option value="awaiting_supply">${__("等待到料")}</option><option value="waiting_subassembly">${__("等待半成品")}</option><option value="ready_to_start">${__("可开工")}</option><option value="in_production">${__("生产中")}</option><option value="partially_completed">${__("部分完工")}</option><option value="awaiting_order_reservation">${__("待回补订单")}</option><option value="overplanned">${__("超计划生产")}</option></select>
 					<select class="form-control" data-filter="risk"><option value="">${__("全部风险")}</option><option value="red">${__("高风险")}</option><option value="orange">${__("需关注")}</option><option value="blue">${__("处理中")}</option><option value="green">${__("正常")}</option></select>
 					<select class="form-control" data-filter="customer"><option value="">${__("全部客户")}</option></select>
 					<label><input type="checkbox" data-filter="shortageOnly"> ${__("只看缺料")}</label>
@@ -282,7 +317,7 @@ if (typeof frappe !== "undefined") {
 					<label><input type="checkbox" data-filter="showOther"> ${__("其他生产")}</label>
 				</div>
 				<div class="production-update-time text-muted"></div>
-				<p class="text-muted production-sort-note">${__("默认排序：订单交期、风险、未安排数量、订单创建时间。")}</p>
+				<p class="text-muted production-sort-note">${__("生产物料竞争优先级：Production Plan 计划日期；页面展示仍按订单交期和风险排序。")}</p>
 				<div class="production-demand-list"></div>
 				<div class="production-pagination"></div>
 				<div class="production-other-section"></div>

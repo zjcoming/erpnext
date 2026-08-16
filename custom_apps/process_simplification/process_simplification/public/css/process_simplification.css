@@ -772,6 +772,12 @@
 	min-width: 180px;
 }
 
+.fulfillment-production-plans {
+	margin-top: 6px;
+	font-size: var(--text-xs);
+	line-height: 1.6;
+}
+
 .fulfillment-empty {
 	padding: 28px;
 	border: 1px dashed var(--border-color);
@@ -1018,9 +1024,29 @@
 	gap: 8px;
 }
 
+.production-plan-list {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+	gap: 8px;
+}
+
+.production-plan-card {
+	display: grid;
+	gap: 4px;
+	padding: 10px 12px;
+	border: 1px solid var(--border-color);
+	border-radius: var(--border-radius);
+	background: var(--subtle-fg);
+}
+
+.production-plan-card span {
+	color: var(--text-muted);
+	font-size: var(--text-xs);
+}
+
 .production-work-order-card {
 	display: grid;
-	grid-template-columns: minmax(180px, 1.4fr) repeat(6, minmax(90px, 1fr));
+	grid-template-columns: minmax(180px, 1.4fr) repeat(8, minmax(90px, 1fr));
 	align-items: center;
 	gap: 8px 12px;
 	padding: 10px 12px;
