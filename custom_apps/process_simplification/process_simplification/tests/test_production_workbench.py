@@ -137,6 +137,63 @@ class TestProductionWorkbench(UnitTestCase):
 		self.assertEqual(demand["unplanned_production_qty"], 50)
 		self.assertEqual(demand["sales_order_item"], "SOI-001")
 
+	def test_plan_readiness_replaces_finished_good_bom_shortage_with_executable_work_order_state(self):
+		production = self._module()
+		demand = production.build_production_demand(
+			self._order(),
+			self._row(unplanned_production_qty=0, active_work_order_qty=50),
+			work_orders=[],
+			today="2026-08-02",
+		)
+		readiness = {
+			"SOI-001": [
+				{
+					"name": "PP-001",
+					"planned_date": "2026-08-05 08:00:00",
+					"summary": {"ready_work_order_count": 1, "waiting_subassembly_count": 1},
+					"work_orders": [
+						{
+							"name": "WO-SA",
+							"production_item": "SA",
+							"readiness_status": "ready_now",
+							"required_items": [
+								{
+									"item_code": "RM",
+									"source_warehouse": "Stores - TC",
+									"required_qty": 10,
+									"current_gap_qty": 0,
+									"supply_type": "purchased",
+								}
+							],
+						},
+						{
+							"name": "WO-FG",
+							"production_item": "FG-001",
+							"readiness_status": "waiting_subassembly",
+							"required_items": [
+								{
+									"item_code": "SA",
+									"source_warehouse": "Stores - TC",
+									"required_qty": 5,
+									"current_gap_qty": 5,
+									"supply_type": "manufactured",
+									"child_work_order": "WO-SA",
+								}
+							],
+						},
+					],
+				}
+			]
+		}
+
+		result = production.attach_production_plan_readiness([demand], readiness)[0]
+
+		self.assertEqual(result["status_code"], "ready_to_start")
+		self.assertEqual(result["production_plans"][0]["name"], "PP-001")
+		self.assertEqual([row["name"] for row in result["work_orders"]], ["WO-SA", "WO-FG"])
+		self.assertEqual(result["material_summary"]["shortage_item_count"], 0)
+		self.assertEqual(result["materials"][1]["supply_type"], "manufactured")
+
 	def test_stock_only_row_is_excluded_from_production_overview(self):
 		production = self._module()
 		self.assertTrue(hasattr(production, "build_production_demand"))

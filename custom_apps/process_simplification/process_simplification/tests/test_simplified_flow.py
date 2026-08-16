@@ -9,6 +9,33 @@ from process_simplification.api.workbench import _remaining_reserved_qty, get_ac
 
 
 class TestSimplifiedFlow(UnitTestCase):
+	def test_order_workbench_rows_are_linked_to_production_plan_summaries(self):
+		from process_simplification.api.workbench import attach_production_plan_summaries
+
+		orders = [
+			{
+				"name": "SO-001",
+				"rows": [{"sales_order_item": "SOI-001"}],
+			}
+		]
+		readiness = {
+			"SOI-001": [
+				{
+					"name": "PP-001",
+					"planned_date": "2026-08-20 08:00:00",
+					"status": "In Process",
+					"summary": {"ready_work_order_count": 1, "total_work_order_count": 2},
+					"work_orders": [{"name": "WO-SA"}, {"name": "WO-FG"}],
+				}
+			]
+		}
+
+		result = attach_production_plan_summaries(orders, readiness)
+
+		self.assertEqual(result[0]["production_plans"][0]["name"], "PP-001")
+		self.assertEqual(result[0]["rows"][0]["production_plans"][0]["work_order_count"], 2)
+		self.assertNotIn("work_orders", result[0]["production_plans"][0])
+
 	def test_production_quantities_do_not_duplicate_available_finished_stock(self):
 		from process_simplification.api import workbench
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from copy import deepcopy
 from dataclasses import dataclass
 from math import ceil
 
@@ -539,6 +540,30 @@ def fulfillment_customers(orders):
 	return [{"value": value, "label": label} for value, label in sorted(customers.items(), key=lambda row: row[1])]
 
 
+def attach_production_plan_summaries(orders, readiness_by_sales_order_item):
+	result = deepcopy(list(orders or []))
+	for order in result:
+		plans_by_name = {}
+		for row in order.get("rows") or []:
+			row_plans = []
+			for plan in readiness_by_sales_order_item.get(row.get("sales_order_item")) or []:
+				summary = {
+					"name": plan.get("name"),
+					"planned_date": plan.get("planned_date"),
+					"status": plan.get("status"),
+					"summary": deepcopy(plan.get("summary") or {}),
+					"work_order_count": len(plan.get("work_orders") or []),
+				}
+				row_plans.append(summary)
+				plans_by_name[summary["name"]] = summary
+			row["production_plans"] = row_plans
+		order["production_plans"] = sorted(
+			plans_by_name.values(),
+			key=lambda plan: (str(plan.get("planned_date") or "9999-12-31"), plan.get("name") or ""),
+		)
+	return result
+
+
 @frappe.whitelist()
 def get_fulfillment_overview(page=1, page_size=DEFAULT_WORKBENCH_PAGE_SIZE, filters=None):
 	"""Return readable unfinished Sales Orders recalculated through the item workbench."""
@@ -574,7 +599,24 @@ def get_fulfillment_overview(page=1, page_size=DEFAULT_WORKBENCH_PAGE_SIZE, filt
 		fulfillment_orders.append((order, fulfillment_order))
 
 	fulfillment_orders.sort(key=lambda result: _fulfillment_sort_key(*result))
-	filtered_results = filter_fulfillment_orders([result for _, result in fulfillment_orders], filters)
+	all_results = [result for _, result in fulfillment_orders]
+	from process_simplification.api.production_readiness import get_production_plan_readiness
+
+	readiness = {}
+	rows_by_company = defaultdict(list)
+	for result in all_results:
+		for row in result.get("rows") or []:
+			if result.get("company") and row.get("sales_order_item"):
+				rows_by_company[result.get("company")].append(row.get("sales_order_item"))
+	for company, sales_order_items in rows_by_company.items():
+		readiness.update(
+			get_production_plan_readiness(
+				company=company,
+				sales_order_items=sales_order_items,
+			)
+		)
+	all_results = attach_production_plan_summaries(all_results, readiness)
+	filtered_results = filter_fulfillment_orders(all_results, filters)
 	paged_results, pagination = paginate_workbench_rows(filtered_results, page=page, page_size=page_size)
 	return {
 		"checked_at": checked_at,

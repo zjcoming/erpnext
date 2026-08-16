@@ -5,6 +5,7 @@ from copy import deepcopy
 import frappe
 from frappe.utils import flt, getdate, now_datetime
 
+from process_simplification.api.production_readiness import get_production_plan_readiness
 from process_simplification.api.setup import get_default_bom
 from process_simplification.api.shortage import (
 	MaterialCoverageBomExpansionError,
@@ -24,6 +25,7 @@ STATUS_LABELS = {
 	"master_data_blocked": "基础资料异常",
 	"unplanned": "待安排",
 	"material_shortage": "缺料",
+	"waiting_subassembly": "等待半成品",
 	"ready_to_start": "可开工",
 	"in_production": "生产中",
 	"partially_completed": "部分完工",
@@ -322,6 +324,74 @@ def attach_material_coverage(demands, coverage):
 	return result
 
 
+def attach_production_plan_readiness(demands, readiness_by_sales_order_item):
+	"""Attach direct Work Order material state without exploding finished-good BOMs."""
+	result = [frappe._dict(deepcopy(dict(demand))) for demand in demands or []]
+	for demand in result:
+		plans = readiness_by_sales_order_item.get(demand.get("sales_order_item")) or []
+		if not plans:
+			continue
+		demand.production_plans = deepcopy(plans)
+		demand.work_orders = [
+			deepcopy(work_order)
+			for plan in plans
+			for work_order in plan.get("work_orders") or []
+		]
+		demand.materials = [
+			{
+				**deepcopy(dict(item)),
+				"work_order": work_order.get("name"),
+				"production_item": work_order.get("production_item"),
+				"production_plan": plan.get("name"),
+				"planned_date": plan.get("planned_date"),
+			}
+			for plan in plans
+			for work_order in plan.get("work_orders") or []
+			for item in work_order.get("required_items") or []
+		]
+
+		statuses = {row.get("readiness_status") for row in demand.work_orders}
+		purchased_shortages = [
+			row
+			for row in demand.materials
+			if row.get("supply_type") == "purchased" and _positive(row, "current_gap_qty") > 0
+		]
+		blocked = [
+			row for row in demand.work_orders if row.get("readiness_status") in {"blocked", "production_task_missing"}
+		]
+		demand.material_summary = {
+			"status_code": "blocked"
+			if blocked
+			else "shortage"
+			if purchased_shortages
+			else "waiting_subassembly"
+			if "waiting_subassembly" in statuses and "ready_now" not in statuses
+			else "ready",
+			"material_count": len(demand.materials),
+			"shortage_item_count": len(purchased_shortages),
+			"blocked_item_count": len(blocked),
+			"awaiting_supply_item_count": 0,
+		}
+
+		if demand.get("status_code") not in {"in_production", "partially_completed"}:
+			if "in_progress" in statuses:
+				demand.status_code = "in_production"
+			elif "ready_now" in statuses:
+				demand.status_code = "ready_to_start"
+			elif purchased_shortages:
+				demand.status_code = "material_shortage"
+			elif blocked:
+				demand.status_code = "master_data_blocked"
+			elif "waiting_subassembly" in statuses:
+				demand.status_code = "waiting_subassembly"
+		demand.status_label = STATUS_LABELS[demand.status_code]
+		risk = _risk_for_demand(demand.delivery_timing, demand.status_code)
+		demand.risk_level, demand.risk_score, demand.risk_label = risk
+		if purchased_shortages:
+			_unique_action(demand.next_actions, "处理缺料", "handle_shortage")
+	return result
+
+
 def attach_priority_material_coverage(demands, company):
 	"""Attach per-demand material coverage after earlier demands consume shared stock."""
 	ordered = [frappe._dict(deepcopy(dict(demand))) for demand in demands or []]
@@ -594,17 +664,34 @@ def get_production_overview(page=1, page_size=DEFAULT_WORKBENCH_PAGE_SIZE, filte
 		by_company.setdefault(demand.get("company"), []).append(demand)
 	covered_demands = []
 	for company, company_demands in by_company.items():
-		if not _material_demands(company_demands) or not company:
-			covered_demands.extend(company_demands)
+		readiness = (
+			get_production_plan_readiness(
+				company=company,
+				sales_order_items=[row.get("sales_order_item") for row in company_demands],
+			)
+			if company
+			else {}
+		)
+		planned_demands = [
+			row for row in company_demands if readiness.get(row.get("sales_order_item"))
+		]
+		legacy_demands = [
+			row for row in company_demands if not readiness.get(row.get("sales_order_item"))
+		]
+		covered_demands.extend(attach_production_plan_readiness(planned_demands, readiness))
+		if not legacy_demands:
+			continue
+		if not _material_demands(legacy_demands) or not company:
+			covered_demands.extend(legacy_demands)
 			continue
 		try:
-			covered_demands.extend(attach_priority_material_coverage(company_demands, company))
+			covered_demands.extend(attach_priority_material_coverage(legacy_demands, company))
 		except MaterialCoverageBomExpansionError:
-			for demand in company_demands:
+			for demand in legacy_demands:
 				demand["status_code"] = "master_data_blocked"
 				demand["status_label"] = STATUS_LABELS["master_data_blocked"]
 				demand["material_summary"]["status_code"] = "blocked"
-			covered_demands.extend(company_demands)
+			covered_demands.extend(legacy_demands)
 
 	covered_demands.sort(key=production_sort_key)
 	filtered_demands = filter_production_demands(covered_demands, filters)

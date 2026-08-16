@@ -194,3 +194,254 @@ def allocate_work_order_readiness(plans, stock_snapshots):
 			work_order.readiness_status = _work_order_readiness_status(work_order)
 		plan.summary = summarize_plan(plan)
 	return result
+
+
+def _earliest_plan_date(plan, plan_items, sub_assemblies):
+	dates = [
+		str(row.get("planned_start_date"))
+		for row in plan_items
+		if row.get("planned_start_date")
+	]
+	if not dates:
+		dates = [
+			str(row.get("schedule_date"))
+			for row in sub_assemblies
+			if row.get("schedule_date")
+		]
+	return min(dates) if dates else str(plan.get("posting_date") or "")
+
+
+def _serialize_readiness_plan(plan):
+	return {
+		"name": plan.get("name"),
+		"company": plan.get("company"),
+		"planned_date": plan.get("planned_date"),
+		"posting_date": plan.get("posting_date"),
+		"status": plan.get("status"),
+		"summary": plan.get("summary"),
+		"work_orders": [
+			plan.work_orders_by_name[name]
+			for name in plan.get("execution_order") or []
+		],
+	}
+
+
+def get_production_plan_readiness(company=None, sales_order_items=None):
+	"""Return Work Order readiness grouped by Sales Order Item.
+
+	Stock is allocated globally across the selected plans in Production Plan date
+	order. Required items are the direct Work Order requirements, so a manufactured
+	item remains a subassembly dependency even when the Item is also purchasable.
+	"""
+	work_order_filters = {
+		"docstatus": 1,
+		"production_plan": ["!=", ""],
+	}
+	if company:
+		work_order_filters["company"] = company
+	if sales_order_items:
+		work_order_filters["sales_order_item"] = ["in", list(set(sales_order_items))]
+
+	work_orders = frappe.get_all(
+		"Work Order",
+		filters=work_order_filters,
+		fields=[
+			"name",
+			"production_item",
+			"production_plan",
+			"production_plan_item",
+			"production_plan_sub_assembly_item",
+			"sales_order",
+			"sales_order_item",
+			"company",
+			"status",
+			"qty",
+			"produced_qty",
+			"process_loss_qty",
+			"material_transferred_for_manufacturing",
+			"source_warehouse",
+			"wip_warehouse",
+			"fg_warehouse",
+			"planned_start_date",
+			"expected_delivery_date",
+			"creation",
+		],
+	)
+	if not work_orders:
+		return {}
+
+	plan_names = sorted({row.get("production_plan") for row in work_orders if row.get("production_plan")})
+	if sales_order_items:
+		all_plan_work_order_filters = {
+			"docstatus": 1,
+			"production_plan": ["in", plan_names],
+		}
+		if company:
+			all_plan_work_order_filters["company"] = company
+		work_orders = frappe.get_all(
+			"Work Order",
+			filters=all_plan_work_order_filters,
+			fields=[
+				"name",
+				"production_item",
+				"production_plan",
+				"production_plan_item",
+				"production_plan_sub_assembly_item",
+				"sales_order",
+				"sales_order_item",
+				"company",
+				"status",
+				"qty",
+				"produced_qty",
+				"process_loss_qty",
+				"material_transferred_for_manufacturing",
+				"source_warehouse",
+				"wip_warehouse",
+				"fg_warehouse",
+				"planned_start_date",
+				"expected_delivery_date",
+				"creation",
+			],
+		)
+	work_order_names = [row.get("name") for row in work_orders]
+	required_items = frappe.get_all(
+		"Work Order Item",
+		filters={"parent": ["in", work_order_names]},
+		fields=[
+			"parent",
+			"item_code",
+			"item_name",
+			"stock_uom",
+			"source_warehouse",
+			"required_qty",
+			"transferred_qty",
+			"consumed_qty",
+			"stock_reserved_qty",
+		],
+	)
+	plans = frappe.get_all(
+		"Production Plan",
+		filters={"name": ["in", plan_names]},
+		fields=["name", "company", "posting_date", "creation", "status"],
+	)
+	plan_items = frappe.get_all(
+		"Production Plan Item",
+		filters={"parent": ["in", plan_names]},
+		fields=[
+			"name",
+			"parent",
+			"item_code",
+			"planned_start_date",
+			"sales_order",
+			"sales_order_item",
+		],
+	)
+	sub_assemblies = frappe.get_all(
+		"Production Plan Sub Assembly Item",
+		filters={"parent": ["in", plan_names]},
+		fields=[
+			"name",
+			"parent",
+			"production_item",
+			"parent_item_code",
+			"bom_level",
+			"schedule_date",
+			"type_of_manufacturing",
+			"production_plan_item",
+			"sales_order",
+			"sales_order_item",
+		],
+	)
+
+	all_item_codes = {
+		row.get("production_item") for row in work_orders if row.get("production_item")
+	} | {row.get("item_code") for row in required_items if row.get("item_code")}
+	active_bom_items = set(
+		frappe.get_all(
+			"BOM",
+			filters={
+				"item": ["in", sorted(all_item_codes)],
+				"is_default": 1,
+				"is_active": 1,
+				"docstatus": 1,
+			},
+			pluck="item",
+		)
+	)
+	item_rows = frappe.get_all(
+		"Item",
+		filters={"name": ["in", sorted(all_item_codes)]},
+		fields=["name", "is_purchase_item"],
+	)
+	item_by_name = {row.get("name"): row for row in item_rows}
+	for item in required_items:
+		item.is_purchase_item = (item_by_name.get(item.get("item_code")) or {}).get(
+			"is_purchase_item"
+		)
+
+	work_orders_by_plan = defaultdict(list)
+	items_by_work_order = defaultdict(list)
+	plan_items_by_plan = defaultdict(list)
+	sub_assemblies_by_plan = defaultdict(list)
+	for row in work_orders:
+		work_orders_by_plan[row.get("production_plan")].append(row)
+	for row in required_items:
+		items_by_work_order[row.get("parent")].append(row)
+	for row in plan_items:
+		plan_items_by_plan[row.get("parent")].append(row)
+	for row in sub_assemblies:
+		sub_assemblies_by_plan[row.get("parent")].append(row)
+
+	graphs = []
+	for source_plan in plans:
+		plan = frappe._dict(dict(source_plan))
+		plan.planned_date = _earliest_plan_date(
+			plan,
+			plan_items_by_plan[plan.name],
+			sub_assemblies_by_plan[plan.name],
+		)
+		plan_work_orders = work_orders_by_plan[plan.name]
+		graph = build_work_order_graph(
+			plan,
+			plan_work_orders,
+			[
+				item
+				for work_order in plan_work_orders
+				for item in items_by_work_order[work_order.get("name")]
+			],
+			sub_assemblies_by_plan[plan.name],
+			active_bom_items=active_bom_items,
+		)
+		graph.company = plan.get("company")
+		graph.posting_date = str(plan.get("posting_date") or "")
+		graph.status = plan.get("status")
+		graphs.append(graph)
+
+	from process_simplification.api.shortage import get_material_stock_snapshot
+
+	stock_snapshots = {}
+	for graph in graphs:
+		for work_order in graph.work_orders_by_name.values():
+			for item in work_order.get("required_items") or []:
+				key = (item.get("item_code"), item.get("source_warehouse"))
+				if key not in stock_snapshots:
+					stock_snapshots[key] = get_material_stock_snapshot(*key)
+
+	readiness_plans = allocate_work_order_readiness(graphs, stock_snapshots)
+	result = defaultdict(list)
+	for plan in readiness_plans:
+		serialized = _serialize_readiness_plan(plan)
+		order_item_names = {
+			row.get("sales_order_item")
+			for row in plan.work_orders_by_name.values()
+			if row.get("sales_order_item")
+		}
+		if not order_item_names:
+			order_item_names = {
+				row.get("sales_order_item")
+				for row in plan_items_by_plan[plan.name]
+				if row.get("sales_order_item")
+			}
+		for order_item_name in sorted(order_item_names):
+			result[order_item_name].append(serialized)
+	return dict(result)
