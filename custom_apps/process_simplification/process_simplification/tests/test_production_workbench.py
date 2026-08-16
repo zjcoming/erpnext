@@ -338,9 +338,7 @@ class TestProductionWorkbench(UnitTestCase):
 		self.assertEqual(first["status_code"], "in_production")
 		self.assertEqual(second["status_code"], "unplanned")
 
-	def test_overview_allocates_shared_material_by_delivery_priority_while_purchasing_stays_aggregate(self):
-		from process_simplification.api.shortage import calculate_material_shortages
-
+	def test_unplanned_demands_do_not_compete_for_materials_without_a_production_plan_date(self):
 		production = self._module()
 		early_row = self._row(
 			name="SOI-EARLY",
@@ -369,54 +367,19 @@ class TestProductionWorkbench(UnitTestCase):
 			]
 		}
 
-		def bom_items(_bom_no, _company, qty, fetch_exploded):
-			return {
-				"RM-SHARED": frappe._dict(
-					{
-						"item_code": "RM-SHARED",
-						"item_name": "共享原料",
-						"stock_uom": "Nos",
-						"qty": 10 * qty,
-					}
-				)
-			}
-
 		with (
 			patch.object(production, "get_fulfillment_overview", return_value=fulfillment),
 			patch.object(production, "get_work_orders", return_value=[]),
-			patch.object(production, "get_default_bom", return_value="BOM-FG"),
+			patch.object(production, "get_production_plan_readiness", return_value={}),
 			patch.object(production, "_other_work_orders", return_value=[]),
-			patch(
-				"process_simplification.api.shortage.get_company_defaults",
-				return_value=frappe._dict({"company": "_Test Company"}),
-			),
-			patch(
-				"process_simplification.api.shortage.resolve_production_source_warehouse",
-				return_value=frappe._dict(
-					{"warehouse": "Stores - TC", "can_use": True, "reason": None}
-				),
-			),
-			patch("process_simplification.api.shortage.get_bom_items_as_dict", side_effect=bom_items),
-			patch(
-				"process_simplification.api.shortage.get_material_stock_snapshot",
-				return_value=frappe._dict(
-					{"can_calculate": True, "actual_qty": 10, "committed_qty": 0, "available_qty": 10}
-				),
-			),
-			patch("process_simplification.api.shortage._mr_documents", return_value=[]),
-			patch("process_simplification.api.shortage._po_documents", return_value=[]),
 		):
 			overview = production.get_production_overview()
-			shortages = calculate_material_shortages(
-				production._material_demands(overview["demands"]), "_Test Company"
-			)
 
 		by_key = {demand["demand_key"]: demand for demand in overview["demands"]}
-		self.assertEqual(by_key["SOI-EARLY"]["materials"][0]["shortage_qty"], 0)
-		self.assertEqual(by_key["SOI-LATE"]["materials"][0]["shortage_qty"], 10)
-		self.assertEqual(by_key["SOI-EARLY"]["materials"][0]["total_required_qty"], 20)
-		self.assertEqual(by_key["SOI-LATE"]["materials"][0]["total_required_qty"], 20)
-		self.assertEqual([(row["required_qty"], row["shortage_qty"]) for row in shortages], [(20, 10)])
+		self.assertEqual(by_key["SOI-EARLY"]["materials"], [])
+		self.assertEqual(by_key["SOI-LATE"]["materials"], [])
+		self.assertEqual(by_key["SOI-EARLY"]["material_summary"]["status_code"], "not_checked")
+		self.assertEqual(by_key["SOI-LATE"]["material_summary"]["status_code"], "not_checked")
 
 	def test_missing_delivery_date_sorts_before_dated_demands_as_a_data_risk(self):
 		production = self._module()

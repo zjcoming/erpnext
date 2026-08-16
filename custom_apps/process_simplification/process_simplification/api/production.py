@@ -8,7 +8,6 @@ from frappe.utils import flt, getdate, now_datetime
 from process_simplification.api.production_readiness import get_production_plan_readiness
 from process_simplification.api.setup import get_default_bom
 from process_simplification.api.shortage import (
-	MaterialCoverageBomExpansionError,
 	calculate_material_coverage,
 )
 from process_simplification.api.workbench import (
@@ -697,19 +696,10 @@ def get_production_overview(page=1, page_size=DEFAULT_WORKBENCH_PAGE_SIZE, filte
 			row for row in company_demands if not readiness.get(row.get("sales_order_item"))
 		]
 		covered_demands.extend(attach_production_plan_readiness(planned_demands, readiness))
-		if not legacy_demands:
-			continue
-		if not _material_demands(legacy_demands) or not company:
-			covered_demands.extend(legacy_demands)
-			continue
-		try:
-			covered_demands.extend(attach_priority_material_coverage(legacy_demands, company))
-		except MaterialCoverageBomExpansionError:
-			for demand in legacy_demands:
-				demand["status_code"] = "master_data_blocked"
-				demand["status_label"] = STATUS_LABELS["master_data_blocked"]
-				demand["material_summary"]["status_code"] = "blocked"
-			covered_demands.extend(legacy_demands)
+		# A demand without a Production Plan has no authoritative plan date and
+		# therefore must not consume shared stock or inbound supply by Sales Order
+		# delivery date. It remains unplanned until a plan creates executable tasks.
+		covered_demands.extend(legacy_demands)
 
 	covered_demands.sort(key=production_sort_key)
 	filtered_demands = filter_production_demands(covered_demands, filters)
