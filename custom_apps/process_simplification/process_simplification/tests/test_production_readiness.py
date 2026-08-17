@@ -182,15 +182,27 @@ class TestWorkOrderReadiness(UnitTestCase):
 		self.assertEqual(by_name["WO-FG"].required_items[0].supply_type, "manufactured")
 		self.assertEqual(by_name["WO-FG"].required_items[0].child_work_order, "WO-SA")
 
-	def test_earlier_plan_date_consumes_shared_raw_material_first(self):
+	def test_earlier_order_delivery_consumes_shared_raw_material_despite_later_plan_date(self):
 		from process_simplification.api.production_readiness import allocate_work_order_readiness
 
-		def plan(name, planned_date, creation):
-			return self._graph(
+		def plan(name, planned_date, creation, delivery_date):
+			graph = self._graph(
 				plan_name=f"PP-{name}",
 				planned_date=planned_date,
 				creation=creation,
-				work_orders=[{"name": f"WO-{name}", "production_item": f"FG-{name}", "production_plan_item": f"PPI-{name}", "status": "Not Started"}],
+				work_orders=[
+					{
+						"name": f"WO-{name}",
+						"production_item": f"FG-{name}",
+						"production_plan_item": f"PPI-{name}",
+						"status": "Not Started",
+						"sales_order": f"SO-{name}",
+						"sales_order_item": f"SOI-{name}",
+						"order_delivery_date": delivery_date,
+						"order_creation": creation,
+						"sales_order_item_idx": 1,
+					}
+				],
 				required_items=[
 					{
 						"parent": f"WO-{name}",
@@ -203,26 +215,40 @@ class TestWorkOrderReadiness(UnitTestCase):
 				],
 				active_bom_items={f"FG-{name}"},
 			)
+			return graph
 
-		late = plan("LATE", "2026-08-25", "2026-08-01 08:00:00")
-		early = plan("EARLY", "2026-08-20", "2026-08-02 08:00:00")
+		early_delivery = plan(
+			"EARLY-DELIVERY",
+			"2026-09-01",
+			"2026-08-02 08:00:00",
+			"2026-08-10",
+		)
+		late_delivery = plan(
+			"LATE-DELIVERY",
+			"2026-08-01",
+			"2026-08-01 08:00:00",
+			"2026-08-20",
+		)
 		result = allocate_work_order_readiness(
-			[late, early],
+			[late_delivery, early_delivery],
 			{("RM-SHARED", "Stores - TC"): {"available_qty": 10, "actual_qty": 10}},
 		)
 		by_plan = {row.name: row for row in result}
 
-		self.assertEqual(by_plan["PP-EARLY"].work_orders_by_name["WO-EARLY"].readiness_status, "ready_now")
-		late_work_order = by_plan["PP-LATE"].work_orders_by_name["WO-LATE"]
+		self.assertEqual(
+			by_plan["PP-EARLY-DELIVERY"].work_orders_by_name["WO-EARLY-DELIVERY"].readiness_status,
+			"ready_now",
+		)
+		late_work_order = by_plan["PP-LATE-DELIVERY"].work_orders_by_name["WO-LATE-DELIVERY"]
 		self.assertEqual(late_work_order.readiness_status, "purchase_shortage")
 		self.assertEqual(late_work_order.required_items[0].available_qty, 3)
 		self.assertEqual(late_work_order.required_items[0].current_gap_qty, 4)
 
-	def test_earlier_plan_date_consumes_shared_in_transit_supply_first(self):
+	def test_supply_deadline_uses_order_delivery_instead_of_plan_date(self):
 		from process_simplification.api.production_readiness import allocate_work_order_readiness
 
-		def plan(name, planned_date):
-			return self._graph(
+		def plan(name, planned_date, delivery_date):
+			graph = self._graph(
 				plan_name=f"PP-{name}",
 				planned_date=planned_date,
 				creation="2026-08-01 08:00:00",
@@ -230,9 +256,14 @@ class TestWorkOrderReadiness(UnitTestCase):
 					{
 						"name": f"WO-{name}",
 						"production_item": f"FG-{name}",
-						"production_plan_item": f"PPI-{name}",
-						"status": "Not Started",
-					}
+							"production_plan_item": f"PPI-{name}",
+							"status": "Not Started",
+							"sales_order": f"SO-{name}",
+							"sales_order_item": f"SOI-{name}",
+							"order_delivery_date": delivery_date,
+							"order_creation": "2026-08-01 08:00:00",
+							"sales_order_item_idx": 1,
+						}
 				],
 				required_items=[
 					{
@@ -245,6 +276,7 @@ class TestWorkOrderReadiness(UnitTestCase):
 				],
 				active_bom_items={f"FG-{name}"},
 			)
+			return graph
 
 		supply = {
 			("RM-SHARED", "Stores - TC"): [
@@ -253,23 +285,76 @@ class TestWorkOrderReadiness(UnitTestCase):
 					"name": "PO-001",
 					"detail_name": "POI-001",
 					"outstanding_qty": 10,
-					"schedule_date": "2026-08-09",
+					"schedule_date": "2026-08-15",
 				}
 			]
 		}
 		result = allocate_work_order_readiness(
-			[plan("LATER", "2026-08-20"), plan("EARLY", "2026-08-10")],
+			[
+				plan("EARLY-DELIVERY", "2026-09-01", "2026-08-10"),
+				plan("LATE-DELIVERY", "2026-08-01", "2026-08-20"),
+			],
 			{("RM-SHARED", "Stores - TC"): {"actual_qty": 0, "available_qty": 0}},
 			supply,
 		)
 		by_plan = {row.name: row for row in result}
-		early_item = by_plan["PP-EARLY"].work_orders_by_name["WO-EARLY"].required_items[0]
-		later_item = by_plan["PP-LATER"].work_orders_by_name["WO-LATER"].required_items[0]
+		early_item = by_plan["PP-EARLY-DELIVERY"].work_orders_by_name["WO-EARLY-DELIVERY"].required_items[0]
+		later_item = by_plan["PP-LATE-DELIVERY"].work_orders_by_name["WO-LATE-DELIVERY"].required_items[0]
 
-		self.assertEqual(early_item.status, "awaiting_purchase_receipt")
-		self.assertEqual(early_item.shortage_qty, 0)
-		self.assertEqual(later_item.status, "new_purchase_required")
-		self.assertEqual(later_item.shortage_qty, 10)
+		self.assertEqual(early_item.status, "new_purchase_required")
+		self.assertTrue(early_item.supply_documents[0].is_late)
+		self.assertEqual(early_item.shortage_qty, 10)
+		self.assertEqual(later_item.status, "awaiting_purchase_receipt")
+		self.assertFalse(later_item.supply_documents[0].is_late)
+		self.assertEqual(later_item.shortage_qty, 0)
+
+	def test_missing_order_delivery_does_not_consume_stock_before_dated_order(self):
+		from process_simplification.api.production_readiness import allocate_work_order_readiness
+
+		def graph(name, planned_date, delivery_date):
+			return self._graph(
+				plan_name=f"PP-{name}",
+				planned_date=planned_date,
+				creation="2026-08-01 08:00:00",
+				work_orders=[
+					{
+						"name": f"WO-{name}",
+						"production_item": f"FG-{name}",
+						"production_plan_item": f"PPI-{name}",
+						"status": "Not Started",
+						"sales_order": f"SO-{name}",
+						"sales_order_item": f"SOI-{name}",
+						"order_delivery_date": delivery_date,
+						"order_creation": "2026-08-01 08:00:00",
+						"sales_order_item_idx": 1,
+					}
+				],
+				required_items=[
+					{
+						"parent": f"WO-{name}",
+						"item_code": "RM-SHARED",
+						"source_warehouse": "Stores - TC",
+						"required_qty": 7,
+						"transferred_qty": 0,
+					}
+				],
+				active_bom_items={f"FG-{name}"},
+			)
+
+		result = allocate_work_order_readiness(
+			[
+				graph("MISSING", "2026-08-01", None),
+				graph("DATED", "2026-09-01", "2026-08-10"),
+			],
+			{("RM-SHARED", "Stores - TC"): {"available_qty": 7, "actual_qty": 7}},
+		)
+		by_plan = {row.name: row for row in result}
+
+		self.assertEqual(by_plan["PP-DATED"].work_orders_by_name["WO-DATED"].readiness_status, "ready_now")
+		self.assertEqual(
+			by_plan["PP-MISSING"].work_orders_by_name["WO-MISSING"].readiness_status,
+			"purchase_shortage",
+		)
 
 	def test_manufactured_item_without_child_task_is_not_a_purchase_shortage(self):
 		from process_simplification.api.production_readiness import allocate_work_order_readiness
@@ -374,6 +459,8 @@ class TestProductionReadinessLoading(UnitTestCase):
 			"Production Plan": [frappe._dict(name="PP-001", company="_Test Company", posting_date="2026-08-16", creation="2026-08-01 09:00:00", status="In Process")],
 			"Production Plan Item": [frappe._dict(name="PPI-1", parent="PP-001", item_code="FG", planned_start_date="2026-08-20 08:00:00", sales_order_item="SOI-001")],
 			"Production Plan Sub Assembly Item": [frappe._dict(name="PPSA-1", parent="PP-001", production_item="SA", parent_item_code="FG", bom_level=0, schedule_date="2026-08-20", type_of_manufacturing="In House")],
+			"Sales Order Item": [frappe._dict(name="SOI-001", parent="SO-001", delivery_date="2026-08-10", idx=1)],
+			"Sales Order": [frappe._dict(name="SO-001", creation="2026-08-01 08:00:00")],
 			"Item": [frappe._dict(name="SA", is_purchase_item=1), frappe._dict(name="RM", is_purchase_item=1)],
 		}
 
@@ -404,6 +491,7 @@ class TestProductionReadinessLoading(UnitTestCase):
 		self.assertEqual(len(plans), 1)
 		self.assertEqual(plans[0]["name"], "PP-001")
 		self.assertEqual(plans[0]["planned_date"], "2026-08-20 08:00:00")
+		self.assertEqual(plans[0]["material_priority_date"], "2026-08-10")
 		self.assertEqual([row["name"] for row in plans[0]["work_orders"]], ["WO-SA", "WO-FG"])
 		self.assertEqual([row["bom_no"] for row in plans[0]["work_orders"]], ["BOM-SA-001", "BOM-FG-001"])
 		self.assertEqual(plans[0]["work_orders"][0]["readiness_status"], "ready_now")
