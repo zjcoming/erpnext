@@ -23,6 +23,7 @@ class TestSimplifiedFlow(UnitTestCase):
 				{
 					"name": "PP-001",
 					"planned_date": "2026-08-20 08:00:00",
+					"material_priority_date": "2026-08-10",
 					"status": "In Process",
 					"summary": {"ready_work_order_count": 1, "total_work_order_count": 2},
 					"work_orders": [{"name": "WO-SA"}, {"name": "WO-FG"}],
@@ -34,6 +35,10 @@ class TestSimplifiedFlow(UnitTestCase):
 
 		self.assertEqual(result[0]["production_plans"][0]["name"], "PP-001")
 		self.assertEqual(result[0]["rows"][0]["production_plans"][0]["work_order_count"], 2)
+		self.assertEqual(
+			result[0]["rows"][0]["production_plans"][0]["material_priority_date"],
+			"2026-08-10",
+		)
 		self.assertNotIn("work_orders", result[0]["production_plans"][0])
 
 	def test_production_quantities_do_not_duplicate_available_finished_stock(self):

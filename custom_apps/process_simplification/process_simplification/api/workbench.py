@@ -633,6 +633,7 @@ def attach_production_plan_summaries(orders, readiness_by_sales_order_item):
 				summary = {
 					"name": plan.get("name"),
 					"planned_date": plan.get("planned_date"),
+					"material_priority_date": plan.get("material_priority_date"),
 					"status": plan.get("status"),
 					"summary": deepcopy(plan.get("summary") or {}),
 					"work_order_count": len(plan.get("work_orders") or []),

@@ -157,7 +157,7 @@ function orderOverviewHtml(order, helpers) {
 			const productionPlans = (row.production_plans || []).length
 				? `<div class="fulfillment-production-plans">${(row.production_plans || [])
 						.map(
-							(plan) => `<a href="/app/production-plan/${encodeURIComponent(plan.name || "")}"><strong>${esc(plan.name || "")}</strong></a> · ${esc(t("计划优先日期"))} ${esc(date(plan.planned_date)) || esc(t("未设置"))} · ${Number(plan.work_order_count || 0)} ${esc(t("个工单"))}`
+							(plan) => `<a href="/app/production-plan/${encodeURIComponent(plan.name || "")}"><strong>${esc(plan.name || "")}</strong></a> · ${esc(t("计划开始"))} ${esc(date(plan.planned_date)) || esc(t("未设置"))} · ${esc(t("物料优先依据"))} ${esc(date(plan.material_priority_date)) || esc(t("未设置"))} · ${Number(plan.work_order_count || 0)} ${esc(t("个工单"))}`
 						)
 						.join("<br>")}</div>`
 				: `<div class="text-muted fulfillment-production-plans">${esc(t("未关联生产计划"))}</div>`;
@@ -167,7 +167,7 @@ function orderOverviewHtml(order, helpers) {
 					<td data-label="${esc(t("交期"))}">${esc(date(row.delivery_date)) || esc(t("未设置"))}</td>
 					<td class="fulfillment-number" data-label="${esc(t("待交"))}">${number(row.pending_qty)}</td>
 					<td class="fulfillment-number" data-label="${esc(t("有效预留"))}">${number(row.reserved_qty)}</td>
-					<td class="fulfillment-number" data-label="${esc(t("可用成品"))}">${number(row.available_to_reserve)}</td>
+					<td class="fulfillment-number" data-label="${esc(t("优先获配成品"))}">${number(row.available_to_reserve)}</td>
 					<td class="fulfillment-number" data-label="${esc(t("成品覆盖"))}">${number(row.finished_stock_coverage_qty)}</td>
 					<td class="fulfillment-number" data-label="${esc(t("需生产"))}">${number(row.production_required_qty)}</td>
 					<td class="fulfillment-number" data-label="${esc(t("已安排"))}">${number(row.active_work_order_qty)}</td>
@@ -206,7 +206,7 @@ function orderOverviewHtml(order, helpers) {
 				</div>
 				<div class="fulfillment-item-table-wrap">
 					<table class="table table-bordered fulfillment-item-table">
-						<thead><tr><th>${esc(t("产品"))}</th><th>${esc(t("交期"))}</th><th>${esc(t("待交"))}</th><th>${esc(t("有效预留"))}</th><th>${esc(t("可用成品"))}</th><th>${esc(t("成品覆盖"))}</th><th>${esc(t("需生产"))}</th><th>${esc(t("已安排"))}</th><th>${esc(t("未安排"))}</th><th>${esc(t("状态"))}</th><th>${esc(t("下一步"))}</th></tr></thead>
+						<thead><tr><th>${esc(t("产品"))}</th><th>${esc(t("交期"))}</th><th>${esc(t("待交"))}</th><th>${esc(t("有效预留"))}</th><th>${esc(t("优先获配成品"))}</th><th>${esc(t("成品覆盖"))}</th><th>${esc(t("需生产"))}</th><th>${esc(t("已安排"))}</th><th>${esc(t("未安排"))}</th><th>${esc(t("状态"))}</th><th>${esc(t("下一步"))}</th></tr></thead>
 						<tbody>${itemRows}</tbody>
 					</table>
 				</div>

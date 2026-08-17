@@ -168,6 +168,7 @@ test("expanded product rows link their Production Plans and priority dates", () 
 		{
 			name: "PP-001",
 			planned_date: "2026-08-20 08:00:00",
+			material_priority_date: "2026-08-10",
 			work_order_count: 2,
 			summary: { ready_work_order_count: 1 },
 		},
@@ -175,7 +176,9 @@ test("expanded product rows link their Production Plans and priority dates", () 
 	const html = orderOverviewHtml(plannedOrder, helpers);
 
 	assert.match(html, /\/app\/production-plan\/PP-001/);
-	assert.match(html, /计划优先日期/);
+	assert.match(html, /计划开始 2026-08-20 08:00:00/);
+	assert.match(html, /物料优先依据 2026-08-10/);
+	assert.doesNotMatch(html, /计划优先日期/);
 	assert.match(html, /2 个工单/);
 });
 
@@ -217,7 +220,7 @@ test("expanded product rows expose labels for the mobile card layout", () => {
 		"交期",
 		"待交",
 		"有效预留",
-		"可用成品",
+		"优先获配成品",
 		"成品覆盖",
 		"需生产",
 		"已安排",

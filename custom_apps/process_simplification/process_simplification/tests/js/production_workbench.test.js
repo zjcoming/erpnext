@@ -61,6 +61,7 @@ function demand(key, overrides = {}) {
 			{
 				name: `PP-${key}`,
 				planned_date: "2026-08-07 08:00:00",
+				material_priority_date: "2026-08-08",
 				summary: { ready_work_order_count: 0, waiting_subassembly_count: 0 },
 			},
 		],
@@ -164,7 +165,7 @@ test("production demand HTML escapes server values and exposes complete labelled
 	for (const label of [
 		"订单待交",
 		"有效预留",
-		"可用成品",
+		"优先获配成品",
 		"成品覆盖",
 		"需要生产",
 		"工单覆盖",
@@ -320,6 +321,7 @@ test("planned demand HTML shows Production Plan priority and Work Order readines
 				{
 					name: "PP-001",
 					planned_date: "2026-08-20 08:00:00",
+					material_priority_date: "2026-08-10",
 					summary: { ready_work_order_count: 1, waiting_subassembly_count: 1 },
 				},
 			],
@@ -389,7 +391,10 @@ test("planned demand HTML shows Production Plan priority and Work Order readines
 	);
 
 	assert.match(html, /\/app\/production-plan\/PP-001/);
-	assert.match(html, /计划优先日期/);
+	assert.match(html, /计划开始.*2026-08-20 08:00:00/);
+	assert.match(html, /物料优先依据.*2026-08-10/);
+	assert.match(html, /订单行交付日期/);
+	assert.doesNotMatch(html, /计划优先日期/);
 	assert.match(html, /当前可开工/);
 	assert.match(html, /等待半成品/);
 	assert.match(html, /生产执行链/);
@@ -448,7 +453,7 @@ test("material rows show linked purchase documents and status, or a no-purchase 
 	assert.match(html, /To Receive/);
 	assert.match(html, /未完成 10\.00 · 已分配给本单 4\.00/);
 	// The late Purchase Order is still shown and flagged.
-	assert.match(html, /晚于计划日期/);
+	assert.match(html, /晚于订单交期/);
 
 	// A material with no supply documents shows the no-purchase hint.
 	const noDocs = demand("NODOC");
@@ -475,7 +480,7 @@ test("material-ready rows hide unallocated supply documents and their late marke
 	);
 
 	assert.doesNotMatch(html, /PORD-UNALLOCATED/);
-	assert.doesNotMatch(html, /晚于计划日期/);
+	assert.doesNotMatch(html, /晚于订单交期/);
 	assert.doesNotMatch(html, /尚未发起采购/);
 });
 
@@ -499,7 +504,7 @@ test("current material gaps retain unallocated documents with allocation and dea
 
 	assert.match(html, /PORD-GAP/);
 	assert.match(html, /未分配给本单/);
-	assert.match(html, /晚于计划日期/);
+	assert.match(html, /晚于订单交期/);
 });
 
 test("allocated supply documents keep total outstanding quantity and identify their allocation", () => {

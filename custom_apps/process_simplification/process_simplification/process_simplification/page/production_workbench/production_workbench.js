@@ -330,7 +330,7 @@ function purchaseMaterialSummaryHtml(materials, helpers) {
 						? `<tr class="production-supply-docs"><td colspan="10" data-label="${esc(t("采购单据"))}"><div class="production-supply-doc-list">${documents
 							.map((document) => {
 								const typeLabel = document.doctype === "Material Request" ? t("采购申请") : t("采购单");
-								const lateTag = document.is_late ? ` · <span class="indicator-pill red">${esc(t("晚于计划日期"))}</span>` : "";
+								const lateTag = document.is_late ? ` · <span class="indicator-pill red">${esc(t("晚于订单交期"))}</span>` : "";
 								const allocation = Number(document.allocated_qty || 0) > 0
 									? ` · ${esc(t("已分配给本单"))} ${number(document.allocated_qty)}`
 									: ` · ${esc(t("未分配给本单"))}`;
@@ -369,7 +369,7 @@ function productionDemandHtml(demand, helpers) {
 	const quantityFacts = [
 		[t("订单待交"), demand.pending_qty],
 		[t("有效预留"), demand.reserved_qty],
-		[t("可用成品"), demand.available_to_reserve],
+		[t("优先获配成品"), demand.available_to_reserve],
 		[t("成品覆盖"), demand.finished_stock_coverage_qty],
 		[t("需要生产"), demand.production_required_qty],
 		[t("工单覆盖"), demand.active_work_order_qty],
@@ -389,7 +389,8 @@ function productionDemandHtml(demand, helpers) {
 				.map(
 					(plan) => `<div class="production-plan-card">
 						<a href="/app/production-plan/${encodeURIComponent(plan.name || "")}"><strong>${esc(plan.name || "")}</strong></a>
-						<span>${esc(t("计划优先日期"))}: ${esc(date(plan.planned_date)) || esc(t("未设置"))}</span>
+						<span>${esc(t("计划开始"))}: ${esc(date(plan.planned_date)) || esc(t("未设置"))}</span>
+						<span>${esc(t("物料优先依据"))}: ${esc(date(plan.material_priority_date)) || esc(t("未设置"))}</span>
 						<span>${esc(t("可开工工单"))}: ${number(plan.summary?.ready_work_order_count)}</span>
 						<span>${esc(t("等待半成品"))}: ${number(plan.summary?.waiting_subassembly_count)}</span>
 					</div>`
@@ -426,7 +427,7 @@ function productionDemandHtml(demand, helpers) {
 				<section><h5>${esc(t("数量关系"))}</h5><div class="production-quantity-grid">${quantityFacts
 					.map(([label, value]) => `<div data-label="${esc(label)}"><span>${esc(label)}</span><strong>${number(value)}</strong></div>`)
 					.join("")}</div></section>
-				<section><h5>${esc(t("关联生产计划"))}</h5><p class="text-muted">${esc(t("现货与在途供应统一按 Production Plan 的计划日期优先分配。"))}</p><div class="production-plan-list">${productionPlans}</div></section>
+				<section><h5>${esc(t("关联生产计划"))}</h5><p class="text-muted">${esc(t("现货、原料与在途供应统一按订单行交付日期分配；计划开始仅用于生产排程。"))}</p><div class="production-plan-list">${productionPlans}</div></section>
 				<section><h5>${esc(t("生产执行链"))}</h5><p class="text-muted">${esc(t("按可执行顺序排列：下级半成品工单优先；每张工单只显示其 BOM 直接用料。"))}</p><div class="production-work-order-list">${workOrders}</div></section>
 				<section class="production-purchase-summary"><h5>${esc(t("底层采购物料汇总"))}</h5><p class="text-muted">${esc(t("只汇总采购件；半成品在上方生产执行链中由下级工单供应。采购动作提交前会再次复核。"))}</p>${purchaseMaterials}</section>
 			</div>
@@ -476,7 +477,7 @@ if (typeof frappe !== "undefined") {
 					<label><input type="checkbox" data-filter="showOther"> ${__("其他生产")}</label>
 				</div>
 				<div class="production-update-time text-muted"></div>
-				<p class="text-muted production-sort-note">${__("生产物料竞争优先级：Production Plan 计划日期；页面展示仍按订单交期和风险排序。")}</p>
+				<p class="text-muted production-sort-note">${__("客户物料分配优先级：订单行交付日期；同交期按订单创建时间和订单行顺序。")}</p>
 				<div class="production-demand-list"></div>
 				<div class="production-pagination"></div>
 				<div class="production-other-section"></div>
