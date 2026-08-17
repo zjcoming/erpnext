@@ -348,12 +348,27 @@ def _earliest_plan_date(plan, plan_items, sub_assemblies):
 	return min(dates) if dates else str(plan.get("posting_date") or "")
 
 
-def _serialize_readiness_plan(plan):
+def _serialize_readiness_plan(plan, sales_order_item=None):
+	work_order_names = [
+		name
+		for name in plan.get("execution_order") or []
+		if not sales_order_item
+		or plan.work_orders_by_name[name].get("sales_order_item") == sales_order_item
+	]
+	projected_work_orders = {
+		name: plan.work_orders_by_name[name]
+		for name in work_order_names
+	}
 	material_priority_dates = [
 		str(work_order.get("order_delivery_date"))
-		for work_order in plan.work_orders_by_name.values()
+		for work_order in projected_work_orders.values()
 		if work_order.get("order_delivery_date")
 	]
+	projected_summary = (
+		summarize_plan(frappe._dict(work_orders_by_name=projected_work_orders))
+		if sales_order_item
+		else plan.get("summary")
+	)
 	return {
 		"name": plan.get("name"),
 		"company": plan.get("company"),
@@ -361,10 +376,10 @@ def _serialize_readiness_plan(plan):
 		"material_priority_date": min(material_priority_dates) if material_priority_dates else None,
 		"posting_date": plan.get("posting_date"),
 		"status": plan.get("status"),
-		"summary": plan.get("summary"),
+		"summary": projected_summary,
 		"work_orders": [
 			plan.work_orders_by_name[name]
-			for name in plan.get("execution_order") or []
+			for name in work_order_names
 		],
 	}
 
@@ -613,7 +628,6 @@ def get_production_plan_readiness(company=None, sales_order_items=None):
 	result = defaultdict(list)
 	requested_order_items = set(sales_order_items or [])
 	for plan in readiness_plans:
-		serialized = _serialize_readiness_plan(plan)
 		order_item_names = {
 			row.get("sales_order_item")
 			for row in plan.work_orders_by_name.values()
@@ -628,5 +642,7 @@ def get_production_plan_readiness(company=None, sales_order_items=None):
 		for order_item_name in sorted(order_item_names):
 			if requested_order_items and order_item_name not in requested_order_items:
 				continue
-			result[order_item_name].append(serialized)
+			result[order_item_name].append(
+				_serialize_readiness_plan(plan, sales_order_item=order_item_name)
+			)
 	return dict(result)

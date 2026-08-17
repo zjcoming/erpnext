@@ -104,6 +104,34 @@ class TestProductionPlanGraph(UnitTestCase):
 		self.assertTrue(graph.work_orders_by_name["WO-FG"].is_finished_good)
 		self.assertIsInstance(graph.work_orders_by_name["WO-FG"], frappe._dict)
 
+	def test_serialized_plan_is_projected_to_one_sales_order_item(self):
+		from process_simplification.api.production_readiness import _serialize_readiness_plan
+
+		plan = frappe._dict(
+			name="PP-MIXED",
+			company="_Test Company",
+			planned_date="2026-08-20",
+			status="In Process",
+			execution_order=["WO-A", "WO-B"],
+			work_orders_by_name={
+				"WO-A": frappe._dict(
+					name="WO-A", sales_order_item="SOI-A", order_delivery_date="2026-08-10",
+					readiness_status="ready_now",
+				),
+				"WO-B": frappe._dict(
+					name="WO-B", sales_order_item="SOI-B", order_delivery_date="2026-08-20",
+					readiness_status="purchase_shortage",
+				),
+			},
+		)
+
+		serialized = _serialize_readiness_plan(plan, sales_order_item="SOI-A")
+
+		self.assertEqual([row["name"] for row in serialized["work_orders"]], ["WO-A"])
+		self.assertEqual(serialized["summary"]["total_work_order_count"], 1)
+		self.assertEqual(serialized["summary"]["purchase_shortage_work_order_count"], 0)
+		self.assertEqual(serialized["material_priority_date"], "2026-08-10")
+
 
 class TestWorkOrderReadiness(UnitTestCase):
 	def _graph(self, *, plan_name, planned_date, creation, work_orders, required_items, sub_assemblies=None, active_bom_items=None):
