@@ -308,6 +308,130 @@ class TestWorkOrderReadiness(UnitTestCase):
 		self.assertFalse(later_item.supply_documents[0].is_late)
 		self.assertEqual(later_item.shortage_qty, 0)
 
+	def test_work_order_reservation_is_not_reassigned_to_an_earlier_order(self):
+		from process_simplification.api.production_readiness import allocate_work_order_readiness
+
+		def graph(name, delivery_date, reserved_qty):
+			return self._graph(
+				plan_name=f"PP-{name}",
+				planned_date=delivery_date,
+				creation="2026-08-01 08:00:00",
+				work_orders=[{
+					"name": f"WO-{name}",
+					"production_item": f"FG-{name}",
+					"production_plan_item": f"PPI-{name}",
+					"status": "Not Started",
+					"sales_order": f"SO-{name}",
+					"sales_order_item": f"SOI-{name}",
+					"order_delivery_date": delivery_date,
+					"order_creation": "2026-08-01 08:00:00",
+					"sales_order_item_idx": 1,
+				}],
+				required_items=[{
+					"parent": f"WO-{name}",
+					"item_code": "RM-RESERVED",
+					"source_warehouse": "Stores - TC",
+					"required_qty": 10,
+					"transferred_qty": 0,
+					"stock_reserved_qty": reserved_qty,
+				}],
+				active_bom_items={f"FG-{name}"},
+			)
+
+		result = allocate_work_order_readiness(
+			[graph("EARLY", "2026-08-10", 0), graph("LATE", "2026-08-20", 10)],
+			{("RM-RESERVED", "Stores - TC"): {"actual_qty": 10, "available_qty": 10}},
+		)
+		by_plan = {row.name: row for row in result}
+		early = by_plan["PP-EARLY"].work_orders_by_name["WO-EARLY"].required_items[0]
+		late = by_plan["PP-LATE"].work_orders_by_name["WO-LATE"].required_items[0]
+
+		self.assertEqual(early.available_qty, 0)
+		self.assertEqual(early.shortage_qty, 10)
+		self.assertEqual(late.available_qty, 10)
+		self.assertEqual(late.shortage_qty, 0)
+
+	def test_terminal_work_order_does_not_consume_shared_stock(self):
+		from process_simplification.api.production_readiness import allocate_work_order_readiness
+
+		def graph(name, status, delivery_date):
+			return self._graph(
+				plan_name=f"PP-{name}", planned_date=delivery_date, creation="2026-08-01 08:00:00",
+				work_orders=[{
+					"name": f"WO-{name}", "production_item": f"FG-{name}",
+					"production_plan_item": f"PPI-{name}", "status": status,
+					"sales_order": f"SO-{name}", "sales_order_item": f"SOI-{name}",
+					"order_delivery_date": delivery_date, "order_creation": "2026-08-01 08:00:00",
+					"sales_order_item_idx": 1,
+				}],
+				required_items=[{
+					"parent": f"WO-{name}", "item_code": "RM-TERMINAL",
+					"source_warehouse": "Stores - TC", "required_qty": 10, "transferred_qty": 0,
+				}], active_bom_items={f"FG-{name}"},
+			)
+
+		result = allocate_work_order_readiness(
+			[graph("STOPPED", "Stopped", "2026-08-10"), graph("ACTIVE", "Not Started", "2026-08-20")],
+			{("RM-TERMINAL", "Stores - TC"): {"actual_qty": 10, "available_qty": 10}},
+		)
+		by_plan = {row.name: row for row in result}
+
+		self.assertEqual(by_plan["PP-STOPPED"].work_orders_by_name["WO-STOPPED"].readiness_status, "blocked")
+		self.assertEqual(by_plan["PP-ACTIVE"].work_orders_by_name["WO-ACTIVE"].required_items[0].available_qty, 10)
+
+	def test_skip_transfer_uses_consumed_quantity_for_remaining_requirement(self):
+		from process_simplification.api.production_readiness import allocate_work_order_readiness
+
+		graph = self._graph(
+			plan_name="PP-SKIP", planned_date="2026-08-10", creation="2026-08-01 08:00:00",
+			work_orders=[{
+				"name": "WO-SKIP", "production_item": "FG-SKIP", "production_plan_item": "PPI-SKIP",
+				"status": "Not Started", "skip_transfer": 1,
+			}],
+			required_items=[{
+				"parent": "WO-SKIP", "item_code": "RM-SKIP", "source_warehouse": "Stores - TC",
+				"required_qty": 10, "transferred_qty": 0, "consumed_qty": 6,
+			}], active_bom_items={"FG-SKIP"},
+		)
+
+		item = allocate_work_order_readiness(
+			[graph], {("RM-SKIP", "Stores - TC"): {"actual_qty": 4, "available_qty": 4}},
+		)[0].work_orders_by_name["WO-SKIP"].required_items[0]
+
+		self.assertEqual(item.required_qty, 4)
+		self.assertEqual(item.available_qty, 4)
+		self.assertEqual(item.shortage_qty, 0)
+
+	def test_unverifiable_supply_does_not_cover_order_deadline(self):
+		from process_simplification.api.production_readiness import allocate_work_order_readiness
+
+		graph = self._graph(
+			plan_name="PP-UNKNOWN", planned_date="2026-08-10", creation="2026-08-01 08:00:00",
+			work_orders=[{
+				"name": "WO-UNKNOWN", "production_item": "FG-UNKNOWN",
+				"production_plan_item": "PPI-UNKNOWN", "status": "Not Started",
+				"sales_order": "SO-UNKNOWN", "sales_order_item": "SOI-UNKNOWN",
+				"order_delivery_date": None, "order_creation": "2026-08-01 08:00:00",
+				"sales_order_item_idx": 1,
+			}],
+			required_items=[{
+				"parent": "WO-UNKNOWN", "item_code": "RM-UNKNOWN", "source_warehouse": "Stores - TC",
+				"required_qty": 10, "transferred_qty": 0,
+			}], active_bom_items={"FG-UNKNOWN"},
+		)
+		supply = {("RM-UNKNOWN", "Stores - TC"): [{
+			"doctype": "Purchase Order", "name": "PO-UNKNOWN", "detail_name": "POI-UNKNOWN",
+			"outstanding_qty": 10, "schedule_date": None,
+		}]}
+
+		item = allocate_work_order_readiness(
+			[graph], {("RM-UNKNOWN", "Stores - TC"): {"actual_qty": 0, "available_qty": 0}}, supply,
+		)[0].work_orders_by_name["WO-UNKNOWN"].required_items[0]
+
+		self.assertEqual(item.open_purchase_order_qty, 0)
+		self.assertEqual(item.shortage_qty, 10)
+		self.assertTrue(item.supply_documents[0].deadline_unknown)
+
 	def test_missing_order_delivery_does_not_consume_stock_before_dated_order(self):
 		from process_simplification.api.production_readiness import allocate_work_order_readiness
 
@@ -416,6 +540,7 @@ class TestProductionReadinessLoading(UnitTestCase):
 		from process_simplification.api import production_readiness
 
 		work_order_field_queries = []
+		work_order_filter_queries = []
 
 		rows = {
 			"Work Order": [
@@ -469,6 +594,7 @@ class TestProductionReadinessLoading(UnitTestCase):
 				return ["FG", "SA"]
 			if doctype == "Work Order":
 				work_order_field_queries.append(kwargs.get("fields") or [])
+				work_order_filter_queries.append(kwargs.get("filters") or {})
 			return rows.get(doctype, [])
 
 		def stock(item_code, warehouse):
@@ -498,5 +624,69 @@ class TestProductionReadinessLoading(UnitTestCase):
 		self.assertEqual(plans[0]["work_orders"][0]["required_items"][0]["committed_qty"], 2)
 		self.assertEqual(plans[0]["work_orders"][1]["readiness_status"], "waiting_subassembly")
 		self.assertEqual(plans[0]["summary"]["ready_work_order_count"], 1)
-		self.assertEqual(len(work_order_field_queries), 2)
+		self.assertEqual(len(work_order_field_queries), 1)
 		self.assertTrue(all("bom_no" in fields for fields in work_order_field_queries))
+		self.assertTrue(all("skip_transfer" in fields for fields in work_order_field_queries))
+		self.assertTrue(all("sales_order_item" not in filters for filters in work_order_filter_queries))
+
+	def test_selected_order_items_are_filtered_only_after_company_wide_allocation(self):
+		from process_simplification.api import production_readiness
+
+		def work_order(name, plan, sales_order, sales_order_item):
+			return frappe._dict(
+				name=name, production_item=f"FG-{name}", bom_no=f"BOM-{name}",
+				production_plan=plan, production_plan_item=f"PPI-{name}",
+				production_plan_sub_assembly_item=None, sales_order=sales_order,
+				sales_order_item=sales_order_item, company="_Test Company",
+				status="Not Started", skip_transfer=0, qty=1, produced_qty=0,
+				planned_start_date="2026-08-20", creation="2026-08-01 09:00:00",
+			)
+
+		rows = {
+			"Work Order": [
+				work_order("WO-EARLY", "PP-EARLY", "SO-EARLY", "SOI-EARLY"),
+				work_order("WO-LATE", "PP-LATE", "SO-LATE", "SOI-LATE"),
+			],
+			"Work Order Item": [
+				frappe._dict(parent="WO-EARLY", item_code="RM-SHARED", source_warehouse="Stores - TC", required_qty=7, transferred_qty=0, consumed_qty=0, stock_reserved_qty=0),
+				frappe._dict(parent="WO-LATE", item_code="RM-SHARED", source_warehouse="Stores - TC", required_qty=7, transferred_qty=0, consumed_qty=0, stock_reserved_qty=0),
+			],
+			"Production Plan": [
+				frappe._dict(name="PP-EARLY", company="_Test Company", posting_date="2026-08-01", creation="2026-08-01 08:00:00", status="In Process"),
+				frappe._dict(name="PP-LATE", company="_Test Company", posting_date="2026-08-01", creation="2026-08-01 08:00:01", status="In Process"),
+			],
+			"Production Plan Item": [
+				frappe._dict(name="PPI-WO-EARLY", parent="PP-EARLY", item_code="FG-WO-EARLY", planned_start_date="2026-08-20", sales_order="SO-EARLY", sales_order_item="SOI-EARLY"),
+				frappe._dict(name="PPI-WO-LATE", parent="PP-LATE", item_code="FG-WO-LATE", planned_start_date="2026-08-20", sales_order="SO-LATE", sales_order_item="SOI-LATE"),
+			],
+			"Production Plan Sub Assembly Item": [],
+			"Sales Order Item": [
+				frappe._dict(name="SOI-EARLY", parent="SO-EARLY", delivery_date="2026-08-10", idx=1),
+				frappe._dict(name="SOI-LATE", parent="SO-LATE", delivery_date="2026-08-20", idx=1),
+			],
+			"Sales Order": [
+				frappe._dict(name="SO-EARLY", creation="2026-08-01 07:00:00"),
+				frappe._dict(name="SO-LATE", creation="2026-08-01 07:00:01"),
+			],
+			"Item": [frappe._dict(name="RM-SHARED", is_purchase_item=1)],
+		}
+
+		def get_all(doctype, **kwargs):
+			if doctype == "BOM":
+				return ["FG-WO-EARLY", "FG-WO-LATE"]
+			return rows.get(doctype, [])
+
+		with (
+			patch.object(production_readiness.frappe, "get_all", side_effect=get_all),
+			patch("process_simplification.api.shortage.get_material_stock_snapshot", return_value=frappe._dict(actual_qty=7, committed_qty=0, available_qty=7)),
+			patch("process_simplification.api.shortage._mr_documents", return_value=[]),
+			patch("process_simplification.api.shortage._po_documents", return_value=[]),
+		):
+			result = production_readiness.get_production_plan_readiness(
+				company="_Test Company", sales_order_items=["SOI-LATE"],
+			)
+
+		self.assertEqual(set(result), {"SOI-LATE"})
+		item = result["SOI-LATE"][0]["work_orders"][0]["required_items"][0]
+		self.assertEqual(item["available_qty"], 0)
+		self.assertEqual(item["shortage_qty"], 7)

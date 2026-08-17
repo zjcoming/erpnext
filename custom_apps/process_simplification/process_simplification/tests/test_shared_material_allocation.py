@@ -160,7 +160,7 @@ class TestDeliveryPriorityPriorDemands(UnitTestCase):
 			"production_required_qty": qty,
 		}
 
-	def test_only_earlier_and_undated_demands_are_prior(self):
+	def test_only_demands_before_the_new_order_in_shared_priority_are_prior(self):
 		from process_simplification.api import production
 
 		demands = [
@@ -174,15 +174,41 @@ class TestDeliveryPriorityPriorDemands(UnitTestCase):
 
 		with patch.object(
 			production, "get_production_overview", return_value=self._overview(demands)
-		), patch.object(production, "get_default_bom", side_effect=lambda item: "BOM-" + item):
+		) as overview, patch.object(production, "get_default_bom", side_effect=lambda item: "BOM-" + item):
 			prior = production.get_prior_material_demands(
 				"_Test Company", target_delivery_date="2026-08-05"
 			)
 
 		items = {row["source"]["finished_item"] for row in prior}
-		# EARLY (<) and UNDATED (most urgent) qualify; SAME (==) and LATE (>) do
-		# not; other-company demand is filtered out.
-		self.assertEqual(items, {"EARLY", "UNDATED"})
+		# The new order is created after existing orders, so an existing same-date
+		# order precedes it. Missing delivery dates remain after every dated order.
+		self.assertEqual(items, {"EARLY", "SAME"})
+		overview.assert_called_once_with(page_size=0)
+
+	def test_missing_target_delivery_follows_all_existing_dated_demands(self):
+		from process_simplification.api import production
+
+		demands = [
+			self._demand("DATED", "2026-08-10", sales_order_item="SOI-DATED"),
+			self._demand("UNDATED", None, sales_order_item="SOI-UNDATED"),
+		]
+		with patch.object(
+			production, "get_production_overview", return_value=self._overview(demands)
+		), patch.object(production, "get_default_bom", side_effect=lambda item: "BOM-" + item):
+			prior = production.get_prior_material_demands("_Test Company", target_delivery_date=None)
+
+		self.assertEqual({row["source"]["finished_item"] for row in prior}, {"DATED", "UNDATED"})
+
+	def test_all_material_demands_loads_every_page(self):
+		from process_simplification.api import production
+
+		demands = [self._demand("DATED", "2026-08-10", sales_order_item="SOI-DATED")]
+		with patch.object(
+			production, "get_production_overview", return_value=self._overview(demands)
+		) as overview, patch.object(production, "get_default_bom", side_effect=lambda item: "BOM-" + item):
+			production.get_all_material_demands("_Test Company")
+
+		overview.assert_called_once_with(page_size=0)
 
 	def test_excluded_sales_order_item_is_not_prior_to_itself(self):
 		from process_simplification.api import production

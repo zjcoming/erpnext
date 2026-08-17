@@ -473,16 +473,6 @@ def _material_demands(demands):
 	return rows
 
 
-def _delivery_precedes(other_date, target_date) -> bool:
-	"""Delivery-date priority (口径 2): a demand with no date is treated as most
-	urgent, so it always precedes; a dated demand precedes a strictly later one."""
-	if not other_date:
-		return True
-	if not target_date:
-		return False
-	return getdate(other_date) < getdate(target_date)
-
-
 def get_prior_material_demands(
 	company: str,
 	*,
@@ -497,13 +487,24 @@ def get_prior_material_demands(
 	shortage check nets shared stock already claimed by earlier-due orders
 	instead of letting every order claim the same scarce stock.
 	"""
+	# A quick-order target has not been inserted yet, so every existing demand
+	# with the same delivery date precedes it by creation time.
+	target_priority = order_item_priority_key(
+		{
+			"delivery_date": target_delivery_date,
+			"order_creation": "9999-12-31 23:59:59.999999",
+			"sales_order": "\uffff",
+			"sales_order_item_idx": 2**31 - 1,
+			"sales_order_item": "\uffff",
+		}
+	)
 	demands = []
-	for demand in get_production_overview().get("demands") or []:
+	for demand in get_production_overview(page_size=0).get("demands") or []:
 		if demand.get("company") != company:
 			continue
 		if exclude_sales_order_item and demand.get("sales_order_item") == exclude_sales_order_item:
 			continue
-		if not _delivery_precedes(demand.get("delivery_date"), target_delivery_date):
+		if order_item_priority_key(demand) >= target_priority:
 			continue
 		demands.append(demand)
 	return _material_demands(demands)
@@ -515,7 +516,7 @@ def get_all_material_demands(company: str):
 	unfinished order so one Material Request can cover the combined quantity."""
 	demands = [
 		demand
-		for demand in get_production_overview().get("demands") or []
+		for demand in get_production_overview(page_size=0).get("demands") or []
 		if demand.get("company") == company
 	]
 	return _material_demands(demands)
@@ -648,10 +649,10 @@ def get_production_overview(page=1, page_size=DEFAULT_WORKBENCH_PAGE_SIZE, filte
 			row for row in company_demands if not readiness.get(row.get("sales_order_item"))
 		]
 		covered_demands.extend(attach_production_plan_readiness(planned_demands, readiness))
-		# A demand without a Production Plan has no authoritative plan date and
-		# therefore must not consume shared stock or inbound supply by Sales Order
-		# delivery date. It remains planning-required or legacy-blocked until the
-		# plan graph provides executable Work Orders.
+		# A demand without a Production Plan has no authoritative direct Work Order
+		# material requirements. It remains planning-required or legacy-blocked
+		# until the plan graph provides executable Work Orders; once it does, the
+		# resulting materials use the Sales Order Item delivery priority above.
 		covered_demands.extend(legacy_demands)
 
 	covered_demands.sort(key=production_sort_key)

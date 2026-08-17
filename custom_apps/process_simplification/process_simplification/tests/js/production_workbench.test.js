@@ -507,6 +507,31 @@ test("current material gaps retain unallocated documents with allocation and dea
 	assert.match(html, /晚于订单交期/);
 });
 
+test("unverifiable supply deadline remains visible without promising coverage", () => {
+	const html = productionWorkbench.productionDemandHtml(
+		demand("UNKNOWN-DEADLINE", {
+			materials: [{
+				item_code: "RM-UNKNOWN",
+				current_gap_qty: 2,
+				shortage_qty: 2,
+				status: "new_purchase_required",
+				supply_documents: [{
+					doctype: "Purchase Order",
+					name: "PORD-UNKNOWN",
+					outstanding_qty: 8,
+					allocated_qty: 0,
+					deadline_unknown: true,
+				}],
+			}],
+		}),
+		helpers
+	);
+
+	assert.match(html, /PORD-UNKNOWN/);
+	assert.match(html, /交期不可核验/);
+	assert.match(html, /未分配给本单/);
+});
+
 test("allocated supply documents keep total outstanding quantity and identify their allocation", () => {
 	const html = productionWorkbench.productionDemandHtml(
 		demand("ALLOCATED-MATERIAL", {

@@ -330,11 +330,15 @@ function purchaseMaterialSummaryHtml(materials, helpers) {
 						? `<tr class="production-supply-docs"><td colspan="10" data-label="${esc(t("采购单据"))}"><div class="production-supply-doc-list">${documents
 							.map((document) => {
 								const typeLabel = document.doctype === "Material Request" ? t("采购申请") : t("采购单");
-								const lateTag = document.is_late ? ` · <span class="indicator-pill red">${esc(t("晚于订单交期"))}</span>` : "";
+								const deadlineTag = document.deadline_unknown
+									? ` · <span class="indicator-pill orange">${esc(t("交期不可核验"))}</span>`
+									: document.is_late
+										? ` · <span class="indicator-pill red">${esc(t("晚于订单交期"))}</span>`
+										: "";
 								const allocation = Number(document.allocated_qty || 0) > 0
 									? ` · ${esc(t("已分配给本单"))} ${number(document.allocated_qty)}`
 									: ` · ${esc(t("未分配给本单"))}`;
-								return `<a class="production-supply-doc${document.is_late ? " is-late" : ""}" href="/app/${esc(frappe.router.slug(document.doctype))}/${esc(document.name)}" target="_blank"><span class="production-supply-doc-type">${esc(typeLabel)}</span> <strong>${esc(document.name)}</strong> · <span class="indicator-pill grey">${esc(document.status || "")}</span> · ${esc(t("未完成"))} ${number(document.outstanding_qty)}${allocation}${document.schedule_date ? ` · ${esc(t("交期"))} ${esc(frappe.datetime.str_to_user(document.schedule_date))}` : ""}${lateTag}</a>`;
+								return `<a class="production-supply-doc${document.is_late ? " is-late" : ""}" href="/app/${esc(frappe.router.slug(document.doctype))}/${esc(document.name)}" target="_blank"><span class="production-supply-doc-type">${esc(typeLabel)}</span> <strong>${esc(document.name)}</strong> · <span class="indicator-pill grey">${esc(document.status || "")}</span> · ${esc(t("未完成"))} ${number(document.outstanding_qty)}${allocation}${document.schedule_date ? ` · ${esc(t("交期"))} ${esc(frappe.datetime.str_to_user(document.schedule_date))}` : ""}${deadlineTag}</a>`;
 							})
 							.join("")}</div></td></tr>`
 						: "";

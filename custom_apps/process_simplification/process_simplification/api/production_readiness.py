@@ -41,6 +41,11 @@ def work_order_priority_key(plan, work_order) -> tuple:
 	return (True, *plan_priority_key(plan))
 
 
+def _remaining_work_order_item_qty(work_order, item) -> float:
+	completed_field = "consumed_qty" if work_order.get("skip_transfer") else "transferred_qty"
+	return max(flt(item.get("required_qty")) - flt(item.get(completed_field)), 0)
+
+
 def build_work_order_graph(
 	plan,
 	work_orders,
@@ -182,8 +187,21 @@ def allocate_work_order_readiness(plans, stock_snapshots, supply_documents=None)
 	"""Allocate stock and inbound supply once by Sales Order Item delivery priority."""
 	result = [deepcopy(plan) for plan in plans or []]
 	supply_documents = supply_documents or {}
+	reserved_stock = defaultdict(float)
+	for plan in result:
+		for work_order in plan.work_orders_by_name.values():
+			if work_order.get("status") in TERMINAL_WORK_ORDER_STATUSES:
+				work_order.required_items = []
+				work_order.readiness_status = _work_order_readiness_status(work_order)
+				continue
+			for item in work_order.get("required_items") or []:
+				key = (item.get("item_code"), item.get("source_warehouse"))
+				reserved_stock[key] += min(
+					max(flt(item.get("stock_reserved_qty")), 0),
+					_remaining_work_order_item_qty(work_order, item),
+				)
 	remaining_stock = {
-		key: max(flt((snapshot or {}).get("available_qty")), 0)
+		key: max(flt((snapshot or {}).get("available_qty")) - reserved_stock.get(key, 0), 0)
 		for key, snapshot in (stock_snapshots or {}).items()
 	}
 	remaining_supply = {}
@@ -192,6 +210,8 @@ def allocate_work_order_readiness(plans, stock_snapshots, supply_documents=None)
 	for plan in result:
 		for work_order_name in plan.execution_order:
 			work_order = plan.work_orders_by_name[work_order_name]
+			if work_order.get("status") in TERMINAL_WORK_ORDER_STATUSES:
+				continue
 			allocation_units.append(
 				(
 					work_order_priority_key(plan, work_order),
@@ -209,17 +229,20 @@ def allocate_work_order_readiness(plans, stock_snapshots, supply_documents=None)
 		allocated_items = []
 		for source_item in work_order.get("required_items") or []:
 			item = frappe._dict(deepcopy(dict(source_item)))
-			remaining_required = max(
-				flt(item.get("required_qty")) - flt(item.get("transferred_qty")),
-				0,
-			)
+			remaining_required = _remaining_work_order_item_qty(work_order, item)
 			key = (item.get("item_code"), item.get("source_warehouse"))
 			available = remaining_stock.setdefault(
 				key,
-				max(flt((stock_snapshots or {}).get(key, {}).get("available_qty")), 0),
+				max(
+					flt((stock_snapshots or {}).get(key, {}).get("available_qty"))
+					- reserved_stock.get(key, 0),
+					0,
+				),
 			)
-			allocated = min(remaining_required, available)
-			remaining_stock[key] = max(available - allocated, 0)
+			reserved = min(max(flt(item.get("stock_reserved_qty")), 0), remaining_required)
+			allocated_free = min(max(remaining_required - reserved, 0), available)
+			allocated = reserved + allocated_free
+			remaining_stock[key] = max(available - allocated_free, 0)
 			item.original_required_qty = flt(item.get("required_qty"))
 			item.required_qty = remaining_required
 			item.actual_qty = flt((stock_snapshots or {}).get(key, {}).get("actual_qty"))
@@ -263,14 +286,19 @@ def allocate_work_order_readiness(plans, stock_snapshots, supply_documents=None)
 							document_key,
 							max(flt(document.get("outstanding_qty")), 0),
 						)
+						deadline_comparable = bool(
+							document.get("schedule_date") and work_order.get("order_delivery_date")
+						)
+						document.deadline_unknown = not deadline_comparable
 						document.is_late = bool(
-							document.get("schedule_date")
-							and work_order.get("order_delivery_date")
+							deadline_comparable
 							and getdate(document.get("schedule_date"))
 							> getdate(work_order.get("order_delivery_date"))
 						)
 						document.allocated_qty = (
-							0 if document.is_late else min(uncovered, available_supply)
+							0
+							if document.is_late or document.deadline_unknown
+							else min(uncovered, available_supply)
 						)
 						remaining_supply[document_key] = max(
 							available_supply - document.allocated_qty,
@@ -354,9 +382,6 @@ def get_production_plan_readiness(company=None, sales_order_items=None):
 	}
 	if company:
 		work_order_filters["company"] = company
-	if sales_order_items:
-		work_order_filters["sales_order_item"] = ["in", list(set(sales_order_items))]
-
 	work_orders = frappe.get_all(
 		"Work Order",
 		filters=work_order_filters,
@@ -371,6 +396,7 @@ def get_production_plan_readiness(company=None, sales_order_items=None):
 			"sales_order_item",
 			"company",
 			"status",
+			"skip_transfer",
 			"qty",
 			"produced_qty",
 			"process_loss_qty",
@@ -387,39 +413,6 @@ def get_production_plan_readiness(company=None, sales_order_items=None):
 		return {}
 
 	plan_names = sorted({row.get("production_plan") for row in work_orders if row.get("production_plan")})
-	if sales_order_items:
-		all_plan_work_order_filters = {
-			"docstatus": 1,
-			"production_plan": ["in", plan_names],
-		}
-		if company:
-			all_plan_work_order_filters["company"] = company
-		work_orders = frappe.get_all(
-			"Work Order",
-			filters=all_plan_work_order_filters,
-			fields=[
-				"name",
-				"production_item",
-				"bom_no",
-				"production_plan",
-				"production_plan_item",
-				"production_plan_sub_assembly_item",
-				"sales_order",
-				"sales_order_item",
-				"company",
-				"status",
-				"qty",
-				"produced_qty",
-				"process_loss_qty",
-				"material_transferred_for_manufacturing",
-				"source_warehouse",
-				"wip_warehouse",
-				"fg_warehouse",
-				"planned_start_date",
-				"expected_delivery_date",
-				"creation",
-			],
-		)
 	work_order_names = [row.get("name") for row in work_orders]
 	required_items = frappe.get_all(
 		"Work Order Item",
@@ -618,6 +611,7 @@ def get_production_plan_readiness(company=None, sales_order_items=None):
 
 	readiness_plans = allocate_work_order_readiness(graphs, stock_snapshots, supply_documents)
 	result = defaultdict(list)
+	requested_order_items = set(sales_order_items or [])
 	for plan in readiness_plans:
 		serialized = _serialize_readiness_plan(plan)
 		order_item_names = {
@@ -632,5 +626,7 @@ def get_production_plan_readiness(company=None, sales_order_items=None):
 				if row.get("sales_order_item")
 			}
 		for order_item_name in sorted(order_item_names):
+			if requested_order_items and order_item_name not in requested_order_items:
+				continue
 			result[order_item_name].append(serialized)
 	return dict(result)
