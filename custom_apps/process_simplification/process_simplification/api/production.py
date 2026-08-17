@@ -523,7 +523,7 @@ def get_all_material_demands(company: str):
 
 
 def _other_work_orders():
-	rows = frappe.get_all(
+	rows = frappe.get_list(
 		"Work Order",
 		filters={"docstatus": 1, "status": ["not in", ["Completed", "Stopped", "Closed", "Cancelled"]]},
 		fields=[
@@ -538,6 +538,7 @@ def _other_work_orders():
 			"expected_delivery_date",
 		],
 		order_by="expected_delivery_date asc, creation asc",
+		limit=0,
 	)
 	return [dict(row) for row in rows if not row.get("sales_order") or not row.get("sales_order_item")]
 

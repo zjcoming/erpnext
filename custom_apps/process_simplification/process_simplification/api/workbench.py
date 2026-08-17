@@ -282,6 +282,7 @@ def _duplicate_supported_items(items):
 def get_order_workbench(sales_order: str):
 	ensure_submitted_sales_order(sales_order)
 	so = frappe.get_doc("Sales Order", sales_order)
+	so.check_permission("read")
 	duplicates = _duplicate_supported_items(so.items)
 	rows = []
 

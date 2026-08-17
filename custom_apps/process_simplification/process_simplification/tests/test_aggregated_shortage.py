@@ -19,6 +19,7 @@ class TestAggregatedShortage(UnitTestCase):
 			"SOI-001": [
 				{
 					"name": "PP-001",
+					"company": "_Other Company",
 					"planned_date": "2026-08-20",
 					"work_orders": [
 						{
@@ -66,6 +67,7 @@ class TestAggregatedShortage(UnitTestCase):
 		rows = shortage.calculate_plan_purchase_shortages(readiness, {"SOI-001"})
 
 		self.assertEqual([row["item_code"] for row in rows], ["RM"])
+		self.assertEqual(rows[0]["company"], "_Other Company")
 		self.assertEqual(rows[0]["shortage_qty"], 10)
 		self.assertEqual(rows[0]["sources"][0]["work_order"], "WO-SA")
 
@@ -163,3 +165,189 @@ class TestAggregatedShortage(UnitTestCase):
 					}
 				],
 			)
+
+	def test_purchase_revalidation_does_not_accept_shortage_from_another_order_source(self):
+		from process_simplification.api import shortage
+		from process_simplification.api.utils import SimplifiedFlowError
+
+		with self.assertRaises(SimplifiedFlowError):
+			shortage.revalidate_purchase_rows(
+				[
+					{
+						"item_code": "RM-SHARED",
+						"warehouse": "Stores - TC",
+						"purchase_qty": 5,
+						"shortage_qty": 5,
+						"sources": [
+							{
+								"production_plan": "PP-A",
+								"work_order": "WO-A",
+								"sales_order_item": "SOI-A",
+							}
+						],
+					}
+				],
+				[
+					{
+						"item_code": "RM-SHARED",
+						"warehouse": "Stores - TC",
+						"shortage_qty": 5,
+						"sources": [
+							{
+								"production_plan": "PP-B",
+								"work_order": "WO-B",
+								"sales_order_item": "SOI-B",
+								"shortage_qty": 5,
+							}
+						],
+					}
+				],
+			)
+
+	def test_purchase_revalidation_limits_quantity_to_matching_sources(self):
+		from process_simplification.api import shortage
+		from process_simplification.api.utils import SimplifiedFlowError
+
+		with self.assertRaises(SimplifiedFlowError):
+			shortage.revalidate_purchase_rows(
+				[
+					{
+						"item_code": "RM-SHARED",
+						"warehouse": "Stores - TC",
+						"purchase_qty": 5,
+						"shortage_qty": 5,
+						"sources": [
+							{
+								"production_plan": "PP-A",
+								"work_order": "WO-A",
+								"sales_order_item": "SOI-A",
+							}
+						],
+					}
+				],
+				[
+					{
+						"item_code": "RM-SHARED",
+						"warehouse": "Stores - TC",
+						"shortage_qty": 5,
+						"sources": [
+							{
+								"production_plan": "PP-A",
+								"work_order": "WO-A",
+								"sales_order_item": "SOI-A",
+								"shortage_qty": 2,
+							},
+							{
+								"production_plan": "PP-B",
+								"work_order": "WO-B",
+								"sales_order_item": "SOI-B",
+								"shortage_qty": 3,
+							},
+						],
+					}
+				],
+			)
+
+	def test_purchase_revalidation_keeps_only_current_matching_source_quantity(self):
+		from process_simplification.api import shortage
+
+		validated = shortage.revalidate_purchase_rows(
+			[
+				{
+					"item_code": "RM-SHARED",
+					"warehouse": "Stores - TC",
+					"purchase_qty": 2,
+					"shortage_qty": 5,
+					"sources": [
+						{
+							"production_plan": "PP-A",
+							"work_order": "WO-A",
+							"sales_order_item": "SOI-A",
+						}
+					],
+				}
+			],
+			[
+				{
+					"item_code": "RM-SHARED",
+					"warehouse": "Stores - TC",
+					"shortage_qty": 5,
+					"sources": [
+						{
+							"production_plan": "PP-A",
+							"work_order": "WO-A",
+							"sales_order_item": "SOI-A",
+							"shortage_qty": 2,
+						},
+						{
+							"production_plan": "PP-B",
+							"work_order": "WO-B",
+							"sales_order_item": "SOI-B",
+							"shortage_qty": 3,
+						},
+					],
+				}
+			],
+		)
+
+		self.assertEqual(validated[0].shortage_qty, 2)
+		self.assertEqual([source.sales_order_item for source in validated[0].sources], ["SOI-A"])
+
+	@patch("process_simplification.api.shortage.revalidate_purchase_rows")
+	@patch("process_simplification.api.shortage.calculate_plan_purchase_shortages", return_value=[])
+	@patch(
+		"process_simplification.api.production_readiness.get_production_plan_readiness",
+		return_value={},
+	)
+	@patch("process_simplification.api.shortage.get_company_defaults")
+	@patch("process_simplification.api.shortage.frappe.new_doc")
+	def test_material_request_uses_shortage_row_company_when_company_is_omitted(
+		self,
+		new_doc,
+		get_company_defaults,
+		get_production_plan_readiness,
+		calculate_shortages,
+		revalidate_rows,
+	):
+		from process_simplification.api import shortage
+
+		class MaterialRequest:
+			def __init__(self):
+				self.items = []
+				self.name = "MAT-MR-TEST"
+				self.docstatus = 0
+
+			def append(self, fieldname, value):
+				self.items.append(value)
+
+			def insert(self):
+				return self
+
+			def submit(self):
+				self.docstatus = 1
+
+		mr = MaterialRequest()
+		new_doc.return_value = mr
+		get_company_defaults.return_value = frappe._dict(
+			company="_Default Company",
+			source_warehouse="Stores - DC",
+		)
+		row = {
+			"company": "_Other Company",
+			"item_code": "RM-1",
+			"warehouse": "Stores - OC",
+			"purchase_qty": 1,
+			"shortage_qty": 1,
+			"sources": [{"sales_order_item": "SOI-1"}],
+		}
+		revalidate_rows.return_value = [frappe._dict(row)]
+
+		result = shortage.create_material_request([row])
+
+		self.assertEqual(result["material_request"], "MAT-MR-TEST")
+		self.assertEqual(mr.company, "_Other Company")
+		get_company_defaults.assert_called_once_with("_Other Company")
+		get_production_plan_readiness.assert_called_once_with(
+			company="_Other Company",
+			sales_order_items=["SOI-1"],
+		)

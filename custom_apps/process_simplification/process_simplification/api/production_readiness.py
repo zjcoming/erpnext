@@ -46,6 +46,13 @@ def _remaining_work_order_item_qty(work_order, item) -> float:
 	return max(flt(item.get("required_qty")) - flt(item.get(completed_field)), 0)
 
 
+def _free_stock_qty(snapshot, loaded_reserved_qty=0) -> float:
+	snapshot = frappe._dict(snapshot or {})
+	if snapshot.get("free_qty") is not None:
+		return max(flt(snapshot.get("free_qty")), 0)
+	return max(flt(snapshot.get("available_qty")) - flt(loaded_reserved_qty), 0)
+
+
 def build_work_order_graph(
 	plan,
 	work_orders,
@@ -65,6 +72,13 @@ def build_work_order_graph(
 	for source in work_orders or []:
 		row = frappe._dict(dict(source))
 		sub_assembly = sub_assembly_by_name.get(row.get("production_plan_sub_assembly_item"))
+		row.production_plan_item = row.get("production_plan_item") or (sub_assembly or {}).get(
+			"production_plan_item"
+		)
+		row.sales_order = row.get("sales_order") or (sub_assembly or {}).get("sales_order")
+		row.sales_order_item = row.get("sales_order_item") or (sub_assembly or {}).get(
+			"sales_order_item"
+		)
 		row.bom_level = int(sub_assembly.get("bom_level") or 0) + 1 if sub_assembly else 0
 		row.priority_date = str(
 			(sub_assembly or {}).get("schedule_date")
@@ -75,6 +89,7 @@ def build_work_order_graph(
 		)
 		row.parent_item_code = (sub_assembly or {}).get("parent_item_code")
 		row.parent_work_order = None
+		row.graph_link_ambiguous = False
 		row.child_work_orders = []
 		row.required_items = required_by_work_order.get(row.name, [])
 		row.is_finished_good = not bool(sub_assembly)
@@ -89,8 +104,27 @@ def build_work_order_graph(
 	for row in work_orders_by_name.values():
 		if not row.parent_item_code:
 			continue
-		parents = work_orders_by_item.get(row.parent_item_code) or []
+		parents = [
+			parent
+			for parent in work_orders_by_item.get(row.parent_item_code) or []
+			if parent.get("bom_level") == row.get("bom_level") - 1
+		]
+		for fieldname in ("production_plan_item", "sales_order_item"):
+			value = row.get(fieldname)
+			if value:
+				parents = [parent for parent in parents if parent.get(fieldname) == value]
+		parents = [
+			parent
+			for parent in parents
+			if any(
+				item.get("item_code") == row.get("production_item")
+				for item in parent.get("required_items") or []
+			)
+		]
 		if not parents:
+			continue
+		if len(parents) > 1:
+			row.graph_link_ambiguous = True
 			continue
 		parent = parents[0]
 		row.parent_work_order = parent.name
@@ -146,6 +180,8 @@ def _work_order_readiness_status(work_order):
 	items = work_order.get("required_items") or []
 	if not items or all(flt(item.get("required_qty")) <= 0 for item in items):
 		return "materials_transferred"
+	if any(item.get("blocked") or item.get("status") == "cannot_calculate" for item in items):
+		return "blocked"
 	manufactured_gaps = [
 		item
 		for item in items
@@ -201,7 +237,7 @@ def allocate_work_order_readiness(plans, stock_snapshots, supply_documents=None)
 					_remaining_work_order_item_qty(work_order, item),
 				)
 	remaining_stock = {
-		key: max(flt((snapshot or {}).get("available_qty")) - reserved_stock.get(key, 0), 0)
+		key: _free_stock_qty(snapshot, reserved_stock.get(key, 0))
 		for key, snapshot in (stock_snapshots or {}).items()
 	}
 	remaining_supply = {}
@@ -231,24 +267,11 @@ def allocate_work_order_readiness(plans, stock_snapshots, supply_documents=None)
 			item = frappe._dict(deepcopy(dict(source_item)))
 			remaining_required = _remaining_work_order_item_qty(work_order, item)
 			key = (item.get("item_code"), item.get("source_warehouse"))
-			available = remaining_stock.setdefault(
-				key,
-				max(
-					flt((stock_snapshots or {}).get(key, {}).get("available_qty"))
-					- reserved_stock.get(key, 0),
-					0,
-				),
-			)
-			reserved = min(max(flt(item.get("stock_reserved_qty")), 0), remaining_required)
-			allocated_free = min(max(remaining_required - reserved, 0), available)
-			allocated = reserved + allocated_free
-			remaining_stock[key] = max(available - allocated_free, 0)
+			snapshot = frappe._dict((stock_snapshots or {}).get(key) or {})
 			item.original_required_qty = flt(item.get("required_qty"))
 			item.required_qty = remaining_required
-			item.actual_qty = flt((stock_snapshots or {}).get(key, {}).get("actual_qty"))
-			item.committed_qty = flt((stock_snapshots or {}).get(key, {}).get("committed_qty"))
-			item.available_qty = allocated
-			item.current_gap_qty = max(remaining_required - allocated, 0)
+			item.actual_qty = flt(snapshot.get("actual_qty"))
+			item.committed_qty = flt(snapshot.get("committed_qty"))
 			item.supply_type = "manufactured" if item.get("is_manufactured") else "purchased"
 			item.child_work_order = (
 				_child_work_order_for_item(plan, work_order, item.get("item_code"))
@@ -258,6 +281,26 @@ def allocate_work_order_readiness(plans, stock_snapshots, supply_documents=None)
 			item.open_purchase_order_qty = 0
 			item.open_material_request_qty = 0
 			item.supply_documents = []
+			item.blocked = bool(
+				not item.get("source_warehouse") or snapshot.get("can_calculate") is False
+			)
+			if item.blocked:
+				item.available_qty = 0
+				item.current_gap_qty = remaining_required
+				item.shortage_qty = 0
+				item.status = "cannot_calculate"
+				allocated_items.append(item)
+				continue
+			available = remaining_stock.setdefault(
+				key,
+				_free_stock_qty(snapshot, reserved_stock.get(key, 0)),
+			)
+			reserved = min(max(flt(item.get("stock_reserved_qty")), 0), remaining_required)
+			allocated_free = min(max(remaining_required - reserved, 0), available)
+			allocated = reserved + allocated_free
+			remaining_stock[key] = max(available - allocated_free, 0)
+			item.available_qty = allocated
+			item.current_gap_qty = max(remaining_required - allocated, 0)
 			if item.supply_type == "manufactured":
 				item.shortage_qty = 0
 				item.status = "waiting_subassembly" if item.current_gap_qty > 0 else "ready_now"
@@ -397,7 +440,7 @@ def get_production_plan_readiness(company=None, sales_order_items=None):
 	}
 	if company:
 		work_order_filters["company"] = company
-	work_orders = frappe.get_all(
+	work_orders = frappe.get_list(
 		"Work Order",
 		filters=work_order_filters,
 		fields=[
@@ -423,6 +466,7 @@ def get_production_plan_readiness(company=None, sales_order_items=None):
 			"expected_delivery_date",
 			"creation",
 		],
+		limit=0,
 	)
 	if not work_orders:
 		return {}
@@ -444,10 +488,11 @@ def get_production_plan_readiness(company=None, sales_order_items=None):
 			"stock_reserved_qty",
 		],
 	)
-	plans = frappe.get_all(
+	plans = frappe.get_list(
 		"Production Plan",
 		filters={"name": ["in", plan_names]},
 		fields=["name", "company", "posting_date", "creation", "status"],
+		limit=0,
 	)
 	plan_items = frappe.get_all(
 		"Production Plan Item",
@@ -503,10 +548,11 @@ def get_production_plan_readiness(company=None, sales_order_items=None):
 		| {row.get("parent") for row in order_items if row.get("parent")}
 	)
 	orders = (
-		frappe.get_all(
+		frappe.get_list(
 			"Sales Order",
 			filters={"name": ["in", linked_order_names]},
 			fields=["name", "creation"],
+			limit=0,
 		)
 		if linked_order_names
 		else []

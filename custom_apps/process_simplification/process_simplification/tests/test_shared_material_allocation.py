@@ -40,6 +40,25 @@ class TestSharedMaterialAllocation(UnitTestCase):
 		patcher.start()
 		self.addCleanup(patcher.stop)
 
+	@patch("process_simplification.api.shortage.frappe.db.get_value")
+	def test_stock_snapshot_separates_free_stock_from_production_reservations(self, get_value):
+		from process_simplification.api.shortage import get_material_stock_snapshot
+
+		get_value.return_value = {
+			"actual_qty": 10,
+			"reserved_qty": 1,
+			"reserved_qty_for_sub_contract": 1,
+			"reserved_qty_for_production": 5,
+			"reserved_qty_for_production_plan": 2,
+		}
+
+		snapshot = get_material_stock_snapshot("RM-SHARED", "_Test Warehouse - _TC")
+
+		self.assertEqual(snapshot.committed_qty, 2)
+		self.assertEqual(snapshot.production_committed_qty, 7)
+		self.assertEqual(snapshot.available_qty, 8)
+		self.assertEqual(snapshot.free_qty, 1)
+
 	@patch("process_simplification.api.shortage._po_outstanding", return_value=0)
 	@patch("process_simplification.api.shortage._mr_outstanding", return_value=0)
 	@patch("process_simplification.api.shortage.get_material_stock_snapshot")
@@ -98,6 +117,39 @@ class TestSharedMaterialAllocation(UnitTestCase):
 		self.assertEqual(material["current_gap_qty"], 0)
 		self.assertEqual(material["shortage_qty"], 0)
 		self.assertEqual(material["status"], "ready_now")
+
+	@patch("process_simplification.api.shortage._po_outstanding", return_value=0)
+	@patch("process_simplification.api.shortage._mr_outstanding", return_value=0)
+	@patch("process_simplification.api.shortage.get_material_stock_snapshot")
+	@patch("process_simplification.api.shortage.get_bom_items_as_dict")
+	def test_new_demand_cannot_use_stock_reserved_for_other_production(
+		self, get_bom_items, stock_snapshot, mr_outstanding, po_outstanding
+	):
+		from process_simplification.api.shortage import calculate_material_coverage
+
+		get_bom_items.return_value = self._bom_items(per_unit_qty=8)
+		stock_snapshot.return_value = frappe._dict(
+			{
+				"can_calculate": True,
+				"actual_qty": 10,
+				"committed_qty": 0,
+				"available_qty": 10,
+				"free_qty": 3,
+				"production_committed_qty": 7,
+			}
+		)
+
+		result = calculate_material_coverage(
+			[{"bom_no": "BOM-FG-001", "qty": 1, "source": {"finished_item": "FG-001"}}],
+			"_Test Company",
+			need_by_date="2099-01-10",
+			defaults=frappe._dict({"source_warehouse": "_Test Warehouse - _TC"}),
+		)
+
+		material = result.materials[0]
+		self.assertEqual(material["available_qty"], 3)
+		self.assertEqual(material["current_gap_qty"], 5)
+		self.assertEqual(material["shortage_qty"], 5)
 
 	@patch("process_simplification.api.shortage._po_outstanding", return_value=0)
 	@patch("process_simplification.api.shortage._mr_outstanding", return_value=0)

@@ -104,6 +104,74 @@ class TestProductionPlanGraph(UnitTestCase):
 		self.assertTrue(graph.work_orders_by_name["WO-FG"].is_finished_good)
 		self.assertIsInstance(graph.work_orders_by_name["WO-FG"], frappe._dict)
 
+	def test_parent_matching_uses_plan_row_and_bom_level(self):
+		from process_simplification.api.production_readiness import build_work_order_graph
+
+		graph = build_work_order_graph(
+			{"name": "PP-MULTI", "posting_date": "2026-08-17"},
+			[
+				{
+					"name": "WO-FG-A", "production_item": "FG", "production_plan_item": "PPI-A",
+					"sales_order_item": "SOI-A", "creation": "2026-08-01 09:00:00",
+				},
+				{
+					"name": "WO-FG-B", "production_item": "FG", "production_plan_item": "PPI-B",
+					"sales_order_item": "SOI-B", "creation": "2026-08-01 09:00:01",
+				},
+				{
+					"name": "WO-SA-B", "production_item": "SA",
+					"production_plan_sub_assembly_item": "PPSA-B",
+					"sales_order_item": "SOI-B", "creation": "2026-08-01 09:00:02",
+				},
+			],
+			[
+				{"parent": "WO-FG-A", "item_code": "SA", "required_qty": 1},
+				{"parent": "WO-FG-B", "item_code": "SA", "required_qty": 1},
+			],
+			[
+				{
+					"name": "PPSA-B", "production_item": "SA", "parent_item_code": "FG",
+					"production_plan_item": "PPI-B", "sales_order_item": "SOI-B", "bom_level": 0,
+				}
+			],
+			active_bom_items={"FG", "SA"},
+		)
+
+		self.assertEqual(graph.work_orders_by_name["WO-SA-B"].parent_work_order, "WO-FG-B")
+		self.assertEqual(graph.work_orders_by_name["WO-FG-A"].child_work_orders, [])
+
+	def test_ambiguous_parent_is_not_linked_arbitrarily(self):
+		from process_simplification.api.production_readiness import build_work_order_graph
+
+		graph = build_work_order_graph(
+			{"name": "PP-AMBIGUOUS", "posting_date": "2026-08-17"},
+			[
+				{"name": "WO-FG-1", "production_item": "FG", "production_plan_item": "PPI-1"},
+				{"name": "WO-FG-2", "production_item": "FG", "production_plan_item": "PPI-1"},
+				{
+					"name": "WO-SA", "production_item": "SA",
+					"production_plan_sub_assembly_item": "PPSA-1",
+				},
+			],
+			[
+				{"parent": "WO-FG-1", "item_code": "SA", "required_qty": 1},
+				{"parent": "WO-FG-2", "item_code": "SA", "required_qty": 1},
+			],
+			[
+				{
+					"name": "PPSA-1", "production_item": "SA", "parent_item_code": "FG",
+					"production_plan_item": "PPI-1", "bom_level": 0,
+				}
+			],
+			active_bom_items={"FG", "SA"},
+		)
+
+		child = graph.work_orders_by_name["WO-SA"]
+		self.assertIsNone(child.parent_work_order)
+		self.assertTrue(child.graph_link_ambiguous)
+		self.assertEqual(graph.work_orders_by_name["WO-FG-1"].child_work_orders, [])
+		self.assertEqual(graph.work_orders_by_name["WO-FG-2"].child_work_orders, [])
+
 	def test_serialized_plan_is_projected_to_one_sales_order_item(self):
 		from process_simplification.api.production_readiness import _serialize_readiness_plan
 
@@ -379,6 +447,51 @@ class TestWorkOrderReadiness(UnitTestCase):
 		self.assertEqual(late.available_qty, 10)
 		self.assertEqual(late.shortage_qty, 0)
 
+	def test_external_production_reservation_is_not_reallocated_to_plan_work_order(self):
+		from process_simplification.api.production_readiness import allocate_work_order_readiness
+
+		graph = self._graph(
+			plan_name="PP-ORDER",
+			planned_date="2026-08-10",
+			creation="2026-08-01 08:00:00",
+			work_orders=[
+				{
+					"name": "WO-ORDER",
+					"production_item": "FG-ORDER",
+					"production_plan_item": "PPI-ORDER",
+					"status": "Not Started",
+				}
+			],
+			required_items=[
+				{
+					"parent": "WO-ORDER",
+					"item_code": "RM-SHARED",
+					"source_warehouse": "Stores - TC",
+					"required_qty": 8,
+					"transferred_qty": 0,
+					"stock_reserved_qty": 4,
+				}
+			],
+			active_bom_items={"FG-ORDER"},
+		)
+
+		item = allocate_work_order_readiness(
+			[graph],
+			{
+				("RM-SHARED", "Stores - TC"): {
+					"can_calculate": True,
+					"actual_qty": 10,
+					"available_qty": 10,
+					"free_qty": 3,
+					"production_committed_qty": 7,
+				}
+			},
+		)[0].work_orders_by_name["WO-ORDER"].required_items[0]
+
+		self.assertEqual(item.available_qty, 7)
+		self.assertEqual(item.current_gap_qty, 1)
+		self.assertEqual(item.shortage_qty, 1)
+
 	def test_terminal_work_order_does_not_consume_shared_stock(self):
 		from process_simplification.api.production_readiness import allocate_work_order_readiness
 
@@ -429,6 +542,44 @@ class TestWorkOrderReadiness(UnitTestCase):
 		self.assertEqual(item.required_qty, 4)
 		self.assertEqual(item.available_qty, 4)
 		self.assertEqual(item.shortage_qty, 0)
+
+	def test_missing_source_warehouse_blocks_readiness_instead_of_creating_purchase_shortage(self):
+		from process_simplification.api.production_readiness import allocate_work_order_readiness
+
+		graph = self._graph(
+			plan_name="PP-MISSING-WAREHOUSE",
+			planned_date="2026-08-10",
+			creation="2026-08-01 08:00:00",
+			work_orders=[
+				{
+					"name": "WO-MISSING-WAREHOUSE",
+					"production_item": "FG-MISSING-WAREHOUSE",
+					"production_plan_item": "PPI-MISSING-WAREHOUSE",
+					"status": "Not Started",
+				}
+			],
+			required_items=[
+				{
+					"parent": "WO-MISSING-WAREHOUSE",
+					"item_code": "RM-MISSING-WAREHOUSE",
+					"source_warehouse": None,
+					"required_qty": 5,
+					"transferred_qty": 0,
+				}
+			],
+			active_bom_items={"FG-MISSING-WAREHOUSE"},
+		)
+
+		work_order = allocate_work_order_readiness(
+			[graph],
+			{("RM-MISSING-WAREHOUSE", None): {"can_calculate": False, "available_qty": 0}},
+		)[0].work_orders_by_name["WO-MISSING-WAREHOUSE"]
+		item = work_order.required_items[0]
+
+		self.assertTrue(item.blocked)
+		self.assertEqual(item.status, "cannot_calculate")
+		self.assertEqual(item.shortage_qty, 0)
+		self.assertEqual(work_order.readiness_status, "blocked")
 
 	def test_unverifiable_supply_does_not_cover_order_deadline(self):
 		from process_simplification.api.production_readiness import allocate_work_order_readiness
@@ -631,6 +782,7 @@ class TestProductionReadinessLoading(UnitTestCase):
 			return frappe._dict(can_calculate=True, actual_qty=0, committed_qty=0, available_qty=0)
 
 		with (
+			patch.object(production_readiness.frappe, "get_list", side_effect=get_all),
 			patch.object(production_readiness.frappe, "get_all", side_effect=get_all),
 			patch("process_simplification.api.shortage.get_material_stock_snapshot", side_effect=stock),
 			patch("process_simplification.api.shortage._mr_documents", return_value=[]),
@@ -705,6 +857,7 @@ class TestProductionReadinessLoading(UnitTestCase):
 			return rows.get(doctype, [])
 
 		with (
+			patch.object(production_readiness.frappe, "get_list", side_effect=get_all),
 			patch.object(production_readiness.frappe, "get_all", side_effect=get_all),
 			patch("process_simplification.api.shortage.get_material_stock_snapshot", return_value=frappe._dict(actual_qty=7, committed_qty=0, available_qty=7)),
 			patch("process_simplification.api.shortage._mr_documents", return_value=[]),
@@ -718,3 +871,55 @@ class TestProductionReadinessLoading(UnitTestCase):
 		item = result["SOI-LATE"][0]["work_orders"][0]["required_items"][0]
 		self.assertEqual(item["available_qty"], 0)
 		self.assertEqual(item["shortage_qty"], 7)
+
+	def test_parent_documents_are_loaded_with_user_permissions(self):
+		from process_simplification.api import production_readiness
+
+		rows = {
+			"Work Order": [frappe._dict(
+				name="WO-ALLOWED", production_item="FG", bom_no="BOM-FG", production_plan="PP-ALLOWED",
+				production_plan_item="PPI-ALLOWED", production_plan_sub_assembly_item=None,
+				sales_order="SO-ALLOWED", sales_order_item="SOI-ALLOWED", company="_Test Company",
+				status="Not Started", skip_transfer=0, qty=1, produced_qty=0,
+				planned_start_date="2026-08-20", creation="2026-08-01 09:00:00",
+			)],
+			"Production Plan": [frappe._dict(
+				name="PP-ALLOWED", company="_Test Company", posting_date="2026-08-17",
+				creation="2026-08-01 08:00:00", status="In Process",
+			)],
+			"Sales Order": [frappe._dict(name="SO-ALLOWED", creation="2026-08-01 07:00:00")],
+			"Work Order Item": [],
+			"Production Plan Item": [frappe._dict(
+				name="PPI-ALLOWED", parent="PP-ALLOWED", item_code="FG", planned_start_date="2026-08-20",
+				sales_order="SO-ALLOWED", sales_order_item="SOI-ALLOWED",
+			)],
+			"Production Plan Sub Assembly Item": [],
+			"Sales Order Item": [frappe._dict(
+				name="SOI-ALLOWED", parent="SO-ALLOWED", delivery_date="2026-08-20", idx=1,
+			)],
+			"Item": [frappe._dict(name="FG", is_purchase_item=0)],
+		}
+		permission_queries = []
+
+		def get_list(doctype, **kwargs):
+			permission_queries.append(doctype)
+			return rows.get(doctype, [])
+
+		def get_all(doctype, **kwargs):
+			if doctype in {"Work Order", "Production Plan", "Sales Order"}:
+				raise AssertionError(f"{doctype} must be loaded with get_list")
+			if doctype == "BOM":
+				return ["FG"]
+			return rows.get(doctype, [])
+
+		with (
+			patch.object(production_readiness.frappe, "get_list", side_effect=get_list),
+			patch.object(production_readiness.frappe, "get_all", side_effect=get_all),
+			patch("process_simplification.api.shortage.get_material_stock_snapshot", return_value=frappe._dict(actual_qty=0, available_qty=0)),
+			patch("process_simplification.api.shortage._mr_documents", return_value=[]),
+			patch("process_simplification.api.shortage._po_documents", return_value=[]),
+		):
+			result = production_readiness.get_production_plan_readiness(company="_Test Company")
+
+		self.assertEqual(set(result), {"SOI-ALLOWED"})
+		self.assertEqual(permission_queries, ["Work Order", "Production Plan", "Sales Order"])

@@ -5,6 +5,26 @@ from frappe.tests import UnitTestCase
 
 
 class TestProductionWorkbench(UnitTestCase):
+	def test_unlinked_work_orders_use_permission_aware_query(self):
+		production = self._module()
+		visible_rows = [
+			frappe._dict(name="WO-VISIBLE", sales_order=None, sales_order_item=None),
+			frappe._dict(name="WO-ORDER-LINKED", sales_order="SO-1", sales_order_item="SOI-1"),
+		]
+
+		with (
+			patch.object(production.frappe, "get_list", return_value=visible_rows) as get_list,
+			patch.object(
+				production.frappe,
+				"get_all",
+				side_effect=AssertionError("Work Orders must be loaded with get_list"),
+			),
+		):
+			rows = production._other_work_orders()
+
+		self.assertEqual([row["name"] for row in rows], ["WO-VISIBLE"])
+		self.assertEqual(get_list.call_args.kwargs["limit"], 0)
+
 	def _module(self):
 		from process_simplification.api import production
 

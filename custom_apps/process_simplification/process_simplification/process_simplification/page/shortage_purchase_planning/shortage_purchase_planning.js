@@ -1,3 +1,53 @@
+function shortageSourceHtml(source, helpers) {
+	const esc = helpers.escapeHtml;
+	const fmt = helpers.formatQty;
+	const order = [source.sales_order, source.sales_order_item]
+		.filter(Boolean)
+		.map((value) => esc(value))
+		.join(" / ");
+	const production = [source.production_plan, source.work_order]
+		.filter(Boolean)
+		.map((value) => esc(value))
+		.join(" / ");
+	const labels = [order, esc(source.finished_item || ""), production].filter(Boolean).join(" · ");
+	return `${labels}: ${fmt(source.required_qty)}`;
+}
+
+function shortageRowsHtml(rows, helpers) {
+	const esc = helpers.escapeHtml;
+	const fmt = helpers.formatQty;
+	return (rows || []).map((row, index) => {
+		const sources = (row.sources || [])
+			.map((source) => shortageSourceHtml(source, helpers))
+			.join("<br>");
+		const purchaseQty = Number(row.shortage_qty || 0);
+		return `
+			<tr data-index="${index}">
+				<td><input type="checkbox" class="shortage-select" checked></td>
+				<td>${esc(row.item_code)}<br><small>${esc(row.item_name || "")}</small></td>
+				<td>${esc(row.warehouse || "")}</td>
+				<td class="text-right">${fmt(row.required_qty)}</td>
+				<td class="text-right">${fmt(row.available_qty)}</td>
+				<td class="text-right">${fmt(row.open_material_request_qty)}</td>
+				<td class="text-right">${fmt(row.open_purchase_order_qty)}</td>
+				<td class="text-right">${fmt(row.shortage_qty)}</td>
+				<td><input class="form-control input-sm text-right purchase-qty" type="number" min="0" step="any" value="${purchaseQty}"></td>
+				<td><small>${sources}</small></td>
+			</tr>
+		`;
+	}).join("");
+}
+
+const shortagePurchasePlanningApi = {
+	shortageSourceHtml,
+	shortageRowsHtml,
+};
+
+if (typeof module !== "undefined" && module.exports) {
+	module.exports = shortagePurchasePlanningApi;
+}
+
+if (typeof frappe !== "undefined") {
 frappe.pages["shortage-purchase-planning"].on_page_load = function (wrapper) {
 	const page = frappe.ui.make_app_page({
 		parent: wrapper,
@@ -24,6 +74,7 @@ frappe.pages["shortage-purchase-planning"].on_page_load = function (wrapper) {
 							<tr>
 								<th><input type="checkbox" class="select-all" checked></th>
 								<th>${__("原料")}</th>
+								<th>${__("来源仓")}</th>
 								<th class="text-right">${__("总需求")}</th>
 								<th class="text-right">${__("当前库存")}</th>
 								<th class="text-right">${__("采购申请")}</th>
@@ -117,22 +168,10 @@ frappe.pages["shortage-purchase-planning"].on_page_load = function (wrapper) {
 
 	function render_shortages() {
 		$root.find("tbody").html(
-			shortage_rows.map((row, index) => {
-				const sources = (row.sources || []).map((source) => `${source.sales_order}/${source.finished_item}: ${fmt(source.qty)}`).join("<br>");
-				return `
-					<tr data-index="${index}">
-						<td><input type="checkbox" class="shortage-select" checked></td>
-						<td>${frappe.utils.escape_html(row.item_code)}<br><small>${frappe.utils.escape_html(row.item_name || "")}</small></td>
-						<td class="text-right">${fmt(row.required_qty)}</td>
-						<td class="text-right">${fmt(row.available_qty)}</td>
-						<td class="text-right">${fmt(row.open_material_request_qty)}</td>
-						<td class="text-right">${fmt(row.open_purchase_order_qty)}</td>
-						<td class="text-right">${fmt(row.shortage_qty)}</td>
-						<td><input class="form-control input-sm text-right purchase-qty" type="number" min="0" step="any" value="${row.shortage_qty}"></td>
-						<td><small>${sources}</small></td>
-					</tr>
-				`;
-			}).join("")
+			shortageRowsHtml(shortage_rows, {
+				escapeHtml: frappe.utils.escape_html,
+				formatQty: fmt,
+			})
 		);
 	}
 
@@ -179,3 +218,4 @@ frappe.pages["shortage-purchase-planning"].on_page_load = function (wrapper) {
 frappe.pages["shortage-purchase-planning"].refresh = function () {
 	frappe.app.sidebar.set_workspace_sidebar();
 };
+}

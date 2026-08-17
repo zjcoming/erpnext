@@ -9,6 +9,18 @@ from process_simplification.api.workbench import _remaining_reserved_qty, get_ac
 
 
 class TestSimplifiedFlow(UnitTestCase):
+	@patch("process_simplification.api.workbench.frappe.get_doc")
+	@patch("process_simplification.api.workbench.ensure_submitted_sales_order")
+	def test_order_workbench_checks_document_read_permission(self, ensure_submitted, get_doc):
+		from process_simplification.api.workbench import get_order_workbench
+
+		sales_order = MagicMock()
+		sales_order.check_permission.side_effect = frappe.PermissionError
+		get_doc.return_value = sales_order
+
+		with self.assertRaises(frappe.PermissionError):
+			get_order_workbench("SO-PRIVATE")
+
 	def test_order_workbench_rows_are_linked_to_production_plan_summaries(self):
 		from process_simplification.api.workbench import attach_production_plan_summaries
 
@@ -739,22 +751,34 @@ class TestSimplifiedFlow(UnitTestCase):
 
 		row_from_workbench.assert_called_once_with("SO-TEST", "SO-ITEM-TEST")
 
+	@patch("process_simplification.api.shortage._workbench_row")
 	@patch("process_simplification.api.production_readiness.get_production_plan_readiness", return_value={})
-	def test_shortage_selection_requires_demand(self, get_production_plan_readiness):
+	def test_shortage_selection_requires_demand(self, get_production_plan_readiness, workbench_row):
 		from process_simplification.api.shortage import check_shortage
+
+		workbench_row.return_value = frappe._dict(
+			company="_Test Company",
+			sales_order_item="SO-ITEM-TEST",
+		)
 
 		result = check_shortage([{"sales_order": "SO-TEST", "sales_order_item": "SO-ITEM-TEST"}], company="_Test Company")
 		self.assertEqual(result["shortages"], [])
 
+	@patch("process_simplification.api.shortage._workbench_row")
 	@patch("process_simplification.api.shortage.calculate_plan_purchase_shortages", return_value=[])
 	@patch(
 		"process_simplification.api.production_readiness.get_production_plan_readiness",
 		return_value={"SO-ITEM-TEST": []},
 	)
 	def test_shortage_check_allocates_all_company_plans_before_filtering_selected_items(
-		self, get_production_plan_readiness, calculate_shortages
+		self, get_production_plan_readiness, calculate_shortages, workbench_row
 	):
 		from process_simplification.api.shortage import check_shortage
+
+		workbench_row.return_value = frappe._dict(
+			company="_Test Company",
+			sales_order_item="SO-ITEM-TEST",
+		)
 
 		check_shortage(
 			[{"sales_order": "SO-TEST", "sales_order_item": "SO-ITEM-TEST"}],
@@ -763,6 +787,48 @@ class TestSimplifiedFlow(UnitTestCase):
 
 		get_production_plan_readiness.assert_called_once_with(company="_Test Company")
 		self.assertEqual(calculate_shortages.call_args.args[1], {"SO-ITEM-TEST"})
+
+	@patch("process_simplification.api.shortage.get_order_workbench")
+	def test_shortage_check_rejects_item_that_does_not_belong_to_selected_order(self, get_order_workbench):
+		from process_simplification.api.shortage import check_shortage
+
+		get_order_workbench.return_value = {
+			"rows": [{"sales_order_item": "SOI-OTHER", "company": "_Test Company"}]
+		}
+
+		with self.assertRaises(SimplifiedFlowError):
+			check_shortage(
+				[{"sales_order": "SO-TEST", "sales_order_item": "SOI-FOREIGN"}],
+				company="_Test Company",
+			)
+
+	@patch("process_simplification.api.shortage.get_company_defaults")
+	@patch("process_simplification.api.shortage._workbench_row")
+	@patch("process_simplification.api.production_readiness.get_production_plan_readiness", return_value={})
+	def test_shortage_check_uses_selected_order_company_when_company_is_omitted(
+		self,
+		get_production_plan_readiness,
+		workbench_row,
+		get_company_defaults,
+	):
+		from process_simplification.api.shortage import check_shortage
+
+		workbench_row.return_value = frappe._dict(
+			company="_Other Company",
+			sales_order_item="SO-ITEM-TEST",
+		)
+		get_company_defaults.return_value = frappe._dict(
+			company="_Default Company",
+			source_warehouse="Stores - DC",
+		)
+
+		result = check_shortage(
+			[{"sales_order": "SO-TEST", "sales_order_item": "SO-ITEM-TEST"}]
+		)
+
+		self.assertEqual(result["shortages"], [])
+		get_company_defaults.assert_called_once_with("_Other Company")
+		get_production_plan_readiness.assert_called_once_with(company="_Other Company")
 
 	def test_workbench_row_serializes_actions(self):
 		row = WorkbenchRow(
