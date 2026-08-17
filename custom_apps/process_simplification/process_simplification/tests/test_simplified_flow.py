@@ -74,6 +74,130 @@ class TestSimplifiedFlow(UnitTestCase):
 		self.assertEqual(result.unplanned_production_qty, 0)
 		self.assertEqual(result.overplanned_qty, 5)
 
+	def test_order_item_priority_puts_missing_delivery_after_dated_rows(self):
+		from process_simplification.api.workbench import order_item_priority_key
+
+		dated = frappe._dict(
+			delivery_date="2026-08-20",
+			order_creation="2026-08-01",
+			sales_order="SO-2",
+			sales_order_item_idx=1,
+			sales_order_item="SOI-2",
+		)
+		missing = frappe._dict(
+			delivery_date=None,
+			order_creation="2026-07-01",
+			sales_order="SO-1",
+			sales_order_item_idx=1,
+			sales_order_item="SOI-1",
+		)
+
+		self.assertEqual(sorted([missing, dated], key=order_item_priority_key), [dated, missing])
+
+	def test_order_item_priority_breaks_equal_dates_by_creation_order_and_item(self):
+		from process_simplification.api.workbench import order_item_priority_key
+
+		rows = [
+			frappe._dict(
+				delivery_date="2026-08-20",
+				order_creation="2026-08-02",
+				sales_order="SO-2",
+				sales_order_item_idx=1,
+				sales_order_item="SOI-2",
+			),
+			frappe._dict(
+				delivery_date="2026-08-20",
+				order_creation="2026-08-01",
+				sales_order="SO-1",
+				sales_order_item_idx=2,
+				sales_order_item="SOI-1-B",
+			),
+			frappe._dict(
+				delivery_date="2026-08-20",
+				order_creation="2026-08-01",
+				sales_order="SO-1",
+				sales_order_item_idx=1,
+				sales_order_item="SOI-1-A",
+			),
+		]
+
+		self.assertEqual(
+			[row.sales_order_item for row in sorted(rows, key=order_item_priority_key)],
+			["SOI-1-A", "SOI-1-B", "SOI-2"],
+		)
+
+	def test_finished_stock_allocation_respects_reservations_and_allocates_free_stock_once(self):
+		from process_simplification.api.workbench import allocate_finished_stock
+
+		rows = [
+			frappe._dict(
+				company="C",
+				item_code="FG",
+				warehouse="FG-C",
+				delivery_date="2026-08-10",
+				order_creation="2026-08-01",
+				sales_order="SO-EARLY",
+				sales_order_item_idx=1,
+				sales_order_item="SOI-EARLY",
+				pending_qty=40,
+				reserved_qty=5,
+				available_to_reserve=50,
+				active_work_order_qty=0,
+			),
+			frappe._dict(
+				company="C",
+				item_code="FG",
+				warehouse="FG-C",
+				delivery_date="2026-08-20",
+				order_creation="2026-08-02",
+				sales_order="SO-LATE",
+				sales_order_item_idx=1,
+				sales_order_item="SOI-LATE",
+				pending_qty=40,
+				reserved_qty=10,
+				available_to_reserve=50,
+				active_work_order_qty=0,
+			),
+		]
+
+		allocated = {
+			row.sales_order_item: row for row in allocate_finished_stock(reversed(rows))
+		}
+
+		self.assertEqual(allocated["SOI-EARLY"].available_to_reserve, 35)
+		self.assertEqual(allocated["SOI-EARLY"].finished_stock_coverage_qty, 40)
+		self.assertEqual(allocated["SOI-LATE"].available_to_reserve, 15)
+		self.assertEqual(allocated["SOI-LATE"].finished_stock_coverage_qty, 25)
+		self.assertEqual(allocated["SOI-LATE"].production_required_qty, 15)
+
+	def test_finished_stock_pools_are_isolated_by_company_item_and_warehouse(self):
+		from process_simplification.api.workbench import allocate_finished_stock
+
+		rows = [
+			frappe._dict(
+				company=company,
+				item_code=item_code,
+				warehouse=warehouse,
+				delivery_date="2026-08-10",
+				order_creation="2026-08-01",
+				sales_order=f"SO-{index}",
+				sales_order_item_idx=1,
+				sales_order_item=f"SOI-{index}",
+				pending_qty=10,
+				reserved_qty=0,
+				available_to_reserve=10,
+				active_work_order_qty=0,
+			)
+			for index, (company, item_code, warehouse) in enumerate(
+				[("C1", "FG1", "W1"), ("C2", "FG1", "W1"), ("C1", "FG2", "W1"), ("C1", "FG1", "W2")],
+				start=1,
+			)
+		]
+
+		allocated = allocate_finished_stock(rows)
+
+		self.assertEqual([row.finished_stock_coverage_qty for row in allocated], [10, 10, 10, 10])
+
 	def test_direct_stock_order_is_included_and_marked_ready_to_ship(self):
 		from process_simplification.api.workbench import build_fulfillment_order
 
@@ -301,7 +425,7 @@ class TestSimplifiedFlow(UnitTestCase):
 
 		self.assertEqual(
 			[order["name"] for order in result["orders"]],
-			["SO-OVERDUE", "SO-TODAY", "SO-BLOCKED", "SO-GREEN", "SO-LATER", "SO-MISSING"],
+			["SO-OVERDUE", "SO-TODAY", "SO-GREEN", "SO-BLOCKED", "SO-LATER", "SO-MISSING"],
 		)
 		self.assertEqual(
 			result["summary"],
@@ -347,6 +471,73 @@ class TestSimplifiedFlow(UnitTestCase):
 		self.assertTrue(
 			all(call.kwargs.get("order_by") == "creation asc, name asc" for call in get_list.call_args_list)
 		)
+
+	@patch("process_simplification.api.production_readiness.get_production_plan_readiness", return_value={})
+	@patch("process_simplification.api.workbench.now_datetime")
+	@patch("process_simplification.api.workbench.get_order_workbench")
+	@patch("process_simplification.api.workbench.frappe.get_list")
+	@patch("process_simplification.api.workbench.frappe.has_permission")
+	def test_fulfillment_overview_allocates_shared_finished_stock_before_building_orders(
+		self,
+		has_permission,
+		get_list,
+		get_order_workbench,
+		now_datetime,
+		get_production_plan_readiness,
+	):
+		from process_simplification.api.workbench import get_fulfillment_overview
+
+		has_permission.return_value = True
+		now_datetime.return_value = frappe.utils.get_datetime("2026-08-02 09:00:00")
+		get_list.return_value = [
+			frappe._dict(name="SO-EARLY", company="C", customer="C1", customer_name="C1", creation="2026-08-01"),
+			frappe._dict(name="SO-LATE", company="C", customer="C1", customer_name="C1", creation="2026-08-02"),
+		]
+
+		def row(name, delivery_date):
+			return {
+				"sales_order": name,
+				"sales_order_item": f"{name}-ITEM",
+				"item_code": "FG",
+				"warehouse": "FG-C",
+				"delivery_date": delivery_date,
+				"pending_qty": 40,
+				"reserved_qty": 0,
+				"available_to_reserve": 50,
+				"finished_stock_coverage_qty": 40,
+				"production_required_qty": 0,
+				"active_work_order_qty": 0,
+				"unplanned_production_qty": 0,
+				"overplanned_qty": 0,
+				"completed_qty": 0,
+				"completed_unreserved_qty": 0,
+				"order_qty": 40,
+				"delivered_qty": 0,
+				"material_status": "未检查",
+				"status": "可发货",
+				"unsupported": False,
+				"unsupported_reason": None,
+				"next_actions": [{"label": "预留库存", "action": "reserve_stock", "enabled": True, "reason": None}],
+			}
+
+		get_order_workbench.side_effect = lambda name: {
+			"rows": [row(name, "2026-08-10" if name == "SO-EARLY" else "2026-08-20")]
+		}
+
+		result = get_fulfillment_overview(page_size=0)
+		orders = {order["name"]: order for order in result["orders"]}
+		early_row = orders["SO-EARLY"]["rows"][0]
+		late_row = orders["SO-LATE"]["rows"][0]
+
+		self.assertEqual(early_row["finished_stock_coverage_qty"], 40)
+		self.assertEqual(late_row["available_to_reserve"], 10)
+		self.assertEqual(late_row["finished_stock_coverage_qty"], 10)
+		self.assertEqual(late_row["production_required_qty"], 30)
+		self.assertEqual(late_row["unplanned_production_qty"], 30)
+		self.assertEqual(late_row["status"], "待安排生产")
+		self.assertEqual(orders["SO-LATE"]["status_code"], "needs_production")
+		self.assertIn("open_production_workbench", {action["action"] for action in late_row["next_actions"]})
+		get_production_plan_readiness.assert_called_once()
 
 	@patch("process_simplification.api.workbench.now_datetime")
 	@patch("process_simplification.api.workbench.get_order_workbench")

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from math import ceil
 
 import frappe
@@ -58,6 +58,81 @@ def calculate_production_quantities(
 		unplanned_production_qty=max(production_required_qty - active_work_order_qty, 0),
 		overplanned_qty=max(active_work_order_qty - production_required_qty, 0),
 	)
+
+
+def order_item_priority_key(row):
+	"""Stable customer-commitment priority shared by fulfillment and production."""
+	row = frappe._dict(row or {})
+	item_idx = row.get("sales_order_item_idx")
+	return (
+		not bool(row.get("delivery_date")),
+		str(row.get("delivery_date") or "9999-12-31"),
+		str(row.get("order_creation") or row.get("creation") or ""),
+		str(row.get("sales_order") or ""),
+		cint(item_idx) if item_idx not in (None, "") else 2**31 - 1,
+		str(row.get("sales_order_item") or row.get("name") or ""),
+	)
+
+
+def _refresh_allocated_row_status(row):
+	row = frappe._dict(deepcopy(dict(row)))
+	for fieldname in (
+		"pending_qty",
+		"reserved_qty",
+		"available_to_reserve",
+		"finished_stock_coverage_qty",
+		"production_required_qty",
+		"active_work_order_qty",
+		"unplanned_production_qty",
+		"overplanned_qty",
+		"completed_qty",
+		"completed_unreserved_qty",
+	):
+		row.setdefault(fieldname, 0)
+	row.setdefault("unsupported", False)
+	row.setdefault("material_status", "未检查")
+	row.status = "待处理"
+	row.next_actions = []
+	_status_and_actions(row, row.material_status != "不涉及生产")
+	row.next_actions = [asdict(item) if not isinstance(item, dict) else item for item in row.next_actions]
+	return row
+
+
+def allocate_finished_stock(rows):
+	"""Allocate each company/item/warehouse free-stock snapshot once by order delivery."""
+	ordered = [frappe._dict(deepcopy(dict(row))) for row in rows or []]
+	ordered.sort(key=order_item_priority_key)
+	pools = {}
+	for row in ordered:
+		key = (row.get("company"), row.get("item_code"), row.get("warehouse"))
+		snapshot = row.get("available_stock_snapshot_qty")
+		if snapshot is None:
+			snapshot = row.get("available_to_reserve")
+		pools[key] = max(pools.get(key, 0), max(flt(snapshot or 0), 0))
+
+	result = []
+	for row in ordered:
+		key = (row.get("company"), row.get("item_code"), row.get("warehouse"))
+		production = calculate_production_quantities(
+			pending_qty=max(flt(row.get("pending_qty") or 0), 0),
+			reserved_qty=max(flt(row.get("reserved_qty") or 0), 0),
+			available_to_reserve=pools.get(key, 0),
+			active_work_order_qty=max(flt(row.get("active_work_order_qty") or 0), 0),
+		)
+		pools[key] = max(pools.get(key, 0) - production.available_to_reserve, 0)
+		row.update(
+			{
+				"reserved_qty": production.reserved_qty,
+				"available_to_reserve": production.available_to_reserve,
+				"finished_stock_coverage_qty": production.finished_stock_coverage_qty,
+				"production_required_qty": production.production_required_qty,
+				"unplanned_production_qty": production.unplanned_production_qty,
+				"overplanned_qty": production.overplanned_qty,
+				"uncovered_qty": production.unplanned_production_qty,
+			}
+		)
+		result.append(_refresh_allocated_row_status(row))
+	return result
 
 
 def _remaining_reserved_qty(sre) -> float:
@@ -260,7 +335,16 @@ def get_order_workbench(sales_order: str):
 			else None,
 		)
 		_status_and_actions(row, has_bom)
-		rows.append(row_to_dict(row))
+		serialized = row_to_dict(row)
+		serialized.update(
+			{
+				"company": so.company,
+				"order_creation": str(so.creation or ""),
+				"sales_order_item_idx": cint(item.idx),
+				"available_stock_snapshot_qty": max(flt(available_to_reserve), 0),
+			}
+		)
+		rows.append(serialized)
 
 	return {
 		"sales_order": so.name,
@@ -433,7 +517,6 @@ def _fulfillment_sort_key(order, fulfillment_order):
 	return (
 		fulfillment_order["delivery_date"] is None,
 		fulfillment_order["delivery_date"] or "9999-12-31",
-		-fulfillment_order["risk_score"],
 		str(order.get("creation") or ""),
 		fulfillment_order["name"],
 	)
@@ -590,10 +673,23 @@ def get_fulfillment_overview(page=1, page_size=DEFAULT_WORKBENCH_PAGE_SIZE, filt
 			break
 		limit_start += page_length
 
-	fulfillment_orders = []
+	order_by_name = {order.name: order for order in orders}
+	all_rows = []
 	for order in orders:
-		rows = get_order_workbench(order.name).get("rows") or []
-		fulfillment_order = build_fulfillment_order(order, rows, today=checked_at)
+		for source_row in get_order_workbench(order.name).get("rows") or []:
+			row = frappe._dict(deepcopy(dict(source_row)))
+			row.sales_order = row.get("sales_order") or order.name
+			row.company = row.get("company") or order.get("company")
+			row.order_creation = row.get("order_creation") or str(order.get("creation") or "")
+			all_rows.append(row)
+
+	rows_by_order = defaultdict(list)
+	for row in allocate_finished_stock(all_rows):
+		rows_by_order[row.get("sales_order")].append(row)
+
+	fulfillment_orders = []
+	for order_name, order in order_by_name.items():
+		fulfillment_order = build_fulfillment_order(order, rows_by_order.get(order_name) or [], today=checked_at)
 		if fulfillment_order["pending_qty"] <= 0:
 			continue
 		fulfillment_orders.append((order, fulfillment_order))
