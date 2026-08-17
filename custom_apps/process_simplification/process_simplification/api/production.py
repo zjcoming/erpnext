@@ -13,9 +13,9 @@ from process_simplification.api.shortage import (
 from process_simplification.api.workbench import (
 	DEFAULT_WORKBENCH_PAGE_SIZE,
 	_delivery_timing,
-	calculate_production_quantities,
 	get_fulfillment_overview,
 	get_work_orders,
+	order_item_priority_key,
 	paginate_workbench_rows,
 )
 
@@ -90,63 +90,11 @@ def _risk_for_demand(delivery_timing: str, status_code: str):
 
 
 def production_sort_key(demand):
-	# Missing delivery dates are an explicit master-data risk and must not disappear at the end.
-	delivery_value = demand.get("delivery_date") or "0000-00-00"
-	return (
-		delivery_value,
-		-flt(demand.get("risk_score") or 0),
-		-flt(demand.get("unplanned_production_qty") or 0),
-		str(demand.get("creation") or ""),
-		str(demand.get("demand_key") or ""),
-	)
+	return order_item_priority_key(demand)
 
 
 def material_priority_sort_key(demand):
-	return (
-		not bool(demand.get("delivery_date")),
-		demand.get("delivery_date") or "9999-12-31",
-		str(demand.get("creation") or ""),
-		str(demand.get("sales_order") or ""),
-		str(demand.get("sales_order_item") or demand.get("demand_key") or ""),
-	)
-
-
-def allocate_finished_stock(rows):
-	"""Allocate each item/warehouse free-stock snapshot once, in delivery priority order."""
-	ordered = [frappe._dict(deepcopy(dict(row))) for row in rows or []]
-	ordered.sort(
-		key=lambda row: (
-			row.get("delivery_date") or "0000-00-00",
-			str(row.get("sales_order") or ""),
-			str(row.get("sales_order_item") or ""),
-		)
-	)
-	pools = {}
-	for row in ordered:
-		key = (row.get("item_code"), row.get("warehouse"))
-		pools[key] = max(pools.get(key, 0), _positive(row, "available_to_reserve"))
-
-	for row in ordered:
-		key = (row.get("item_code"), row.get("warehouse"))
-		production = calculate_production_quantities(
-			pending_qty=_positive(row, "pending_qty"),
-			reserved_qty=_positive(row, "reserved_qty"),
-			available_to_reserve=pools.get(key, 0),
-			active_work_order_qty=_positive(row, "active_work_order_qty"),
-		)
-		pools[key] = max(pools.get(key, 0) - production.available_to_reserve, 0)
-		row.update(
-			{
-				"reserved_qty": production.reserved_qty,
-				"available_to_reserve": production.available_to_reserve,
-				"finished_stock_coverage_qty": production.finished_stock_coverage_qty,
-				"production_required_qty": production.production_required_qty,
-				"unplanned_production_qty": production.unplanned_production_qty,
-				"overplanned_qty": production.overplanned_qty,
-				"uncovered_qty": production.unplanned_production_qty,
-			}
-		)
-	return ordered
+	return order_item_priority_key(demand)
 
 
 def _allocated_rows_from_fulfillment(fulfillment):
@@ -157,7 +105,7 @@ def _allocated_rows_from_fulfillment(fulfillment):
 			row.sales_order = row.get("sales_order") or order.get("name")
 			row.delivery_date = row.get("delivery_date") or order.get("delivery_date")
 			rows.append(row)
-	return allocate_finished_stock(rows)
+	return rows
 
 
 def get_allocated_production_row(sales_order: str, sales_order_item: str):
@@ -225,6 +173,8 @@ def build_production_demand(order, row, work_orders=None, today=None):
 		"customer_name": order.get("customer_name") or row.get("customer"),
 		"company": order.get("company"),
 		"creation": str(order.get("creation") or ""),
+		"order_creation": str(row.get("order_creation") or order.get("creation") or ""),
+		"sales_order_item_idx": row.get("sales_order_item_idx"),
 		"item_code": row.get("item_code"),
 		"item_name": row.get("item_name"),
 		"warehouse": row.get("warehouse"),

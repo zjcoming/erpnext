@@ -277,37 +277,33 @@ class TestProductionWorkbench(UnitTestCase):
 
 		self.assertIsNone(demand)
 
-	def test_finished_stock_is_allocated_once_in_delivery_priority_order(self):
-		production = self._module()
-		self.assertTrue(hasattr(production, "allocate_finished_stock"))
-		rows = [
-			self._row(
-				name="SOI-EARLY",
-				sales_order="SO-EARLY",
-				delivery_date="2026-08-04",
-				pending_qty=40,
-				reserved_qty=0,
-				available_to_reserve=50,
-				active_work_order_qty=0,
-			),
-			self._row(
-				name="SOI-LATE",
-				sales_order="SO-LATE",
-				delivery_date="2026-08-10",
-				pending_qty=40,
-				reserved_qty=0,
-				available_to_reserve=50,
-				active_work_order_qty=0,
-			),
-		]
+	def test_production_flattens_fulfillment_rows_without_reallocating(self):
+		from process_simplification.api.production import _allocated_rows_from_fulfillment
 
-		allocated = production.allocate_finished_stock(rows)
+		fulfillment = {
+			"orders": [
+				{
+					"name": "SO-1",
+					"delivery_date": "2026-08-10",
+					"rows": [
+						{
+							"sales_order": "SO-1",
+							"sales_order_item": "SOI-1",
+							"available_to_reserve": 7,
+							"finished_stock_coverage_qty": 7,
+							"production_required_qty": 3,
+						}
+					],
+				}
+			]
+		}
 
-		self.assertEqual(allocated[0]["available_to_reserve"], 40)
-		self.assertEqual(allocated[0]["production_required_qty"], 0)
-		self.assertEqual(allocated[1]["available_to_reserve"], 10)
-		self.assertEqual(allocated[1]["production_required_qty"], 30)
-		self.assertEqual(allocated[1]["unplanned_production_qty"], 30)
+		rows = _allocated_rows_from_fulfillment(fulfillment)
+
+		self.assertEqual(len(rows), 1)
+		self.assertEqual(rows[0].available_to_reserve, 7)
+		self.assertEqual(rows[0].finished_stock_coverage_qty, 7)
+		self.assertEqual(rows[0].production_required_qty, 3)
 
 	def test_material_coverage_is_projected_to_each_contributing_demand(self):
 		production = self._module()
@@ -408,7 +404,7 @@ class TestProductionWorkbench(UnitTestCase):
 		self.assertEqual(by_key["SOI-EARLY"]["material_summary"]["status_code"], "not_checked")
 		self.assertEqual(by_key["SOI-LATE"]["material_summary"]["status_code"], "not_checked")
 
-	def test_missing_delivery_date_sorts_before_dated_demands_as_a_data_risk(self):
+	def test_missing_delivery_date_sorts_after_dated_production_demands(self):
 		production = self._module()
 		self.assertTrue(hasattr(production, "production_sort_key"))
 		demands = [
@@ -430,7 +426,7 @@ class TestProductionWorkbench(UnitTestCase):
 
 		ordered = sorted(demands, key=production.production_sort_key)
 
-		self.assertEqual([row["demand_key"] for row in ordered], ["MISSING", "DATED"])
+		self.assertEqual([row["demand_key"] for row in ordered], ["DATED", "MISSING"])
 
 	@patch("process_simplification.api.production._other_work_orders")
 	@patch("process_simplification.api.production.get_default_bom")
