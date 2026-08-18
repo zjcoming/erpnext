@@ -1,0 +1,36 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "naming_series:",
+ "creation": "2026-08-19 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": ["naming_series", "company", "operation", "wage_type", "rate", "valid_from", "valid_to", "enabled", "revision"],
+ "fields": [
+  {"fieldname": "naming_series", "fieldtype": "Select", "label": "编号规则", "options": "OWR-.YYYY.-.#####", "default": "OWR-.YYYY.-.#####", "reqd": 1},
+  {"fieldname": "company", "fieldtype": "Link", "label": "公司", "options": "Company", "reqd": 1, "search_index": 1},
+  {"fieldname": "operation", "fieldtype": "Link", "label": "工序", "options": "Operation", "reqd": 1, "search_index": 1},
+  {"fieldname": "wage_type", "fieldtype": "Select", "label": "计价方式", "options": "Piecework\nTime", "reqd": 1},
+  {"fieldname": "rate", "fieldtype": "Currency", "label": "单价", "non_negative": 1, "reqd": 1, "description": "计件为每件单价；计时为每小时单价。"},
+  {"fieldname": "valid_from", "fieldtype": "Date", "label": "生效日期", "reqd": 1},
+  {"fieldname": "valid_to", "fieldtype": "Date", "label": "失效日期"},
+  {"fieldname": "enabled", "fieldtype": "Check", "label": "启用", "default": "1"},
+  {"fieldname": "revision", "fieldtype": "Int", "label": "版本", "read_only": 1, "default": "1"}
+ ],
+ "index_web_pages_for_search": 0,
+ "modified": "2026-08-19 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Process Simplification",
+ "name": "Operation Wage Rate",
+ "owner": "Administrator",
+ "permissions": [
+  {"role": "Production Wage Manager", "read": 1, "create": 1, "write": 1},
+  {"role": "System Manager", "read": 1, "create": 1, "write": 1}
+ ],
+ "search_fields": "company,operation",
+ "sort_field": "valid_from",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "operation",
+ "track_changes": 1
+}

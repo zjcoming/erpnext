@@ -155,3 +155,82 @@ class TestDesktopNavigationIntegration(IntegrationTestCase):
 			next(index for index, item in enumerate(workspace.links) if item.link_to == "production-workbench"),
 			next(index for index, item in enumerate(workspace.links) if item.link_to == "shortage-purchase-planning"),
 		)
+
+	def test_worker_reporting_navigation_is_idempotent_and_role_scoped(self):
+		from process_simplification.patches.v0_0.add_worker_reporting_navigation import execute
+
+		execute()
+		execute()
+
+		sidebar = frappe.get_doc("Workspace Sidebar", "process-simplification")
+		workspace = frappe.get_doc("Workspace", "process-simplification")
+		for route, label in {
+			"my-production-reporting": "我的报工",
+			"production-report-review": "报工审核",
+		}.items():
+			sidebar_rows = [row for row in sidebar.items if row.link_to == route]
+			workspace_rows = [row for row in workspace.links if row.link_to == route]
+			self.assertEqual(len(sidebar_rows), 1)
+			self.assertEqual(len(workspace_rows), 1)
+			self.assertEqual(sidebar_rows[0].label, label)
+			self.assertEqual(sidebar_rows[0].link_type, "Page")
+			self.assertEqual(workspace_rows[0].label, label)
+			self.assertEqual(workspace_rows[0].link_type, "Page")
+			self.assertLess(
+				next(index for index, row in enumerate(sidebar.items) if row.link_to == route),
+				next(index for index, row in enumerate(sidebar.items) if row.link_to == "shortage-purchase-planning"),
+			)
+		core_card = next(row for row in workspace.links if row.type == "Card Break" and row.label == "核心流程")
+		self.assertEqual(core_card.link_count, 8)
+		workspace_roles = {row.role for row in workspace.roles}
+		self.assertTrue(
+			{"Production Worker", "Production Supervisor", "Production Wage Manager"}.issubset(
+				workspace_roles
+			)
+		)
+
+	def test_worker_reporting_upgrade_removes_legacy_pages_and_navigation(self):
+		from process_simplification.patches.v0_0.add_worker_reporting_navigation import (
+			LEGACY_PAGE_ROUTES,
+			execute,
+		)
+
+		for route in LEGACY_PAGE_ROUTES:
+			frappe.db.sql(
+				"""
+				insert ignore into `tabPage`
+					(name, page_name, title, module, standard, owner, modified_by,
+					 creation, modified, docstatus, idx)
+				values
+					(%(route)s, %(route)s, %(route)s, 'Process Simplification', 'Yes',
+					 'Administrator', 'Administrator', now(6), now(6), 0, 0)
+				""",
+				{"route": route},
+			)
+
+		sidebar = frappe.get_doc("Workspace Sidebar", "process-simplification")
+		workspace = frappe.get_doc("Workspace", "process-simplification")
+		for route in LEGACY_PAGE_ROUTES:
+			sidebar.append(
+				"items",
+				{"type": "Link", "label": route, "link_type": "Page", "link_to": route},
+			)
+			workspace.append(
+				"links",
+				{"type": "Link", "label": route, "link_type": "Page", "link_to": route},
+			)
+		sidebar.save(ignore_permissions=True)
+		workspace.save(ignore_permissions=True)
+
+		execute()
+
+		sidebar.reload()
+		workspace.reload()
+		self.assertFalse(set(LEGACY_PAGE_ROUTES).intersection(row.link_to for row in sidebar.items))
+		self.assertFalse(set(LEGACY_PAGE_ROUTES).intersection(row.link_to for row in workspace.links))
+		for route in LEGACY_PAGE_ROUTES:
+			self.assertFalse(frappe.db.exists("Page", route))
+		core_card = next(
+			row for row in workspace.links if row.type == "Card Break" and row.label == "核心流程"
+		)
+		self.assertEqual(core_card.link_count, 8)

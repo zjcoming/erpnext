@@ -11,6 +11,8 @@ for (const pageName of [
 	"quick-sales-order",
 	"order-workbench",
 	"production-workbench",
+	"my-production-reporting",
+	"production-report-review",
 	"shortage-purchase-planning",
 ]) {
 	test(`${pageName} restores the process simplification sidebar on refresh`, () => {

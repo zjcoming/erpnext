@@ -2,6 +2,77 @@
 	padding: 12px 0;
 }
 
+.worker-reporting-page,
+.report-review-page {
+	display: grid;
+	gap: 24px;
+	padding: 16px 0 32px;
+}
+
+.worker-reporting-summary,
+.worker-assignment-card,
+.report-review-card {
+	border: 1px solid var(--border-color);
+	border-radius: var(--border-radius-lg, 8px);
+	background: var(--card-bg);
+	box-shadow: var(--card-shadow);
+}
+
+.worker-reporting-summary {
+	display: flex;
+	justify-content: space-between;
+	padding: 14px 16px;
+}
+
+.worker-reporting-summary div,
+.worker-assignment-card > div:first-child,
+.report-review-heading {
+	display: flex;
+	justify-content: space-between;
+	gap: 12px;
+}
+
+.worker-assignment-list,
+.report-review-queue {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+	gap: 14px;
+}
+
+.worker-assignment-card,
+.report-review-card {
+	display: grid;
+	gap: 12px;
+	padding: 16px;
+}
+
+.worker-assignment-facts,
+.report-review-facts {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 8px 16px;
+	color: var(--text-muted);
+}
+
+.report-review-actions {
+	display: flex;
+	gap: 8px;
+}
+
+.worker-reporting-empty {
+	padding: 20px;
+	border: 1px dashed var(--border-color);
+	border-radius: var(--border-radius);
+	text-align: center;
+}
+
+@media (max-width: 767px) {
+	.worker-assignment-facts,
+	.report-review-facts {
+		grid-template-columns: 1fr;
+	}
+}
+
 .process-simplification-page .form-section {
 	margin-bottom: 16px;
 }

@@ -17,7 +17,7 @@
    "hidden": 0,
    "is_query_report": 0,
    "label": "核心流程",
-   "link_count": 4,
+   "link_count": 8,
    "onboard": 0,
    "type": "Card Break"
   },
@@ -48,6 +48,46 @@
    "link_count": 0,
    "link_to": "production-workbench",
    "link_type": "Page",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "我的报工",
+   "link_count": 0,
+   "link_to": "my-production-reporting",
+   "link_type": "Page",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "报工审核",
+   "link_count": 0,
+   "link_to": "production-report-review",
+   "link_type": "Page",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "计价规则",
+   "link_count": 0,
+   "link_to": "Operation Wage Rate",
+   "link_type": "DocType",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "工资汇总",
+   "link_count": 0,
+   "link_to": "Monthly Worker Wage Summary",
+   "link_type": "DocType",
    "onboard": 1,
    "type": "Link"
   },
@@ -151,6 +191,15 @@
   },
   {
    "role": "Purchase User"
+  },
+  {
+   "role": "Production Worker"
+  },
+  {
+   "role": "Production Supervisor"
+  },
+  {
+   "role": "Production Wage Manager"
   },
   {
    "role": "System Manager"
