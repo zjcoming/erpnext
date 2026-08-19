@@ -5,6 +5,7 @@ import frappe
 
 PRODUCTION_CENTER_LABEL = "生产计划中心"
 PRODUCTION_CENTER_ICON = "factory"
+SIDEBAR_NAME = "Process Simplification"
 
 
 def _move_before(rows, row, before_link_to: str):
@@ -19,10 +20,10 @@ def _move_before(rows, row, before_link_to: str):
 
 
 def _repair_sidebar():
-	if not frappe.db.exists("Workspace Sidebar", "process-simplification"):
+	if not frappe.db.exists("Workspace Sidebar", SIDEBAR_NAME):
 		return
 
-	sidebar = frappe.get_doc("Workspace Sidebar", "process-simplification")
+	sidebar = frappe.get_doc("Workspace Sidebar", SIDEBAR_NAME)
 	for item in sidebar.items:
 		if item.link_to == "order-workbench":
 			item.label = "订单工作台"

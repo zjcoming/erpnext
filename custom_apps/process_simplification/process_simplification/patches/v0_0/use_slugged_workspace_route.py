@@ -3,6 +3,9 @@ from __future__ import annotations
 import frappe
 
 
+SIDEBAR_NAME = "Process Simplification"
+
+
 def execute():
 	if frappe.db.exists("Page", "process-simplification"):
 		frappe.delete_doc("Page", "process-simplification", force=True)
@@ -30,17 +33,29 @@ def execute():
 		)
 
 	if frappe.db.exists("Workspace Sidebar", "流程简化") and not frappe.db.exists(
-		"Workspace Sidebar", "process-simplification"
+		"Workspace Sidebar", SIDEBAR_NAME
 	):
 		frappe.rename_doc(
 			"Workspace Sidebar",
 			"流程简化",
-			"process-simplification",
+			SIDEBAR_NAME,
 			force=True,
 		)
 
-	if frappe.db.exists("Workspace Sidebar", "process-simplification"):
-		sidebar = frappe.get_doc("Workspace Sidebar", "process-simplification")
+	if frappe.db.exists("Workspace Sidebar", "process-simplification") and not frappe.db.exists(
+		"Workspace Sidebar", SIDEBAR_NAME
+	):
+		frappe.rename_doc(
+			"Workspace Sidebar",
+			"process-simplification",
+			SIDEBAR_NAME,
+			force=True,
+		)
+
+	if frappe.db.exists("Workspace Sidebar", SIDEBAR_NAME):
+		sidebar = frappe.get_doc("Workspace Sidebar", SIDEBAR_NAME)
+		sidebar.title = SIDEBAR_NAME
+		sidebar.module = SIDEBAR_NAME
 		for item in sidebar.items:
 			if item.label == "流程简化":
 				item.link_type = "Workspace"

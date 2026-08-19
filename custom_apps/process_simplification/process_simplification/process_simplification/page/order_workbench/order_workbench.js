@@ -47,7 +47,7 @@ function overviewSummary(orders) {
 }
 
 function productionWorkbenchRoute(_salesOrder, salesOrderItem) {
-	return ["production-workbench", salesOrderItem];
+	return ["production-workbench", { demand_key: salesOrderItem }];
 }
 
 function deliveryNoteRouteFromResponse(response) {
@@ -453,9 +453,13 @@ if (typeof frappe !== "undefined") {
 	};
 
 	frappe.pages["order-workbench"].refresh = function (wrapper) {
-		frappe.app.sidebar.set_workspace_sidebar();
 		const page = wrapper.page;
-		const routeSalesOrder = frappe.get_route()[1] || null;
+		const route = frappe.get_route();
+		if (route[1]) {
+			return frappe.set_route("order-workbench", { sales_order: route[1] });
+		}
+		const routeSalesOrder = frappe.route_options?.sales_order || null;
+		if (frappe.route_options) delete frappe.route_options.sales_order;
 		return refreshFulfillmentOverview(page, routeSalesOrder);
 	};
 }

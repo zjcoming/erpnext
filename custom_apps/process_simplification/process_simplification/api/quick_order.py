@@ -752,7 +752,7 @@ def _existing_idempotency_result(record, intent_digest: str):
 				"status": "submitted",
 				"sales_order": record.sales_order,
 				"docstatus": 1,
-				"route": ["order-workbench", record.sales_order],
+				"route": ["order-workbench", {"sales_order": record.sales_order}],
 				"idempotent_replay": True,
 			}
 		throw_chinese("上次提交结果异常，请联系管理员检查订单记录。")
@@ -827,7 +827,7 @@ def submit_quick_sales_order(payload=None, review_token: str | None = None, idem
 		"status": "submitted",
 		"sales_order": so.name,
 		"docstatus": so.docstatus,
-		"route": ["order-workbench", so.name],
+		"route": ["order-workbench", {"sales_order": so.name}],
 	}
 
 

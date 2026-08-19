@@ -215,7 +215,4 @@ frappe.pages["shortage-purchase-planning"].on_page_load = function (wrapper) {
 	render_selected();
 };
 
-frappe.pages["shortage-purchase-planning"].refresh = function () {
-	frappe.app.sidebar.set_workspace_sidebar();
-};
 }

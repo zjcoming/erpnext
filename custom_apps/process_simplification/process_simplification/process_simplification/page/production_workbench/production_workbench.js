@@ -642,8 +642,12 @@ if (typeof frappe !== "undefined") {
 	};
 
 	frappe.pages["production-workbench"].refresh = function (wrapper) {
-		frappe.app.sidebar.set_workspace_sidebar();
-		const demandKey = frappe.get_route()[1] || null;
+		const route = frappe.get_route();
+		if (route[1]) {
+			return frappe.set_route("production-workbench", { demand_key: route[1] });
+		}
+		const demandKey = frappe.route_options?.demand_key || null;
+		if (frappe.route_options) delete frappe.route_options.demand_key;
 		return refreshProductionOverview(wrapper.page, demandKey);
 	};
 }

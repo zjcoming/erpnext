@@ -182,7 +182,6 @@ if (typeof frappe !== "undefined") {
 	};
 
 	frappe.pages["my-production-reporting"].refresh = function (wrapper) {
-		frappe.app.sidebar.set_workspace_sidebar();
 		return wrapper.page?.worker_reporting?.load?.();
 	};
 }

@@ -13,3 +13,6 @@ msgstr ""
 
 msgid "process-simplification"
 msgstr "流程简化"
+
+msgid "Process Simplification"
+msgstr "流程简化"

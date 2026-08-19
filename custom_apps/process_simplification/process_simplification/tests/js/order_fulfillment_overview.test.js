@@ -234,8 +234,11 @@ test("expanded product rows expose labels for the mobile card layout", () => {
 	assert.match(html, /class="fulfillment-order-actions-title">订单操作</);
 });
 
-test("production actions route to the production workbench by Sales Order Item", () => {
-	assert.deepEqual(productionWorkbenchRoute("SO-001", "SOI-001"), ["production-workbench", "SOI-001"]);
+test("production actions route with native query options instead of a second path segment", () => {
+	assert.deepEqual(productionWorkbenchRoute("SO-001", "SOI-001"), [
+		"production-workbench",
+		{ demand_key: "SOI-001" },
+	]);
 });
 
 test("delivery note creation response resolves the created document route", () => {

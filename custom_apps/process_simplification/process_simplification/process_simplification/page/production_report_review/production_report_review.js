@@ -240,7 +240,6 @@ if (typeof frappe !== "undefined") {
 	};
 
 	frappe.pages["production-report-review"].refresh = function (wrapper) {
-		frappe.app.sidebar.set_workspace_sidebar();
 		return wrapper.page?.report_review?.load?.();
 	};
 }

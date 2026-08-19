@@ -3,6 +3,10 @@ from __future__ import annotations
 import frappe
 
 
+SIDEBAR_NAME = "Process Simplification"
+LEGACY_SIDEBAR_NAMES = ("process-simplification", "流程简化")
+
+
 ITEMS = (
 	{
 		"label": "我的报工",
@@ -81,10 +85,56 @@ def _remove_legacy_pages():
 		frappe.db.delete("Page", {"name": page_name})
 
 
+def _ensure_native_sidebar_identity():
+	if not frappe.db.exists("Workspace Sidebar", SIDEBAR_NAME):
+		legacy_name = next(
+			(
+				name
+				for name in LEGACY_SIDEBAR_NAMES
+				if frappe.db.exists("Workspace Sidebar", name)
+			),
+			None,
+		)
+		if legacy_name:
+			frappe.rename_doc(
+				"Workspace Sidebar",
+				legacy_name,
+				SIDEBAR_NAME,
+				force=True,
+			)
+
+	for legacy_name in LEGACY_SIDEBAR_NAMES:
+		if not frappe.db.exists("Workspace Sidebar", legacy_name):
+			continue
+		# The old and native titles scrub to the same exported filename. A normal
+		# delete would remove the new app-owned JSON through Workspace Sidebar's
+		# on_trash hook, so remove only the obsolete database rows here.
+		frappe.db.delete(
+			"Workspace Sidebar Item",
+			{"parenttype": "Workspace Sidebar", "parent": legacy_name},
+		)
+		frappe.db.delete("Workspace Sidebar", {"name": legacy_name})
+
+	if not frappe.db.exists("Workspace Sidebar", SIDEBAR_NAME):
+		return None
+
+	sidebar = frappe.get_doc("Workspace Sidebar", SIDEBAR_NAME)
+	sidebar.update(
+		{
+			"title": SIDEBAR_NAME,
+			"module": SIDEBAR_NAME,
+			"app": "process_simplification",
+			"standard": 1,
+			"header_icon": "workflow",
+		}
+	)
+	return sidebar
+
+
 def _repair_sidebar():
-	if not frappe.db.exists("Workspace Sidebar", "process-simplification"):
+	sidebar = _ensure_native_sidebar_identity()
+	if not sidebar:
 		return
-	sidebar = frappe.get_doc("Workspace Sidebar", "process-simplification")
 	_remove_legacy_rows(sidebar.items)
 	for values in ITEMS:
 		matches = [row for row in sidebar.items if row.link_to == values["link_to"]]

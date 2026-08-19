@@ -318,4 +318,4 @@ class TestQuickOrderIntegration(IntegrationTestCase):
 		self.assertEqual(order.items[0].rate, 25)
 		self.assertEqual(order.items[0].uom, "Nos")
 		self.assertEqual(order.items[0].warehouse, warehouse)
-		self.assertEqual(result["route"], ["order-workbench", order.name])
+		self.assertEqual(result["route"], ["order-workbench", {"sales_order": order.name}])

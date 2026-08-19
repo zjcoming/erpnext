@@ -2,6 +2,9 @@ import frappe
 from frappe.tests import IntegrationTestCase
 
 
+SIDEBAR_NAME = "Process Simplification"
+
+
 class TestDesktopNavigationIntegration(IntegrationTestCase):
 	def test_apps_screen_route_targets_the_slugged_workspace(self):
 		from process_simplification import hooks
@@ -61,7 +64,7 @@ class TestDesktopNavigationIntegration(IntegrationTestCase):
 	def test_production_plan_center_patch_repairs_existing_navigation_identity(self):
 		from process_simplification.patches.v0_0.rename_production_workbench_to_plan_center import execute
 
-		sidebar = frappe.get_doc("Workspace Sidebar", "process-simplification")
+		sidebar = frappe.get_doc("Workspace Sidebar", SIDEBAR_NAME)
 		for item in sidebar.items:
 			if item.link_to == "order-workbench":
 				item.label = "订单履约总览"
@@ -126,7 +129,7 @@ class TestDesktopNavigationIntegration(IntegrationTestCase):
 	def test_production_navigation_patch_restores_missing_items(self):
 		from process_simplification.patches.v0_0.add_production_workbench_navigation import execute
 
-		sidebar = frappe.get_doc("Workspace Sidebar", "process-simplification")
+		sidebar = frappe.get_doc("Workspace Sidebar", SIDEBAR_NAME)
 		sidebar.items = [item for item in sidebar.items if item.link_to != "production-workbench"]
 		sidebar.save(ignore_permissions=True)
 
@@ -162,7 +165,7 @@ class TestDesktopNavigationIntegration(IntegrationTestCase):
 		execute()
 		execute()
 
-		sidebar = frappe.get_doc("Workspace Sidebar", "process-simplification")
+		sidebar = frappe.get_doc("Workspace Sidebar", SIDEBAR_NAME)
 		workspace = frappe.get_doc("Workspace", "process-simplification")
 		for route, label in {
 			"my-production-reporting": "我的报工",
@@ -208,7 +211,7 @@ class TestDesktopNavigationIntegration(IntegrationTestCase):
 				{"route": route},
 			)
 
-		sidebar = frappe.get_doc("Workspace Sidebar", "process-simplification")
+		sidebar = frappe.get_doc("Workspace Sidebar", SIDEBAR_NAME)
 		workspace = frappe.get_doc("Workspace", "process-simplification")
 		for route in LEGACY_PAGE_ROUTES:
 			sidebar.append(
@@ -234,3 +237,14 @@ class TestDesktopNavigationIntegration(IntegrationTestCase):
 			row for row in workspace.links if row.type == "Card Break" and row.label == "核心流程"
 		)
 		self.assertEqual(core_card.link_count, 8)
+
+	def test_sidebar_identity_matches_the_page_module_for_native_route_fallback(self):
+		sidebar = frappe.get_doc("Workspace Sidebar", SIDEBAR_NAME)
+
+		self.assertEqual(sidebar.title, SIDEBAR_NAME)
+		self.assertEqual(sidebar.module, SIDEBAR_NAME)
+		self.assertEqual(sidebar.app, "process_simplification")
+		self.assertEqual(sidebar.standard, 1)
+		self.assertFalse(frappe.db.exists("Workspace Sidebar", "process-simplification"))
+		self.assertEqual(sidebar.items[0].link_type, "Workspace")
+		self.assertEqual(sidebar.items[0].link_to, "process-simplification")
