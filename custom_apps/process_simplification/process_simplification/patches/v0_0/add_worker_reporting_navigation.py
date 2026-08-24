@@ -5,6 +5,7 @@ import frappe
 
 SIDEBAR_NAME = "Process Simplification"
 LEGACY_SIDEBAR_NAMES = ("process-simplification", "流程简化")
+APP_NAME = "process_simplification"
 
 
 ITEMS = (
@@ -183,8 +184,57 @@ def _repair_workspace():
 	workspace.save(ignore_permissions=True)
 
 
+def _repair_desktop_icon():
+	app_icon_name = frappe.db.get_value(
+		"Desktop Icon",
+		{"app": APP_NAME, "icon_type": "App"},
+		"name",
+	)
+	if not app_icon_name:
+		return
+
+	if app_icon_name != SIDEBAR_NAME and not frappe.db.exists("Desktop Icon", SIDEBAR_NAME):
+		frappe.rename_doc(
+			"Desktop Icon",
+			app_icon_name,
+			SIDEBAR_NAME,
+			force=True,
+		)
+		app_icon_name = SIDEBAR_NAME
+
+	if app_icon_name != SIDEBAR_NAME:
+		frappe.db.set_value(
+			"Desktop Icon",
+			app_icon_name,
+			"hidden",
+			1,
+			update_modified=False,
+		)
+
+	icon = frappe.get_doc("Desktop Icon", SIDEBAR_NAME)
+	icon.update(
+		{
+			"label": SIDEBAR_NAME,
+			"icon_type": "App",
+			"link_type": "Workspace Sidebar",
+			"link_to": SIDEBAR_NAME,
+			"sidebar": SIDEBAR_NAME,
+			"link": None,
+			"hidden": 0,
+			"app": APP_NAME,
+		}
+	)
+	icon.save(ignore_permissions=True)
+
+	# The desktop icon and boot payload are cached per user. Clear the complete
+	# hashes so existing worker sessions do not retain the obsolete external URL.
+	frappe.cache.delete_key("desktop_icons")
+	frappe.cache.delete_key("bootinfo")
+
+
 def execute():
 	_remove_legacy_pages()
 	_repair_sidebar()
 	_repair_workspace()
+	_repair_desktop_icon()
 	frappe.clear_cache()

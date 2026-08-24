@@ -25,7 +25,7 @@
  "fields": [
   {"fieldname": "naming_series", "fieldtype": "Select", "label": "编号规则", "options": "JCWA-.YYYY.-.#####", "default": "JCWA-.YYYY.-.#####", "reqd": 1},
   {"fieldname": "assignment_key", "fieldtype": "Data", "label": "派工唯一键", "read_only": 1, "unique": 1, "hidden": 1, "no_copy": 1},
-  {"fieldname": "job_card", "fieldtype": "Link", "label": "Job Card", "options": "Job Card", "read_only": 1, "reqd": 1, "search_index": 1, "unique": 1},
+  {"fieldname": "job_card", "fieldtype": "Link", "label": "Job Card", "options": "Job Card", "read_only": 1, "reqd": 1, "search_index": 1},
   {"fieldname": "work_order", "fieldtype": "Link", "label": "生产工单", "options": "Work Order", "read_only": 1, "search_index": 1},
   {"fieldname": "company", "fieldtype": "Link", "label": "公司", "options": "Company", "read_only": 1, "reqd": 1},
   {"fieldname": "operation", "fieldtype": "Link", "label": "工序", "options": "Operation", "read_only": 1, "reqd": 1},

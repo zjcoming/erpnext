@@ -11,8 +11,18 @@ def get_my_dashboard():
 
 
 @frappe.whitelist(methods=["POST"])
-def submit_work_report(assignment, completed_qty, reported_minutes=None, request_id=None):
-	return service.submit_work_report(assignment, completed_qty, reported_minutes, request_id)
+def start_work_session(assignment, request_id=None):
+	return service.start_work_session(assignment, request_id)
+
+
+@frappe.whitelist(methods=["POST"])
+def finish_work_session(report, completed_qty, request_id=None):
+	return service.finish_work_session(report, completed_qty, request_id)
+
+
+@frappe.whitelist(methods=["POST"])
+def cancel_work_session(report):
+	return service.cancel_work_session(report)
 
 
 @frappe.whitelist()

@@ -1,11 +1,20 @@
 from __future__ import annotations
 
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from unittest.mock import patch
 
 import frappe
 from frappe.tests import IntegrationTestCase
-from frappe.utils import add_days, add_months, flt, get_first_day, nowdate, random_string
+from frappe.utils import (
+	add_days,
+	add_months,
+	flt,
+	get_datetime,
+	get_first_day,
+	now_datetime,
+	nowdate,
+	random_string,
+)
 
 from erpnext.manufacturing.doctype.work_order.test_work_order import make_wo_order_test_record
 from erpnext.setup.doctype.employee.test_employee import make_employee
@@ -133,9 +142,9 @@ class TestWorkerReporting(IntegrationTestCase):
 				}
 			).insert()
 
-	def _assign(self, job_card):
+	def _assign(self, job_card, employee=None):
 		with self.set_user(self.supervisor):
-			return service.assign_worker(job_card.name, self.worker)
+			return service.assign_worker(job_card.name, employee or self.worker)
 
 	def _setup_flow(self, qty=100, wage_type="Piecework", rate=5, valid_from=None):
 		job_card = self._make_job_card(qty)
@@ -143,14 +152,40 @@ class TestWorkerReporting(IntegrationTestCase):
 		assignment = self._assign(job_card)
 		return job_card, assignment
 
-	def _submit(self, assignment, qty, minutes=0, request_id=None):
-		with self.set_user(self.worker_user):
-			return service.submit_work_report(
+	def _submit_as(self, assignment, worker_user, qty, minutes=0, request_id=None):
+		request_id = request_id or random_string(16)
+		duration = flt(minutes) if flt(minutes) > 0 else 1
+		started_at = now_datetime()
+		latest = frappe.get_all(
+			"Job Card Work Report",
+			filters={"employee": assignment.employee, "actual_end_time": ["is", "set"]},
+			fields=["actual_end_time"],
+			order_by="actual_end_time desc",
+			limit=1,
+		)
+		if latest and get_datetime(latest[0].actual_end_time) > started_at:
+			started_at = get_datetime(latest[0].actual_end_time)
+		with self.set_user(worker_user):
+			report = service.start_work_session(
 				assignment.name,
-				qty,
-				minutes,
-				request_id or random_string(16),
+				f"{request_id}-start",
+				started_at=started_at,
 			)
+			return service.finish_work_session(
+				report.name,
+				qty,
+				f"{request_id}-finish",
+				ended_at=started_at + timedelta(minutes=duration),
+			)
+
+	def _submit(self, assignment, qty, minutes=0, request_id=None):
+		return self._submit_as(
+			assignment,
+			self.worker_user,
+			qty,
+			minutes=minutes,
+			request_id=request_id,
+		)
 
 	def _approve(self, report):
 		with self.set_user(self.supervisor):
@@ -324,9 +359,9 @@ class TestWorkerReporting(IntegrationTestCase):
 		self.assertEqual(row.employee, self.worker)
 		self.assertEqual(row.custom_reported_employee, self.worker)
 		self.assertEqual(row.custom_job_card_work_report, approved.name)
-		self.assertFalse(row.from_time)
-		self.assertFalse(row.to_time)
-		self.assertEqual(row.time_in_mins, 0)
+		self.assertEqual(get_datetime(row.from_time), get_datetime(approved.actual_start_time))
+		self.assertEqual(get_datetime(row.to_time), get_datetime(approved.actual_end_time))
+		self.assertEqual(row.time_in_mins, approved.actual_minutes)
 
 		self._approve(report)
 		job_card.reload()
@@ -346,7 +381,7 @@ class TestWorkerReporting(IntegrationTestCase):
 		self.assertTrue(frappe.db.exists("BOM", original_default))
 		self.assertTrue(frappe.db.get_value("BOM", original_default, "is_default"))
 
-	def test_metadata_keeps_worker_writes_api_only_and_uses_unique_backlink(self):
+	def test_metadata_keeps_worker_writes_api_only_and_uses_unique_backlinks(self):
 		from process_simplification import hooks
 
 		report_meta = frappe.get_meta("Job Card Work Report")
@@ -368,7 +403,13 @@ class TestWorkerReporting(IntegrationTestCase):
 		self.assertTrue(work_order_marker.read_only)
 		self.assertFalse(work_order_marker.allow_on_submit)
 		self.assertTrue(work_order_marker.no_copy)
-		self.assertTrue(frappe.get_meta("Job Card Worker Assignment").get_field("job_card").unique)
+		self.assertFalse(frappe.get_meta("Job Card Worker Assignment").get_field("job_card").unique)
+		self.assertTrue(report_meta.get_field("request_key").unique)
+		self.assertTrue(report_meta.get_field("completion_request_key").unique)
+		self.assertIn("In Progress", report_meta.get_field("status").options.splitlines())
+		self.assertEqual(report_meta.get_field("actual_start_time").fieldtype, "Datetime")
+		self.assertEqual(report_meta.get_field("actual_end_time").fieldtype, "Datetime")
+		self.assertEqual(report_meta.get_field("actual_minutes").fieldtype, "Float")
 		for role in ("Production Wage Manager", "System Manager"):
 			rate_permission = next(
 				row for row in frappe.get_meta("Operation Wage Rate").permissions if row.role == role
@@ -416,17 +457,50 @@ class TestWorkerReporting(IntegrationTestCase):
 			1,
 		)
 
-	def test_one_job_card_has_exactly_one_worker_assignment(self):
+	def test_multiple_workers_can_share_one_job_card_and_complete_it_together(self):
 		job_card, first_assignment = self._setup_flow(qty=100)
 		second_user = self._make_worker()
 		second_employee = frappe.db.get_value("Employee", {"user_id": second_user}, "name")
 		with self.set_user(self.supervisor):
-			with self.assertRaises(frappe.ValidationError):
-				service.assign_worker(job_card.name, second_employee)
+			available_workers = {row[0] for row in service.search_workers(job_card.name)}
+		self.assertNotIn(self.worker, available_workers)
+		self.assertIn(second_employee, available_workers)
+		second_assignment = self._assign(job_card, second_employee)
 		self.assertEqual(
-			frappe.db.get_value("Job Card Worker Assignment", {"job_card": job_card.name}, "name"),
-			first_assignment.name,
+			frappe.db.count("Job Card Worker Assignment", {"job_card": job_card.name}),
+			2,
 		)
+		with self.set_user(self.supervisor):
+			available_workers = {row[0] for row in service.search_workers(job_card.name)}
+		self.assertNotIn(second_employee, available_workers)
+		first = self._submit_as(first_assignment, self.worker_user, 40)
+		second = self._submit_as(second_assignment, second_user, 60)
+		self._approve(first)
+		job_card.reload()
+		self.assertEqual(job_card.docstatus, 0)
+		self.assertEqual(job_card.total_completed_qty, 40)
+		self._approve(second)
+		job_card.reload()
+		first_assignment.reload()
+		second_assignment.reload()
+		self.assertEqual(job_card.docstatus, 1)
+		self.assertEqual(job_card.total_completed_qty, 100)
+		self.assertEqual({row.employee for row in job_card.time_logs}, {self.worker, second_employee})
+		self.assertEqual(first_assignment.status, "Completed")
+		self.assertEqual(second_assignment.status, "Completed")
+
+	def test_worker_can_cancel_only_an_active_session(self):
+		_, assignment = self._setup_flow(qty=10)
+		with self.set_user(self.worker_user):
+			active = service.start_work_session(assignment.name, "cancel-active-start")
+			self.assertEqual(active.status, "In Progress")
+			service.cancel_work_session(active.name)
+		self.assertFalse(frappe.db.exists("Job Card Work Report", active.name))
+
+		pending = self._submit(assignment, 1)
+		with self.set_user(self.worker_user):
+			with self.assertRaises(frappe.ValidationError):
+				service.cancel_work_session(pending.name)
 
 	def test_fractional_quantity_and_piecework_retry_use_normalized_values(self):
 		job_card, assignment = self._setup_flow(qty=1)
@@ -636,13 +710,12 @@ class TestWorkerReporting(IntegrationTestCase):
 
 		new_user = self._make_user("Production Worker")
 		frappe.db.set_value("Employee", self.worker, "user_id", new_user)
-		with self.set_user(new_user):
-			new_report = service.submit_work_report(
-				first_assignment.name,
-				7,
-				0,
-				"rebound-user-report",
-			)
+		new_report = self._submit_as(
+			first_assignment,
+			new_user,
+			7,
+			request_id="rebound-user-report",
+		)
 		self.assertEqual(new_report.employee_user, new_user)
 		self._approve(new_report)
 		first_job_card.reload()
@@ -845,23 +918,27 @@ class TestWorkerReporting(IntegrationTestCase):
 		)
 
 	def test_time_wage_freezes_rate_and_enforces_natural_day_limit(self):
-		job_card, assignment = self._setup_flow(qty=100, wage_type="Time", rate=20)
-		with self.assertRaises(frappe.ValidationError):
-			self._submit(assignment, 1, minutes=0.5)
-		report = self._submit(assignment, 30, minutes=1440)
-		self.assertEqual(report.wage_amount, 480)
-		self._approve(report)
-		with self.assertRaises(frappe.ValidationError):
-			self._submit(assignment, 1, minutes=1)
+		production_moment = datetime.combine(
+			get_datetime(nowdate()).date(), time(0, 0, 0, 123456)
+		)
+		with self.freeze_time(production_moment):
+			job_card, assignment = self._setup_flow(qty=100, wage_type="Time", rate=20)
+			report = self._submit(assignment, 30, minutes=720)
+			self.assertEqual(report.actual_minutes, 720)
+			self.assertEqual(report.reported_minutes, 720)
+			self.assertEqual(report.wage_amount, 240)
+			self._approve(report)
+			with self.assertRaises(frappe.ValidationError):
+				self._submit(assignment, 1, minutes=721)
 		with self.set_user(self.wage_manager):
 			rate = frappe.get_doc("Operation Wage Rate", report.wage_rate)
 			rate.rate = 100
 			rate.save()
 		report.reload()
 		self.assertEqual(report.rate, 20)
-		self.assertEqual(report.wage_amount, 480)
+		self.assertEqual(report.wage_amount, 240)
 		job_card.reload()
-		self.assertEqual(job_card.total_time_in_mins, 0)
+		self.assertEqual(job_card.total_time_in_mins, 720)
 
 	def test_monthly_summary_contains_approved_reports(self):
 		previous_month = add_months(get_first_day(nowdate()), -1)

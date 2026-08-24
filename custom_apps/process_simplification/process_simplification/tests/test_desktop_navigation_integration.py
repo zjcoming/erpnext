@@ -17,6 +17,16 @@ class TestDesktopNavigationIntegration(IntegrationTestCase):
 	def test_workspace_patch_repairs_existing_desktop_navigation(self):
 		from process_simplification.patches.v0_0.fix_desktop_navigation import execute
 
+		if frappe.db.exists("Desktop Icon", SIDEBAR_NAME) and not frappe.db.exists(
+			"Desktop Icon", "流程简化"
+		):
+			frappe.rename_doc(
+				"Desktop Icon",
+				SIDEBAR_NAME,
+				"流程简化",
+				force=True,
+			)
+
 		frappe.db.set_value(
 			"Workspace",
 			"process-simplification",
@@ -190,6 +200,23 @@ class TestDesktopNavigationIntegration(IntegrationTestCase):
 			{"Production Worker", "Production Supervisor", "Production Wage Manager"}.issubset(
 				workspace_roles
 			)
+		)
+		app_icon = frappe.db.get_value(
+			"Desktop Icon",
+			{"app": "process_simplification", "icon_type": "App", "hidden": 0},
+			["name", "label", "link_type", "link_to", "sidebar", "link"],
+			as_dict=True,
+		)
+		self.assertEqual(
+			app_icon,
+			{
+				"name": SIDEBAR_NAME,
+				"label": SIDEBAR_NAME,
+				"link_type": "Workspace Sidebar",
+				"link_to": SIDEBAR_NAME,
+				"sidebar": SIDEBAR_NAME,
+				"link": None,
+			},
 		)
 
 	def test_worker_reporting_upgrade_removes_legacy_pages_and_navigation(self):

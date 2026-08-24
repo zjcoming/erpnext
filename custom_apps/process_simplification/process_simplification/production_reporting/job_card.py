@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import frappe
 from frappe import _
-from frappe.utils import flt
+from frappe.utils import flt, get_datetime
 
 
 def _tables_ready() -> bool:
@@ -37,6 +37,9 @@ def _report_rows(job_card: str, status: str | None = None, *, exclude_report: st
 			report.job_card,
 			report.employee,
 			report.completed_qty,
+			report.actual_start_time,
+			report.actual_end_time,
+			report.actual_minutes,
 			report.job_card_time_log,
 			report.status,
 		)
@@ -85,6 +88,9 @@ def _expected_reports(doc):
 			job_card=report.job_card,
 			employee=report.employee,
 			completed_qty=flt(report.completed_qty),
+			actual_start_time=report.actual_start_time,
+			actual_end_time=report.actual_end_time,
+			actual_minutes=flt(report.actual_minutes),
 			job_card_time_log=report.job_card_time_log,
 			in_flight=False,
 		)
@@ -95,7 +101,16 @@ def _expected_reports(doc):
 		report = frappe.db.get_value(
 			"Job Card Work Report",
 			in_flight,
-			["name", "job_card", "employee", "completed_qty", "status"],
+			[
+				"name",
+				"job_card",
+				"employee",
+				"completed_qty",
+				"actual_start_time",
+				"actual_end_time",
+				"actual_minutes",
+				"status",
+			],
 			as_dict=True,
 			for_update=True,
 		)
@@ -106,6 +121,9 @@ def _expected_reports(doc):
 			job_card=report.job_card,
 			employee=report.employee,
 			completed_qty=flt(report.completed_qty),
+			actual_start_time=report.actual_start_time,
+			actual_end_time=report.actual_end_time,
+			actual_minutes=flt(report.actual_minutes),
 			job_card_time_log=None,
 			in_flight=True,
 		)
@@ -133,8 +151,17 @@ def _validate_time_log_backlinks(doc):
 			frappe.throw(_("Job Card quantity for report {0} was changed.").format(report_name))
 		if row.employee != report.employee or row.get("custom_reported_employee") != report.employee:
 			frappe.throw(_("Worker attribution changed for report {0}.").format(report_name))
-		if row.get("from_time") or row.get("to_time") or flt(row.get("time_in_mins")):
-			frappe.throw(_("Worker-reported wage minutes cannot be stored as synthetic Job Card time."))
+		if report.actual_start_time or report.actual_end_time:
+			if not (row.get("from_time") and row.get("to_time")):
+				frappe.throw(_("Captured production time is missing from the Job Card row."))
+			if (
+				get_datetime(row.from_time) != get_datetime(report.actual_start_time)
+				or get_datetime(row.to_time) != get_datetime(report.actual_end_time)
+				or flt(row.time_in_mins, 6) != flt(report.actual_minutes, 6)
+			):
+				frappe.throw(_("Captured production time changed for report {0}.").format(report_name))
+		elif row.get("from_time") or row.get("to_time") or flt(row.get("time_in_mins")):
+			frappe.throw(_("Legacy untimed reports cannot acquire synthetic Job Card time."))
 		if report.job_card_time_log and row.name != report.job_card_time_log:
 			frappe.throw(_("The stored Job Card row link changed for report {0}.").format(report_name))
 	return expected, in_flight
@@ -224,7 +251,7 @@ def before_cancel(doc, method=None):
 	if not _tables_ready() or not _is_managed(doc):
 		return
 	if any(
-		row.status in {"Pending Approval", "Approved"}
+		row.status in {"In Progress", "Pending Approval", "Approved"}
 		for row in _report_rows(doc.name)
 	):
 		frappe.throw(

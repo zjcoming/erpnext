@@ -11,5 +11,5 @@ ADMIN_REVIEW_ROLES = {SYSTEM_MANAGER_ROLE}
 WAGE_ROLES = {WAGE_MANAGER_ROLE, SYSTEM_MANAGER_ROLE}
 
 ASSIGNMENT_STATUSES = {"Active", "Completed", "Cancelled"}
-REPORT_STATUSES = {"Pending Approval", "Approved", "Rejected"}
+REPORT_STATUSES = {"In Progress", "Pending Approval", "Approved", "Rejected"}
 WAGE_TYPES = {"Piecework", "Time"}

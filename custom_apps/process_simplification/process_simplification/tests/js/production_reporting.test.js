@@ -13,7 +13,11 @@ const reviewPage = require(path.join(
 	"process_simplification/page/production_report_review/production_report_review.js"
 ));
 
-test("worker report exposes exactly the three review statuses", () => {
+test("worker report exposes active timing plus the three review statuses", () => {
+	assert.deepEqual(workerPage.workReportStatusMeta("In Progress"), {
+		label: "计时中",
+		indicator: "blue",
+	});
 	assert.deepEqual(workerPage.workReportStatusMeta("Pending Approval"), {
 		label: "待审核",
 		indicator: "orange",
@@ -29,17 +33,22 @@ test("worker report exposes exactly the three review statuses", () => {
 });
 
 test("worker button state is driven by server block codes", () => {
-	assert.deepEqual(workerPage.workReportButtonMeta({ can_submit: true }), {
-		label: "报工",
+	assert.deepEqual(workerPage.workReportButtonMeta({ can_start: true }), {
+		action: "start",
+		label: "开始计时",
 		disabled: false,
 	});
 	assert.deepEqual(
-		workerPage.workReportButtonMeta({ can_submit: false, block_code: "PENDING_REPORT" }),
-		{ label: "待主管审核", disabled: true }
+		workerPage.workReportButtonMeta({ active_report: "JCWR-1", can_finish: true }),
+		{ action: "finish", label: "结束并报工", disabled: false }
 	);
 	assert.deepEqual(
-		workerPage.workReportButtonMeta({ can_submit: false, block_code: "RATE_MISSING" }),
-		{ label: "缺少计价规则", disabled: true }
+		workerPage.workReportButtonMeta({ can_start: false, block_code: "PENDING_REPORT" }),
+		{ action: null, label: "待主管审核", disabled: true }
+	);
+	assert.deepEqual(
+		workerPage.workReportButtonMeta({ can_start: false, block_code: "RATE_MISSING" }),
+		{ action: null, label: "缺少计价规则", disabled: true }
 	);
 });
 

@@ -37,6 +37,7 @@ if (typeof frappe !== "undefined") {
 		page.report_review = { state, load };
 		const esc = (value) => frappe.utils.escape_html(String(value ?? ""));
 		const number = (value) => format_number(flt(value), null, 2);
+		const dateTime = (value) => (value ? frappe.datetime.str_to_user(value) : "-");
 
 		function renderQueue() {
 			const rows = state.data.reports || [];
@@ -49,8 +50,8 @@ if (typeof frappe !== "undefined") {
 									? `${number(row.reported_minutes)} ${__("分钟")} × ${number(row.rate)}/${__("小时")}`
 									: `${number(row.completed_qty)} × ${number(row.rate)}/${__("件")}`;
 								return `<article class="report-review-card" data-report="${esc(row.name)}">
-									<div class="report-review-heading"><strong>${esc(row.employee)} · ${esc(row.operation)}</strong><span>${esc(frappe.datetime.str_to_user(row.submitted_at))}</span></div>
-									<div class="report-review-facts"><span>${__("Job Card")}：${esc(row.job_card)}</span><span>${__("生产工单")}：${esc(row.work_order)}</span><span>${__("申报数量")}：${number(row.completed_qty)}</span><span>${__("计价")}：${esc(wage)}</span><span>${__("金额")}：${number(row.wage_amount)}</span><span>${__("已通过/任务量")}：${number(row.job_card_completed_qty)} / ${number(row.for_quantity)}</span></div>
+									<div class="report-review-heading"><strong>${esc(row.employee)} · ${esc(row.operation)}</strong><span>${esc(dateTime(row.submitted_at))}</span></div>
+									<div class="report-review-facts"><span>${__("Job Card")}：${esc(row.job_card)}</span><span>${__("生产工单")}：${esc(row.work_order)}</span><span>${__("申报数量")}：${number(row.completed_qty)}</span><span>${__("实际开始")}：${esc(dateTime(row.actual_start_time))}</span><span>${__("实际结束")}：${esc(dateTime(row.actual_end_time))}</span><span>${__("实际分钟")}：${number(row.actual_minutes)}</span><span>${__("计价")}：${esc(wage)}</span><span>${__("金额")}：${number(row.wage_amount)}</span><span>${__("已通过/任务量")}：${number(row.job_card_completed_qty)} / ${number(row.for_quantity)}</span></div>
 									${action.message ? `<p class="text-danger">${esc(action.message)}</p>` : ""}
 									<div class="report-review-actions"><button class="btn btn-primary btn-sm report-approve" data-report="${esc(row.name)}" ${action.approve_disabled ? "disabled" : ""}>${__("通过")}</button><button class="btn btn-default btn-sm report-reject" data-report="${esc(row.name)}" ${action.reject_disabled ? "disabled" : ""}>${__("驳回")}</button></div>
 								</article>`;
@@ -118,7 +119,7 @@ if (typeof frappe !== "undefined") {
 		function openApproveDialog(row) {
 			const dialog = new frappe.ui.Dialog({
 				title: __("确认通过报工"),
-				fields: [{ fieldtype: "HTML", options: `<p>${__("通过后将立即把以下生产数量写入 Job Card，且不能在审核时修改：")}</p><p><strong>${esc(row.employee)} · ${esc(row.operation)}</strong><br>${__("数量")}：${number(row.completed_qty)}<br>${__("计薪金额")}：${number(row.wage_amount)}</p>` }],
+				fields: [{ fieldtype: "HTML", options: `<p>${__("通过后将立即把以下生产数量和实际计时写入 Job Card，且不能在审核时修改：")}</p><p><strong>${esc(row.employee)} · ${esc(row.operation)}</strong><br>${__("数量")}：${number(row.completed_qty)}<br>${__("时间")}：${esc(dateTime(row.actual_start_time))} — ${esc(dateTime(row.actual_end_time))}（${number(row.actual_minutes)} ${__("分钟")}）<br>${__("计薪金额")}：${number(row.wage_amount)}</p>` }],
 				primary_action_label: __("确认通过"),
 				primary_action: async () => {
 					setDialogBusy(dialog, true, __("确认通过"));

@@ -4,7 +4,16 @@ import hashlib
 
 import frappe
 from frappe import _
-from frappe.utils import flt, get_first_day, get_last_day, getdate, now_datetime, nowdate
+from frappe.utils import (
+	flt,
+	get_datetime,
+	get_first_day,
+	get_last_day,
+	getdate,
+	now_datetime,
+	nowdate,
+	time_diff_in_hours,
+)
 
 from process_simplification.production_reporting.constants import (
 	ASSIGNMENT_STATUSES,
@@ -146,7 +155,7 @@ def validate_report_document(doc):
 	if not getattr(doc.flags, "worker_reporting_action", False):
 		frappe.throw(_("Work reports can only be changed through reporting actions."))
 	if doc.status not in REPORT_STATUSES:
-		frappe.throw(_("Work report status must be Pending Approval, Approved, or Rejected."))
+		frappe.throw(_("Invalid work report status."))
 	assignment = frappe.db.get_value(
 		"Job Card Worker Assignment",
 		doc.assignment,
@@ -165,15 +174,35 @@ def validate_report_document(doc):
 	):
 		if doc.get(fieldname) != assignment.get(fieldname):
 			frappe.throw(_("Work report identity does not match its worker assignment."))
-	if flt(doc.completed_qty) <= 0:
-		frappe.throw(_("Completed quantity must be greater than zero."))
-	if doc.wage_type == "Time":
-		if flt(doc.reported_minutes) <= 0:
-			frappe.throw(_("Reported wage minutes must be greater than zero for a time wage."))
-	elif flt(doc.reported_minutes):
-		frappe.throw(_("Piecework reports cannot contain wage minutes."))
 	if not doc.request_key or not doc.wage_rate or flt(doc.rate) <= 0:
-		frappe.throw(_("Work report is missing its immutable request or wage-rate snapshot."))
+		frappe.throw(_("Work session is missing its immutable request or wage-rate snapshot."))
+	if doc.status == "In Progress":
+		if not doc.actual_start_time:
+			frappe.throw(_("An active work session requires its actual start time."))
+		if (
+			doc.actual_end_time
+			or doc.completion_request_key
+			or flt(doc.actual_minutes)
+			or flt(doc.completed_qty)
+			or flt(doc.reported_minutes)
+			or flt(doc.wage_amount)
+		):
+			frappe.throw(_("An active work session cannot contain completion facts."))
+	else:
+		if flt(doc.completed_qty) <= 0:
+			frappe.throw(_("Completed quantity must be greater than zero."))
+		if doc.actual_start_time or doc.actual_end_time:
+			if not (doc.actual_start_time and doc.actual_end_time and flt(doc.actual_minutes) > 0):
+				frappe.throw(_("A timed report requires start time, end time, and positive actual minutes."))
+			if get_datetime(doc.actual_end_time) <= get_datetime(doc.actual_start_time):
+				frappe.throw(_("Actual end time must be later than actual start time."))
+		if doc.wage_type == "Time":
+			if flt(doc.reported_minutes) <= 0:
+				frappe.throw(_("Wage minutes must be greater than zero for a time wage."))
+			if doc.actual_start_time and flt(doc.reported_minutes, 6) != flt(doc.actual_minutes, 6):
+				frappe.throw(_("Timed wage minutes must equal the captured actual minutes."))
+		elif flt(doc.reported_minutes):
+			frappe.throw(_("Piecework reports cannot contain wage minutes."))
 	if doc.is_new():
 		return
 	old = frappe.db.get_value(
@@ -181,6 +210,7 @@ def validate_report_document(doc):
 		doc.name,
 		[
 			"request_key",
+			"completion_request_key",
 			"assignment",
 			"job_card",
 			"work_order",
@@ -191,6 +221,10 @@ def validate_report_document(doc):
 			"employee_user",
 			"labor_date",
 			"wage_type",
+			"status",
+			"actual_start_time",
+			"actual_end_time",
+			"actual_minutes",
 			"completed_qty",
 			"reported_minutes",
 			"wage_rate",
@@ -200,8 +234,47 @@ def validate_report_document(doc):
 		],
 		as_dict=True,
 	)
-	if old and any(old.get(fieldname) != doc.get(fieldname) for fieldname in old):
+	if not old:
+		return
+	identity_fields = {
+		"request_key",
+		"assignment",
+		"job_card",
+		"work_order",
+		"company",
+		"operation",
+		"operation_id",
+		"employee",
+		"employee_user",
+		"labor_date",
+		"wage_type",
+		"actual_start_time",
+		"wage_rate",
+		"wage_rate_revision",
+		"rate",
+	}
+	if any(old.get(fieldname) != doc.get(fieldname) for fieldname in identity_fields):
+		frappe.throw(_("Work session identity and start facts are immutable."))
+	if old.status == "In Progress" and doc.status == "Pending Approval":
+		return
+	immutable_completion_fields = {
+		"completion_request_key",
+		"actual_end_time",
+		"actual_minutes",
+		"completed_qty",
+		"reported_minutes",
+		"wage_amount",
+	}
+	if any(old.get(fieldname) != doc.get(fieldname) for fieldname in immutable_completion_fields):
 		frappe.throw(_("Submitted work report facts are immutable; reject and report again."))
+	allowed_transitions = {
+		"In Progress": {"In Progress"},
+		"Pending Approval": {"Pending Approval", "Approved", "Rejected"},
+		"Approved": {"Approved"},
+		"Rejected": {"Rejected"},
+	}
+	if doc.status not in allowed_transitions.get(old.status, set()):
+		frappe.throw(_("This work report status transition is not allowed."))
 
 
 def assign_worker(job_card: str, employee: str, supervisor: str | None = None, notes: str | None = None):
@@ -252,15 +325,17 @@ def assign_worker(job_card: str, employee: str, supervisor: str | None = None, n
 	assignment_table = frappe.qb.DocType("Job Card Worker Assignment")
 	existing_assignments = (
 		frappe.qb.from_(assignment_table)
-		.select(assignment_table.name, assignment_table.supervisor)
+		.select(assignment_table.name, assignment_table.employee, assignment_table.supervisor)
 		.where(assignment_table.job_card == job_card)
 		.for_update()
 	).run(as_dict=True)
-	if existing_assignments:
+	conflicting_supervisors = {
+		row.supervisor for row in existing_assignments if row.supervisor != supervisor
+	}
+	if conflicting_supervisors:
 		frappe.throw(
 			_(
-				"A Job Card can be assigned to only one worker in this reporting flow. "
-				"Split the production quantity into separate Job Cards when worker attribution differs."
+				"All workers on one Job Card must use the same reviewing supervisor."
 			)
 		)
 	if not existing_assignments and (
@@ -449,6 +524,17 @@ def get_worker_dashboard():
 			],
 			as_dict=True,
 		)
+		active_session = frappe.db.get_value(
+			"Job Card Work Report",
+			{"assignment": assignment.name, "status": "In Progress"},
+			[
+				"name",
+				"actual_start_time",
+				"wage_type",
+				"rate",
+			],
+			as_dict=True,
+		)
 		rate = get_wage_rate(assignment.company, assignment.operation, today) if jc else None
 		assignment.for_quantity = flt(jc.for_quantity) if jc else 0
 		assignment.completed_qty = flt(jc.total_completed_qty) if jc else 0
@@ -473,8 +559,14 @@ def get_worker_dashboard():
 				message=_("Job Card quantity changed after worker assignment."),
 			)
 		assignment.reportable_qty = reportable_qty(jc) if jc else 0
-		assignment.wage_type = rate.wage_type if rate else None
-		assignment.rate = flt(rate.rate) if rate else 0
+		assignment.active_report = active_session.name if active_session else None
+		assignment.active_started_at = active_session.actual_start_time if active_session else None
+		assignment.wage_type = (
+			active_session.wage_type if active_session else (rate.wage_type if rate else None)
+		)
+		assignment.rate = flt(
+			active_session.rate if active_session else (rate.rate if rate else 0)
+		)
 		assignment.daily_minutes_used = used_minutes
 		assignment.daily_minutes_limit = daily_minutes_limit()
 		assignment.has_pending_report = bool(
@@ -483,27 +575,36 @@ def get_worker_dashboard():
 				{"assignment": assignment.name, "status": "Pending Approval"},
 			)
 		)
-		assignment.can_submit = True
+		assignment.can_start = True
+		assignment.can_finish = False
 		assignment.block_code = None
 		assignment.block_message = None
 		if block:
-			assignment.can_submit = False
+			assignment.can_start = False
 			assignment.block_code = block.code
 			assignment.block_message = block.message
+		elif active_session:
+			assignment.can_start = False
+			assignment.can_finish = assignment.reportable_qty > 0
+			if not assignment.can_finish:
+				assignment.block_code = "NO_REMAINING_QTY"
+				assignment.block_message = _(
+					"The Job Card quantity was filled by another report. Cancel this active session."
+				)
 		elif assignment.has_pending_report:
-			assignment.can_submit = False
+			assignment.can_start = False
 			assignment.block_code = "PENDING_REPORT"
 			assignment.block_message = _("A report is waiting for supervisor review.")
 		elif assignment.reportable_qty <= 0:
-			assignment.can_submit = False
+			assignment.can_start = False
 			assignment.block_code = "NO_REMAINING_QTY"
 			assignment.block_message = _("The Job Card quantity is fully reported.")
 		elif not rate:
-			assignment.can_submit = False
+			assignment.can_start = False
 			assignment.block_code = "RATE_MISSING"
 			assignment.block_message = _("No enabled wage rate exists for today.")
 		elif rate.wage_type == "Time" and used_minutes >= daily_minutes_limit():
-			assignment.can_submit = False
+			assignment.can_start = False
 			assignment.block_code = "DAILY_MINUTES_LIMIT"
 			assignment.block_message = _("The daily wage-minute limit is already reached.")
 
@@ -518,6 +619,9 @@ def get_worker_dashboard():
 			"labor_date",
 			"wage_type",
 			"status",
+			"actual_start_time",
+			"actual_end_time",
+			"actual_minutes",
 			"completed_qty",
 			"reported_minutes",
 			"rate",
@@ -526,7 +630,7 @@ def get_worker_dashboard():
 			"submitted_at",
 			"reviewed_at",
 		],
-		order_by="submitted_at desc, creation desc",
+		order_by="actual_start_time desc, creation desc",
 		limit=100,
 	)
 	return {
@@ -538,46 +642,9 @@ def get_worker_dashboard():
 	}
 
 
-def _existing_request(
-	request_key: str,
-	assignment: str,
-	completed_qty,
-	reported_minutes,
-	*,
-	for_update: bool = False,
-):
-	existing = frappe.db.get_value(
-		"Job Card Work Report",
-		{"request_key": request_key},
-		["name", "assignment", "wage_type", "completed_qty", "reported_minutes"],
-		as_dict=True,
-		for_update=for_update,
-	)
-	if not existing:
-		return None
-	precision = job_card_qty_precision()
-	normalized_minutes = 0 if existing.wage_type == "Piecework" else flt(reported_minutes)
-	if (
-		existing.assignment != assignment
-		or flt(existing.completed_qty, precision) != flt(completed_qty, precision)
-		or flt(existing.reported_minutes) != normalized_minutes
-	):
-		frappe.throw(_("This request id was already used with different report values."))
-	return frappe.get_doc("Job Card Work Report", existing.name, for_update=for_update)
-
-
-def submit_work_report(
-	assignment: str,
-	completed_qty,
-	reported_minutes=None,
-	request_id: str | None = None,
-):
+def _lock_worker_assignment(assignment: str):
 	require_worker()
 	employee = employee_for_user()
-	request_id = str(request_id or "").strip()
-	if not request_id:
-		frappe.throw(_("A submission request id is required. Refresh and try again."))
-	request_key = _hash_key(employee, frappe.session.user, request_id)
 	initial = frappe.db.get_value(
 		"Job Card Worker Assignment",
 		assignment,
@@ -587,10 +654,10 @@ def submit_work_report(
 	if not initial:
 		frappe.throw(_("Worker assignment does not exist."))
 	jc = job_card_values(initial.job_card, for_update=True)
-	if jc and jc.work_order:
+	if not jc:
+		frappe.throw(_("Job Card no longer exists."))
+	if jc.work_order:
 		frappe.db.get_value("Work Order", jc.work_order, "status", for_update=True)
-	precision = job_card_qty_precision()
-	qty = flt(completed_qty, precision)
 	current_employee = frappe.db.get_value(
 		"Employee",
 		employee,
@@ -627,34 +694,66 @@ def submit_work_report(
 		for_update=True,
 	)
 	if not task or task.job_card != jc.name or task.employee != employee:
-		frappe.throw(_("You can only report your own active worker assignment."), frappe.PermissionError)
+		frappe.throw(_("You can only use your own active worker assignment."), frappe.PermissionError)
+	precision = job_card_qty_precision()
 	for fieldname in ("work_order", "company", "operation", "operation_id"):
 		if task.get(fieldname) != jc.get(fieldname):
 			frappe.throw(_("Job Card identity changed after worker assignment; reporting is blocked."))
 	if flt(task.job_card_qty, precision) != flt(jc.for_quantity, precision):
 		frappe.throw(_("Job Card quantity changed after worker assignment; reporting is blocked."))
-	labor_date = getdate(nowdate())
-	month_confirmed = _month_is_confirmed(
-		task.company,
-		employee,
-		labor_date,
-		for_update=True,
+	if task.status != "Active":
+		frappe.throw(_("This worker assignment is not active."))
+	assert_supported_job_card(jc, for_update=True)
+	_assert_report_facts_match_job_card(jc, for_update=True)
+	return employee, jc, task
+
+
+def _require_request_id(request_id: str | None, action: str) -> str:
+	request_id = str(request_id or "").strip()
+	if not request_id:
+		frappe.throw(_("A {0} request id is required. Refresh and try again.").format(action))
+	return request_id
+
+
+def start_work_session(
+	assignment: str,
+	request_id: str | None = None,
+	*,
+	started_at=None,
+):
+	request_id = _require_request_id(request_id, _("start"))
+	require_worker()
+	request_employee = employee_for_user()
+	request_key = _hash_key(request_employee, frappe.session.user, "start", request_id)
+	# A network retry must still resolve after review has completed the assignment
+	# and submitted the Job Card. The immutable request key and worker identity make
+	# this early return safe; new work still follows the full locking path below.
+	existing = frappe.db.get_value(
+		"Job Card Work Report",
+		{"request_key": request_key},
+		["name", "assignment", "employee", "employee_user"],
+		as_dict=True,
 	)
-	existing = _existing_request(
-		request_key,
-		assignment,
-		qty,
-		reported_minutes,
+	if existing:
+		if (
+			existing.assignment != assignment
+			or existing.employee != request_employee
+			or existing.employee_user != frappe.session.user
+		):
+			frappe.throw(_("This start request id was already used for another assignment."))
+		return frappe.get_doc("Job Card Work Report", existing.name)
+	employee, jc, task = _lock_worker_assignment(assignment)
+	existing = frappe.db.get_value(
+		"Job Card Work Report",
+		{"request_key": request_key},
+		["name", "assignment"],
+		as_dict=True,
 		for_update=True,
 	)
 	if existing:
-		return existing
-	if task.status != "Active":
-		frappe.throw(_("This worker assignment is not active."))
-	if month_confirmed:
-		frappe.throw(_("This employee's monthly wage summary is already confirmed."))
-	assert_supported_job_card(jc, for_update=True)
-	_assert_report_facts_match_job_card(jc, for_update=True)
+		if existing.assignment != assignment:
+			frappe.throw(_("This start request id was already used for another assignment."))
+		return frappe.get_doc("Job Card Work Report", existing.name, for_update=True)
 	if frappe.db.get_value(
 		"Job Card Work Report",
 		{"assignment": assignment, "status": "Pending Approval"},
@@ -662,33 +761,24 @@ def submit_work_report(
 		for_update=True,
 	):
 		frappe.throw(_("This assignment already has a report waiting for review."))
-
-	if qty <= 0:
-		frappe.throw(_("Completed quantity must be greater than zero."))
-	remaining = reportable_qty(jc, for_update=True)
-	if qty > remaining:
-		frappe.throw(_("This Job Card currently allows at most {0}.").format(remaining))
+	active = frappe.db.get_value(
+		"Job Card Work Report",
+		{"employee": employee, "status": "In Progress"},
+		["name", "assignment"],
+		as_dict=True,
+		for_update=True,
+	)
+	if active:
+		frappe.throw(_("You already have an active work session {0}.").format(active.name))
+	if reportable_qty(jc, for_update=True) <= 0:
+		frappe.throw(_("The Job Card has no remaining reportable quantity."))
+	started_at = get_datetime(started_at or now_datetime())
+	labor_date = getdate(started_at)
+	if _month_is_confirmed(task.company, employee, labor_date, for_update=True):
+		frappe.throw(_("This employee's monthly wage summary is already confirmed."))
 	rate = get_wage_rate(task.company, task.operation, labor_date, for_update=True)
 	if not rate:
 		frappe.throw(_("No enabled wage rate exists for this operation today."))
-	minutes = flt(reported_minutes)
-	if rate.wage_type == "Time":
-		if minutes <= 0:
-			frappe.throw(_("Reported wage minutes must be greater than zero."))
-		if minutes != int(minutes):
-			frappe.throw(_("Reported wage minutes must be a whole number."))
-		used = _daily_used_minutes(employee, labor_date, for_update=True)
-		if used + minutes > daily_minutes_limit():
-			frappe.throw(
-				_("Daily wage minutes would be {0}, exceeding the limit of {1}.").format(
-					used + minutes,
-					daily_minutes_limit(),
-				)
-			)
-	else:
-		minutes = 0
-
-	audit = request_audit()
 	doc = frappe.get_doc(
 		{
 			"doctype": "Job Card Work Report",
@@ -703,22 +793,141 @@ def submit_work_report(
 			"employee_user": frappe.session.user,
 			"labor_date": labor_date,
 			"wage_type": rate.wage_type,
-			"status": "Pending Approval",
-			"completed_qty": qty,
-			"reported_minutes": minutes,
+			"status": "In Progress",
+			"actual_start_time": started_at,
+			"completed_qty": 0,
+			"actual_minutes": 0,
+			"reported_minutes": 0,
 			"wage_rate": rate.name,
 			"wage_rate_revision": int(rate.revision or 0),
 			"rate": flt(rate.rate),
-			"wage_amount": money(qty * flt(rate.rate) if rate.wage_type == "Piecework" else minutes / 60 * flt(rate.rate)),
-			"submitted_by": frappe.session.user,
-			"submitted_at": now_datetime(),
-			"submission_ip": audit.ip,
-			"submission_user_agent": audit.user_agent,
+			"wage_amount": 0,
 		}
 	)
 	doc.flags.worker_reporting_action = True
 	doc.insert(ignore_permissions=True)
 	return doc
+
+
+def finish_work_session(
+	report: str,
+	completed_qty,
+	request_id: str | None = None,
+	*,
+	ended_at=None,
+):
+	request_id = _require_request_id(request_id, _("finish"))
+	require_worker()
+	request_employee = employee_for_user()
+	precision = job_card_qty_precision()
+	qty = flt(completed_qty, precision)
+	completion_key = _hash_key(request_employee, frappe.session.user, "finish", request_id)
+	initial = frappe.db.get_value(
+		"Job Card Work Report",
+		report,
+		[
+			"name",
+			"assignment",
+			"employee",
+			"employee_user",
+			"completion_request_key",
+			"completed_qty",
+		],
+		as_dict=True,
+	)
+	if not initial:
+		frappe.throw(_("Work session does not exist."))
+	if initial.employee != request_employee or initial.employee_user != frappe.session.user:
+		frappe.throw(_("You can only finish your own active work session."), frappe.PermissionError)
+	if initial.completion_request_key:
+		if (
+			initial.completion_request_key != completion_key
+			or flt(initial.completed_qty, precision) != qty
+		):
+			frappe.throw(_("This finish request id was already used with different report values."))
+		return frappe.get_doc("Job Card Work Report", initial.name)
+	employee, jc, task = _lock_worker_assignment(initial.assignment)
+	doc = frappe.get_doc("Job Card Work Report", report, for_update=True)
+	if doc.assignment != task.name or doc.employee != employee or doc.employee_user != frappe.session.user:
+		frappe.throw(_("You can only finish your own active work session."), frappe.PermissionError)
+	if doc.completion_request_key:
+		if (
+			doc.completion_request_key != completion_key
+			or flt(doc.completed_qty, precision) != qty
+		):
+			frappe.throw(_("This finish request id was already used with different report values."))
+		return doc
+	if doc.status != "In Progress":
+		frappe.throw(_("Only an active work session can be finished."))
+	if _month_is_confirmed(task.company, employee, doc.labor_date, for_update=True):
+		frappe.throw(_("This employee's monthly wage summary is already confirmed."))
+	if qty <= 0:
+		frappe.throw(_("Completed quantity must be greater than zero."))
+	remaining = reportable_qty(jc, for_update=True)
+	if qty > remaining:
+		frappe.throw(_("This Job Card currently allows at most {0}.").format(remaining))
+	ended_at = get_datetime(ended_at or now_datetime())
+	started_at = get_datetime(doc.actual_start_time)
+	if ended_at <= started_at:
+		frappe.throw(_("Actual end time must be later than actual start time."))
+	# Use the same calculation as ERPNext Job Card so the immutable report
+	# snapshot and the native child row remain exactly comparable.
+	actual_minutes = flt(time_diff_in_hours(ended_at, started_at) * 60, 6)
+	if actual_minutes <= 0:
+		frappe.throw(_("Actual production minutes must be greater than zero."))
+	minutes = actual_minutes if doc.wage_type == "Time" else 0
+	if doc.wage_type == "Time":
+		used = _daily_used_minutes(employee, doc.labor_date, for_update=True)
+		if flt(used + minutes, 6) > flt(daily_minutes_limit(), 6):
+			frappe.throw(
+				_("Daily wage minutes would be {0}, exceeding the limit of {1}.").format(
+					flt(used + minutes, 2),
+					daily_minutes_limit(),
+				)
+			)
+	audit = request_audit()
+	doc.completion_request_key = completion_key
+	doc.actual_end_time = ended_at
+	doc.actual_minutes = actual_minutes
+	doc.completed_qty = qty
+	doc.reported_minutes = minutes
+	doc.wage_amount = money(
+		qty * flt(doc.rate)
+		if doc.wage_type == "Piecework"
+		else minutes / 60 * flt(doc.rate)
+	)
+	doc.submitted_by = frappe.session.user
+	doc.submitted_at = ended_at
+	doc.submission_ip = audit.ip
+	doc.submission_user_agent = audit.user_agent
+	doc.status = "Pending Approval"
+	doc.flags.worker_reporting_action = True
+	doc.save(ignore_permissions=True)
+	return doc
+
+
+def cancel_work_session(report: str):
+	initial = frappe.db.get_value(
+		"Job Card Work Report",
+		report,
+		["name", "assignment"],
+		as_dict=True,
+	)
+	if not initial:
+		frappe.throw(_("Work session does not exist."))
+	employee, _job_card, task = _lock_worker_assignment(initial.assignment)
+	doc = frappe.get_doc("Job Card Work Report", report, for_update=True)
+	if (
+		doc.assignment != task.name
+		or doc.employee != employee
+		or doc.employee_user != frappe.session.user
+	):
+		frappe.throw(_("You can only cancel your own active work session."), frappe.PermissionError)
+	if doc.status != "In Progress":
+		frappe.throw(_("Only an active work session can be cancelled."))
+	doc.flags.worker_reporting_action = True
+	doc.delete(ignore_permissions=True)
+	return {"ok": True}
 
 
 def _report_filter_for_reviewer() -> dict:
@@ -752,6 +961,9 @@ def get_review_dashboard():
 			"labor_date",
 			"wage_type",
 			"completed_qty",
+			"actual_start_time",
+			"actual_end_time",
+			"actual_minutes",
 			"reported_minutes",
 			"rate",
 			"wage_amount",
@@ -865,7 +1077,20 @@ def get_review_dashboard():
 	processed = frappe.get_all(
 		"Job Card Work Report",
 		filters=processed_filters,
-		fields=["name", "job_card", "operation", "employee", "status", "completed_qty", "reported_minutes", "reviewed_at", "rejection_reason"],
+		fields=[
+			"name",
+			"job_card",
+			"operation",
+			"employee",
+			"status",
+			"completed_qty",
+			"actual_start_time",
+			"actual_end_time",
+			"actual_minutes",
+			"reported_minutes",
+			"reviewed_at",
+			"rejection_reason",
+		],
 		order_by="reviewed_at desc",
 		limit=100,
 	)
@@ -963,7 +1188,15 @@ def _assert_approved_report_integrity(jc, doc):
 	row = frappe.db.get_value(
 		"Job Card Time Log",
 		{"parent": doc.job_card, "custom_job_card_work_report": doc.name},
-		["name", "employee", "completed_qty", "custom_reported_employee"],
+		[
+			"name",
+			"employee",
+			"completed_qty",
+			"from_time",
+			"to_time",
+			"time_in_mins",
+			"custom_reported_employee",
+		],
 		as_dict=True,
 		for_update=True,
 	)
@@ -975,6 +1208,15 @@ def _assert_approved_report_integrity(jc, doc):
 		or flt(row.completed_qty, 6) != flt(doc.completed_qty, 6)
 	):
 		frappe.throw(_("Approved work report is inconsistent with its Job Card quantity row."))
+	if doc.actual_start_time or doc.actual_end_time:
+		if (
+			get_datetime(row.from_time) != get_datetime(doc.actual_start_time)
+			or get_datetime(row.to_time) != get_datetime(doc.actual_end_time)
+			or flt(row.time_in_mins, 6) != flt(doc.actual_minutes, 6)
+		):
+			frappe.throw(_("Approved work report is inconsistent with its Job Card time row."))
+	elif row.from_time or row.to_time or flt(row.time_in_mins):
+		frappe.throw(_("Legacy untimed work report acquired Job Card time."))
 	_assert_report_facts_match_job_card(jc, for_update=True)
 
 
@@ -1000,6 +1242,8 @@ def approve_work_report(name: str):
 		{
 			"employee": doc.employee,
 			"completed_qty": flt(doc.completed_qty),
+			"from_time": doc.actual_start_time,
+			"to_time": doc.actual_end_time,
 			"custom_job_card_work_report": doc.name,
 			"custom_reported_employee": doc.employee,
 		},
@@ -1074,6 +1318,17 @@ def search_draft_job_cards(txt: str = "", start: int = 0, page_len: int = 20):
 	companies = _supervisor_companies(frappe.session.user)
 	txt = f"%{str(txt or '').strip()}%"
 	company_condition = "" if companies is None else "and jc.company in %(companies)s"
+	supervisor_condition = (
+		""
+		if is_admin_reviewer()
+		else """
+		  and not exists (
+			select 1 from `tabJob Card Worker Assignment` other_assignment
+			where other_assignment.job_card = jc.name
+			  and other_assignment.supervisor != %(current_user)s
+		  )
+		"""
+	)
 	return frappe.db.sql(
 		f"""
 		select jc.name, jc.operation, jc.work_order
@@ -1085,12 +1340,13 @@ def search_draft_job_cards(txt: str = "", start: int = 0, page_len: int = 20):
 		  and ifnull(jc.track_semi_finished_goods, 0) = 0
 		  and ifnull(jc.is_subcontracted, 0) = 0
 		  and ifnull(jc.process_loss_qty, 0) = 0
-		  and ifnull(jc.custom_worker_reporting_enabled, 0) = 0
 		  and ifnull(jc.company, '') != ''
 		  and ifnull(jc.operation, '') != ''
 		  and ifnull(jc.operation_id, '') != ''
 		  and ifnull(jc.for_quantity, 0) > 0
+		  and ifnull(jc.total_completed_qty, 0) < ifnull(jc.for_quantity, 0)
 		  {company_condition}
+		  {supervisor_condition}
 		  and (jc.name like %(txt)s or ifnull(jc.operation, '') like %(txt)s or ifnull(jc.work_order, '') like %(txt)s)
 		  and 1 = (
 			select count(*) from `tabOperation Wage Rate` wage_rate
@@ -1105,11 +1361,9 @@ def search_draft_job_cards(txt: str = "", start: int = 0, page_len: int = 20):
 			where subop.parent = jc.name and subop.parentfield = 'sub_operations'
 		  )
 		  and not exists (
-			select 1 from `tabJob Card Worker Assignment` assignment
-			where assignment.job_card = jc.name
-		  )
-		  and not exists (
-			select 1 from `tabJob Card Time Log` time_log where time_log.parent = jc.name
+			select 1 from `tabJob Card Time Log` time_log
+			where time_log.parent = jc.name
+			  and ifnull(time_log.custom_job_card_work_report, '') = ''
 		  )
 		order by jc.modified desc
 		limit %(start)s, %(page_len)s
@@ -1117,6 +1371,7 @@ def search_draft_job_cards(txt: str = "", start: int = 0, page_len: int = 20):
 		{
 			"txt": txt,
 			"companies": tuple(sorted(companies or [])),
+			"current_user": frappe.session.user,
 			"today": getdate(nowdate()),
 			"start": int(start),
 			"page_len": min(50, int(page_len)),
@@ -1158,6 +1413,11 @@ def search_workers(job_card: str, txt: str = "", start: int = 0, page_len: int =
 				'Production Supervisor', 'Production Wage Manager', 'System Manager',
 				'Manufacturing User', 'Manufacturing Manager', 'Shop Floor User', 'Shop Floor Manager'
 			  )
+		  )
+		  and not exists (
+			select 1 from `tabJob Card Worker Assignment` existing_assignment
+			where existing_assignment.job_card = %(job_card)s
+			  and existing_assignment.employee = employee.name
 		  )
 		  and (employee.name like %(txt)s or ifnull(employee.employee_name, '') like %(txt)s)
 		order by employee.employee_name, employee.name

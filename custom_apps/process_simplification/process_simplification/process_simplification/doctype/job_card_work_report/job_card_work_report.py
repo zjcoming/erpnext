@@ -10,4 +10,8 @@ class JobCardWorkReport(Document):
 		validate_report_document(self)
 
 	def on_trash(self):
-		frappe.throw(_("Work reports are append-only audit records and cannot be deleted."))
+		if self.status == "In Progress" and getattr(
+			self.flags, "worker_reporting_action", False
+		):
+			return
+		frappe.throw(_("Submitted work reports are append-only audit records and cannot be deleted."))
