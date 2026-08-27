@@ -26,7 +26,7 @@ services:
     image: docker.io/redis:alpine
 
   frappe:
-    image: docker.io/frappe/bench:latest
+    image: ${BENCH_IMAGE:-docker.io/frappe/bench:v5.31.0}
     working_dir: /workspace/erpnext
     environment:
       SHELL: /bin/bash
@@ -34,7 +34,9 @@ services:
       SITE_NAME: development.localhost
       ADMIN_PASSWORD: admin
       DB_ROOT_PASSWORD: "123"
-      FRAPPE_BRANCH: develop
+      FRAPPE_BOOTSTRAP_BRANCH: ${FRAPPE_BOOTSTRAP_BRANCH:-develop}
+      FRAPPE_COMMIT: ${FRAPPE_COMMIT:-695b554ca883543bd6221d1f618ae5371c0dbe98}
+      ERPNEXT_BASE_COMMIT: ${ERPNEXT_BASE_COMMIT:-b81d0431dd0f2557209317e6da08dd8fa57f018e}
     volumes:
       - .:/workspace/erpnext:cached
       - ./development/sites:/sites:cached
@@ -63,12 +65,60 @@ services:
           bench init \
             --skip-redis-config-generation \
             --frappe-path=https://github.com/frappe/frappe \
-            --frappe-branch="$$FRAPPE_BRANCH" \
+            --frappe-branch="$$FRAPPE_BOOTSTRAP_BRANCH" \
             --dev \
             "$$BENCH_NAME"
         fi
 
         cd "$$BENCH_NAME"
+
+        if ! git -C apps/frappe rev-parse --git-dir >/dev/null 2>&1; then
+          echo "apps/frappe is missing or is not a Git checkout." >&2
+          exit 1
+        fi
+
+        if [ -n "$$(git -C apps/frappe status --porcelain)" ]; then
+          echo "apps/frappe has local changes; refusing to switch commits." >&2
+          exit 1
+        fi
+
+        current_frappe_commit="$$(git -C apps/frappe rev-parse HEAD)"
+        if [ "$$current_frappe_commit" != "$$FRAPPE_COMMIT" ]; then
+          if ! git -C apps/frappe cat-file -e "$$FRAPPE_COMMIT^{commit}" 2>/dev/null; then
+            frappe_remote="$$(git -C apps/frappe remote | grep -E '^(upstream|origin)$$' | head -n 1 || true)"
+            if [ -z "$$frappe_remote" ]; then
+              frappe_remote=baseline-upstream
+              git -C apps/frappe remote add "$$frappe_remote" https://github.com/frappe/frappe
+            fi
+            git -C apps/frappe fetch --depth 1 "$$frappe_remote" "$$FRAPPE_COMMIT"
+          fi
+
+          git -C apps/frappe checkout --detach "$$FRAPPE_COMMIT"
+          ./env/bin/pip install -e apps/frappe
+          bench setup requirements --dev
+        elif git -C apps/frappe symbolic-ref -q HEAD >/dev/null; then
+          git -C apps/frappe checkout --detach "$$FRAPPE_COMMIT"
+        fi
+
+        if [ "$$(git -C apps/frappe rev-parse HEAD)" != "$$FRAPPE_COMMIT" ]; then
+          echo "Frappe did not resolve to the pinned commit $$FRAPPE_COMMIT." >&2
+          exit 1
+        fi
+
+        if [ -n "$$(git -C apps/frappe status --porcelain)" ]; then
+          echo "apps/frappe has local changes after baseline setup." >&2
+          exit 1
+        fi
+
+        if ! git -C /workspace/erpnext cat-file -e "$$ERPNEXT_BASE_COMMIT^{commit}" 2>/dev/null; then
+          echo "ERPNext baseline commit is unavailable: $$ERPNEXT_BASE_COMMIT." >&2
+          exit 1
+        fi
+
+        if ! git -C /workspace/erpnext merge-base --is-ancestor "$$ERPNEXT_BASE_COMMIT" HEAD; then
+          echo "ERPNext HEAD does not descend from baseline $$ERPNEXT_BASE_COMMIT." >&2
+          exit 1
+        fi
 
         if [ ! -L sites ]; then
           if [ -d sites ] && [ -z "$$(find /sites -mindepth 1 -maxdepth 1 2>/dev/null)" ]; then
