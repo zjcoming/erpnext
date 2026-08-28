@@ -1,0 +1,212 @@
+{
+ "app": "process_simplification",
+ "charts": [],
+ "content": "[{\"id\":\"ps-header\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>流程简化</b></span>\",\"col\":12}},{\"id\":\"ps-card-flow\",\"type\":\"card\",\"data\":{\"card_name\":\"核心流程\",\"col\":4}},{\"id\":\"ps-card-standard\",\"type\":\"card\",\"data\":{\"card_name\":\"标准单据\",\"col\":4}}]",
+ "creation": "2026-06-20 00:00:00.000000",
+ "custom_blocks": [],
+ "docstatus": 0,
+ "doctype": "Workspace",
+ "for_user": "",
+ "hide_custom": 0,
+ "icon": "workflow",
+ "idx": 0,
+ "is_hidden": 0,
+ "label": "process-simplification",
+ "links": [
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "核心流程",
+   "link_count": 8,
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "快速开单",
+   "link_count": 0,
+   "link_to": "quick-sales-order",
+   "link_type": "Page",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "订单工作台",
+   "link_count": 0,
+   "link_to": "order-workbench",
+   "link_type": "Page",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "生产计划中心",
+   "link_count": 0,
+   "link_to": "production-workbench",
+   "link_type": "Page",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "我的报工",
+   "link_count": 0,
+   "link_to": "my-production-reporting",
+   "link_type": "Page",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "报工审核",
+   "link_count": 0,
+   "link_to": "production-report-review",
+   "link_type": "Page",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "计价规则",
+   "link_count": 0,
+   "link_to": "Operation Wage Rate",
+   "link_type": "DocType",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "工资汇总",
+   "link_count": 0,
+   "link_to": "Monthly Worker Wage Summary",
+   "link_type": "DocType",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "缺料采购",
+   "link_count": 0,
+   "link_to": "shortage-purchase-planning",
+   "link_type": "Page",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "标准单据",
+   "link_count": 6,
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "销售订单",
+   "link_count": 0,
+   "link_to": "Sales Order",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "库存预留",
+   "link_count": 0,
+   "link_to": "Stock Reservation Entry",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "生产工单",
+   "link_count": 0,
+   "link_to": "Work Order",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "采购申请",
+   "link_count": 0,
+   "link_to": "Material Request",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "发货单",
+   "link_count": 0,
+   "link_to": "Delivery Note",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "库存移动",
+   "link_count": 0,
+   "link_to": "Stock Entry",
+   "link_type": "DocType",
+   "onboard": 0,
+   "type": "Link"
+  }
+ ],
+ "modified": "2026-08-02 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Process Simplification",
+ "name": "process-simplification",
+ "number_cards": [],
+ "owner": "Administrator",
+ "parent_page": "",
+ "public": 1,
+ "quick_lists": [],
+ "roles": [
+  {
+   "role": "Sales User"
+  },
+  {
+   "role": "Manufacturing User"
+  },
+  {
+   "role": "Stock User"
+  },
+  {
+   "role": "Purchase User"
+  },
+  {
+   "role": "Production Worker"
+  },
+  {
+   "role": "Production Supervisor"
+  },
+  {
+   "role": "Production Wage Manager"
+  },
+  {
+   "role": "System Manager"
+  }
+ ],
+ "sequence_id": 1.0,
+ "shortcuts": [],
+ "title": "process-simplification",
+ "type": "Workspace"
+}

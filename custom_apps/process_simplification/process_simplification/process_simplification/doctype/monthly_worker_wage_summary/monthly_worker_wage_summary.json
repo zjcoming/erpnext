@@ -1,0 +1,41 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "naming_series:",
+ "creation": "2026-08-19 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": ["naming_series", "summary_key", "company", "month_start", "month_end", "employee", "employee_user", "piecework_amount", "time_amount", "total_amount", "details", "confirmed_by", "confirmed_at"],
+ "fields": [
+  {"fieldname": "naming_series", "fieldtype": "Select", "label": "编号规则", "options": "MWWS-.YYYY.-.#####", "default": "MWWS-.YYYY.-.#####", "reqd": 1},
+  {"fieldname": "summary_key", "fieldtype": "Data", "label": "员工月份唯一键", "read_only": 1, "unique": 1, "hidden": 1, "no_copy": 1},
+  {"fieldname": "company", "fieldtype": "Link", "label": "公司", "options": "Company", "read_only": 1, "reqd": 1},
+  {"fieldname": "month_start", "fieldtype": "Date", "label": "月份", "read_only": 1, "reqd": 1},
+  {"fieldname": "month_end", "fieldtype": "Date", "label": "月末", "read_only": 1, "reqd": 1},
+  {"fieldname": "employee", "fieldtype": "Link", "label": "工人", "options": "Employee", "read_only": 1, "reqd": 1, "ignore_user_permissions": 1},
+  {"fieldname": "employee_user", "fieldtype": "Link", "label": "工人账号", "options": "User", "read_only": 1},
+  {"fieldname": "piecework_amount", "fieldtype": "Currency", "label": "计件金额", "read_only": 1},
+  {"fieldname": "time_amount", "fieldtype": "Currency", "label": "计时金额", "read_only": 1},
+  {"fieldname": "total_amount", "fieldtype": "Currency", "label": "合计金额", "read_only": 1},
+  {"fieldname": "details", "fieldtype": "Table", "label": "报工明细", "options": "Monthly Worker Wage Summary Detail", "read_only": 1, "reqd": 1},
+  {"fieldname": "confirmed_by", "fieldtype": "Link", "label": "确认人", "options": "User", "read_only": 1},
+  {"fieldname": "confirmed_at", "fieldtype": "Datetime", "label": "确认时间", "read_only": 1}
+ ],
+ "index_web_pages_for_search": 0,
+ "is_submittable": 1,
+ "modified": "2026-08-19 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Process Simplification",
+ "name": "Monthly Worker Wage Summary",
+ "owner": "Administrator",
+ "permissions": [
+  {"role": "Production Wage Manager", "read": 1},
+  {"role": "System Manager", "read": 1}
+ ],
+ "search_fields": "employee,month_start",
+ "sort_field": "month_start",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "employee",
+ "track_changes": 1
+}

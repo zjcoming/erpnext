@@ -1,0 +1,21 @@
+{
+ "content": null,
+ "creation": "2026-08-19 00:00:00.000000",
+ "docstatus": 0,
+ "doctype": "Page",
+ "idx": 0,
+ "modified": "2026-08-19 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Process Simplification",
+ "name": "production-report-review",
+ "owner": "Administrator",
+ "page_name": "production-report-review",
+ "roles": [
+  {"role": "Production Supervisor"},
+  {"role": "System Manager"}
+ ],
+ "script": null,
+ "standard": "Yes",
+ "style": null,
+ "title": "报工审核"
+}

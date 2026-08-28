@@ -1,0 +1,77 @@
+{
+  "actions": [],
+  "allow_rename": 0,
+  "creation": "2026-08-01 00:00:00.000000",
+  "doctype": "DocType",
+  "engine": "InnoDB",
+  "field_order": [
+    "idempotency_key",
+    "requesting_user",
+    "intent_digest",
+    "status",
+    "sales_order",
+    "completed_at"
+  ],
+  "fields": [
+    {
+      "fieldname": "idempotency_key",
+      "fieldtype": "Data",
+      "label": "Idempotency Key",
+      "read_only": 1,
+      "reqd": 1
+    },
+    {
+      "fieldname": "requesting_user",
+      "fieldtype": "Link",
+      "label": "Requesting User",
+      "options": "User",
+      "read_only": 1,
+      "reqd": 1
+    },
+    {
+      "fieldname": "intent_digest",
+      "fieldtype": "Data",
+      "label": "Intent Digest",
+      "read_only": 1,
+      "reqd": 1
+    },
+    {
+      "fieldname": "status",
+      "fieldtype": "Select",
+      "label": "Status",
+      "options": "In Progress\nCompleted",
+      "read_only": 1,
+      "reqd": 1
+    },
+    {
+      "fieldname": "sales_order",
+      "fieldtype": "Link",
+      "label": "Sales Order",
+      "options": "Sales Order",
+      "read_only": 1
+    },
+    {
+      "fieldname": "completed_at",
+      "fieldtype": "Datetime",
+      "label": "Completed At",
+      "read_only": 1
+    }
+  ],
+  "index_web_pages_for_search": 0,
+  "links": [],
+  "modified": "2026-08-01 00:00:00.000000",
+  "modified_by": "Administrator",
+  "module": "Process Simplification",
+  "name": "Quick Order Idempotency",
+  "owner": "Administrator",
+  "permissions": [
+    {
+      "read": 1,
+      "role": "System Manager"
+    }
+  ],
+  "sort_field": "modified",
+  "sort_order": "DESC",
+  "states": [],
+  "track_changes": 0
+}

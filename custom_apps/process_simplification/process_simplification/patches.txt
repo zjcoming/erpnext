@@ -1,0 +1,12 @@
+[pre_model_sync]
+process_simplification.patches.v0_0.add_worker_reporting_roles
+process_simplification.patches.v0_0.set_chinese_defaults
+process_simplification.patches.v0_0.use_slugged_workspace_route
+process_simplification.patches.v0_0.configure_manufacturing_defaults
+process_simplification.patches.v0_0.set_workspace_type
+process_simplification.patches.v0_0.fix_desktop_navigation
+
+[post_model_sync]
+process_simplification.patches.v0_0.add_production_workbench_navigation
+process_simplification.patches.v0_0.rename_production_workbench_to_plan_center
+process_simplification.patches.v0_0.add_worker_reporting_navigation
