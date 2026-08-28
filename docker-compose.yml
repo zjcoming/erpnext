@@ -1,6 +1,25 @@
 name: erpnext-v16-development
 
 services:
+  init-permissions:
+    image: docker.io/frappe/bench@sha256:85bd55c881bc99948c59ac3efc12cfb80e88b785952876b932a96d74b27c8538
+    user: root
+    working_dir: /workspace/erpnext
+    volumes:
+      - .:/workspace/erpnext:cached
+    command:
+      - bash
+      - -lc
+      - |
+        mkdir -p \
+          /workspace/erpnext/development \
+          /workspace/erpnext/development/sites \
+          /workspace/erpnext/development/logs
+        chown frappe:frappe \
+          /workspace/erpnext/development \
+          /workspace/erpnext/development/sites \
+          /workspace/erpnext/development/logs
+
   mariadb:
     image: docker.io/mariadb@sha256:be1ef4fe5f14589325c08a41c76334097ce66c86264b75e1d28342c742782a61
     command:
@@ -47,6 +66,8 @@ services:
       - "8000:8000"
       - "9000:9000"
     depends_on:
+      init-permissions:
+        condition: service_completed_successfully
       mariadb:
         condition: service_healthy
       redis-cache:
@@ -127,6 +148,10 @@ services:
           exit 1
         fi
 
+        if ! grep -qx "erpnext" sites/apps.txt; then
+          printf '\nerpnext\n' >> sites/apps.txt
+        fi
+
         ./env/bin/pip install -e apps/frappe
         ./env/bin/pip install -e apps/erpnext
         yarn install --check-files --frozen-lockfile --ignore-scripts --cwd apps/erpnext
@@ -154,6 +179,8 @@ services:
             --install-app erpnext \
             "$$SITE_NAME"
         fi
+
+        bench --site "$$SITE_NAME" set-config developer_mode 0
 
         for custom_app in /workspace/erpnext/custom_apps/*; do
           if [ -f "$$custom_app/pyproject.toml" ]; then
