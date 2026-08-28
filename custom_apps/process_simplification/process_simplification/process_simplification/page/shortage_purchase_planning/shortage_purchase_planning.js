@@ -97,12 +97,12 @@ frappe.pages["shortage-purchase-planning"].on_page_load = function (wrapper) {
 
 	const sales_order_field = frappe.ui.form.make_control({
 		parent: $root.find('[data-field="sales_order"]'),
-		df: { fieldtype: "Link", options: "Sales Order", label: __("销售订单") },
+		df: { fieldname: "sales_order", fieldtype: "Link", options: "Sales Order", label: __("销售订单") },
 		render_input: true,
 	});
 	const schedule_date_field = frappe.ui.form.make_control({
 		parent: $root.find('[data-field="schedule_date"]'),
-		df: { fieldtype: "Date", label: __("需要日期"), default: frappe.datetime.add_days(frappe.datetime.nowdate(), 1) },
+		df: { fieldname: "schedule_date", fieldtype: "Date", label: __("需要日期"), default: frappe.datetime.add_days(frappe.datetime.nowdate(), 1) },
 		render_input: true,
 	});
 
