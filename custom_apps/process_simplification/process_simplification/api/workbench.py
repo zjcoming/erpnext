@@ -383,12 +383,17 @@ def _delivery_timing(delivery_date, today):
 	return "later", days_to_delivery
 
 
-def _fulfillment_status(direct_ship: bool, needs_production: bool, uncovered_qty: float):
+def _fulfillment_status(
+	direct_ship: bool,
+	needs_production: bool,
+	uncovered_qty: float,
+	requires_reservation: bool = False,
+):
 	if direct_ship:
 		return "ready_to_ship", _("可发货")
 	if needs_production:
 		return "needs_production", _("需生产")
-	if uncovered_qty > 0:
+	if requires_reservation or uncovered_qty > 0:
 		return "awaiting_stock", _("待预留")
 	return "awaiting_fulfillment", _("待处理")
 
@@ -474,8 +479,20 @@ def build_fulfillment_order(order, rows, today=None) -> dict:
 		or _row_uncovered_qty(row) > 0
 		for row in pending_rows
 	)
-	direct_ship = bool(pending_rows) and finished_stock_coverage_qty == pending_qty and not needs_production
-	status_code, status_label = _fulfillment_status(direct_ship, needs_production, uncovered_qty)
+	fully_reserved = bool(pending_rows) and reserved_qty == pending_qty
+	direct_ship = fully_reserved and not needs_production
+	requires_reservation = (
+		bool(pending_rows)
+		and not needs_production
+		and reserved_qty < pending_qty
+		and finished_stock_coverage_qty >= pending_qty
+	)
+	status_code, status_label = _fulfillment_status(
+		direct_ship,
+		needs_production,
+		uncovered_qty,
+		requires_reservation,
+	)
 	risk_level, risk_score, risk_label = _fulfillment_risk(
 		delivery_timing, pending_rows, direct_ship, pending_qty, reserved_qty
 	)

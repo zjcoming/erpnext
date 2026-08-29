@@ -66,6 +66,17 @@ def assert_no_worker_reporting_history(work_order: str):
 class WorkerReportingWorkOrderMixin:
 	"""Protect the native Work Order status service from stranding wage history."""
 
+	def save(self, *args, **kwargs):
+		# Job Card submission loads a fresh Work Order and therefore cannot inherit
+		# the Job Card's ignore_permissions flag. Approval sets this request-local,
+		# name-scoped marker so only the exact native parent update is permitted.
+		if (
+			getattr(frappe.flags, "worker_reporting_approval_work_order", None)
+			== self.name
+		):
+			kwargs["ignore_permissions"] = True
+		return super().save(*args, **kwargs)
+
 	def before_update_after_submit(self):
 		# The marker is maintained only by the locked assignment services via
 		# db.set_value. Never accept it from a generic Work Order save payload.

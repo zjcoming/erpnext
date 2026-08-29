@@ -482,8 +482,10 @@ class TestWorkOrderReadiness(UnitTestCase):
 					"can_calculate": True,
 					"actual_qty": 10,
 					"available_qty": 10,
-					"free_qty": 3,
-					"production_committed_qty": 7,
+					"free_qty": 0,
+					# Eight belong to the loaded Work Order; three belong to an
+					# external Work Order that must keep its priority.
+					"production_committed_qty": 11,
 				}
 			},
 		)[0].work_orders_by_name["WO-ORDER"].required_items[0]
@@ -491,6 +493,159 @@ class TestWorkOrderReadiness(UnitTestCase):
 		self.assertEqual(item.available_qty, 7)
 		self.assertEqual(item.current_gap_qty, 1)
 		self.assertEqual(item.shortage_qty, 1)
+
+	def test_v16_implicit_work_order_commitment_is_available_to_its_loaded_plan(self):
+		from process_simplification.api.production_readiness import allocate_work_order_readiness
+
+		graph = self._graph(
+			plan_name="PP-V16",
+			planned_date="2026-08-10",
+			creation="2026-08-01 08:00:00",
+			work_orders=[{
+				"name": "WO-V16", "production_item": "FG-V16",
+				"production_plan_item": "PPI-V16", "status": "Not Started",
+			}],
+			required_items=[{
+				"parent": "WO-V16", "item_code": "RM-V16",
+				"source_warehouse": "Stores - TC", "required_qty": 10,
+				"transferred_qty": 0, "stock_reserved_qty": 0,
+			}],
+			active_bom_items={"FG-V16"},
+		)
+
+		work_order = allocate_work_order_readiness(
+			[graph],
+			{
+				("RM-V16", "Stores - TC"): {
+					"actual_qty": 10,
+					"available_qty": 10,
+					"free_qty": 0,
+					"production_committed_qty": 10,
+				}
+			},
+		)[0].work_orders_by_name["WO-V16"]
+
+		self.assertEqual(work_order.readiness_status, "ready_now")
+		self.assertEqual(work_order.required_items[0].available_qty, 10)
+		self.assertEqual(work_order.required_items[0].current_gap_qty, 0)
+
+	def test_loaded_subassembly_plan_reservation_does_not_hide_existing_stock(self):
+		from process_simplification.api.production_readiness import allocate_work_order_readiness
+
+		graph = self._graph(
+			plan_name="PP-SUBASSEMBLY",
+			planned_date="2026-08-10",
+			creation="2026-08-01 08:00:00",
+			work_orders=[
+				{
+					"name": "WO-FG",
+					"production_item": "FG",
+					"production_plan_item": "PPI-FG",
+					"status": "Not Started",
+				},
+				{
+					"name": "WO-SA",
+					"production_item": "SA",
+					"production_plan_sub_assembly_item": "PPSA-SA",
+					"status": "Not Started",
+				},
+			],
+			required_items=[{
+				"parent": "WO-FG",
+				"item_code": "SA",
+				"source_warehouse": "Stores - TC",
+				"required_qty": 2,
+				"transferred_qty": 0,
+				"stock_reserved_qty": 0,
+			}],
+			sub_assemblies=[{
+				"name": "PPSA-SA",
+				"production_item": "SA",
+				"parent_item_code": "FG",
+				"bom_level": 0,
+				"qty": 1,
+				"required_qty": 2,
+				"wo_produced_qty": 0,
+				"fg_warehouse": "Stores - TC",
+			}],
+			active_bom_items={"FG", "SA"},
+		)
+
+		work_order = allocate_work_order_readiness(
+			[graph],
+			{
+				("SA", "Stores - TC"): {
+					"actual_qty": 1,
+					"available_qty": 1,
+					"free_qty": 0,
+					# Parent Work Order requires two.  ERPNext v16 also
+					# records the loaded plan's one-unit child output in the
+					# same aggregate production commitment.
+					"production_committed_qty": 3,
+				}
+			},
+		)[0].work_orders_by_name["WO-FG"]
+
+		self.assertEqual(graph.plan_reservations[("SA", "Stores - TC")], 1)
+		self.assertEqual(work_order.required_items[0].available_qty, 1)
+		self.assertEqual(work_order.required_items[0].current_gap_qty, 1)
+		self.assertEqual(work_order.readiness_status, "waiting_subassembly")
+
+	def test_unloaded_subassembly_plan_reservation_is_not_reallocated(self):
+		from process_simplification.api.production_readiness import allocate_work_order_readiness
+
+		graph = self._graph(
+			plan_name="PP-LOADED",
+			planned_date="2026-08-10",
+			creation="2026-08-01 08:00:00",
+			work_orders=[
+				{
+					"name": "WO-FG",
+					"production_item": "FG",
+					"production_plan_item": "PPI-FG",
+					"status": "Not Started",
+				},
+				{
+					"name": "WO-SA",
+					"production_item": "SA",
+					"production_plan_sub_assembly_item": "PPSA-SA",
+					"status": "Not Started",
+				},
+			],
+			required_items=[{
+				"parent": "WO-FG",
+				"item_code": "SA",
+				"source_warehouse": "Stores - TC",
+				"required_qty": 2,
+			}],
+			sub_assemblies=[{
+				"name": "PPSA-SA",
+				"production_item": "SA",
+				"parent_item_code": "FG",
+				"bom_level": 0,
+				"qty": 1,
+				"wo_produced_qty": 0,
+				"fg_warehouse": "Stores - TC",
+			}],
+			active_bom_items={"FG", "SA"},
+		)
+
+		item = allocate_work_order_readiness(
+			[graph],
+			{
+				("SA", "Stores - TC"): {
+					"actual_qty": 1,
+					"available_qty": 1,
+					"free_qty": 0,
+					# One additional unit belongs to an unloaded plan and
+					# must remain unavailable to this graph.
+					"production_committed_qty": 4,
+				}
+			},
+		)[0].work_orders_by_name["WO-FG"].required_items[0]
+
+		self.assertEqual(item.available_qty, 0)
+		self.assertEqual(item.current_gap_qty, 2)
 
 	def test_terminal_work_order_does_not_consume_shared_stock(self):
 		from process_simplification.api.production_readiness import allocate_work_order_readiness

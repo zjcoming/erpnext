@@ -4,7 +4,16 @@ import frappe
 from erpnext import get_default_company
 
 
-SOURCE_WAREHOUSE_NAMES = ("仓库", "原料", "原材料", "Stores", "Raw Material", "Raw Materials", "PS RM")
+SOURCE_WAREHOUSE_NAMES = (
+	"仓库",
+	"原料",
+	"原材料",
+	"原材料仓",
+	"Stores",
+	"Raw Material",
+	"Raw Materials",
+	"PS RM",
+)
 WIP_WAREHOUSE_NAMES = ("进行中", "在制品", "生产中", "Work In Progress", "WIP", "PS WIP")
 FG_WAREHOUSE_NAMES = ("成品", "Finished Goods", "FG", "PS FG")
 
@@ -47,10 +56,12 @@ def get_company_manufacturing_defaults(company: str | None = None):
 	company_defaults = frappe.get_cached_value(
 		"Company",
 		company,
-		["default_warehouse", "default_wip_warehouse", "default_fg_warehouse"],
+		["default_wip_warehouse", "default_fg_warehouse"],
 		as_dict=True,
 	)
-	source_warehouse = company_defaults.default_warehouse if company_defaults else None
+	# ERPNext v16 keeps the global source warehouse on Stock Settings. Company
+	# has WIP/FG warehouse fields, but no default_warehouse field.
+	source_warehouse = frappe.db.get_single_value("Stock Settings", "default_warehouse")
 	if not warehouse_belongs_to_company(source_warehouse, company):
 		source_warehouse = find_company_warehouse(company, SOURCE_WAREHOUSE_NAMES)
 
@@ -80,15 +91,21 @@ def configure_company_manufacturing_defaults(company: str | None = None):
 	current_company_defaults = frappe.get_cached_value(
 		"Company",
 		defaults.company,
-		["default_warehouse", "default_wip_warehouse", "default_fg_warehouse"],
+		["default_wip_warehouse", "default_fg_warehouse"],
 		as_dict=True,
 	)
+	current_source_warehouse = frappe.db.get_single_value("Stock Settings", "default_warehouse")
 	updates = {}
 	if defaults.source_warehouse and not warehouse_belongs_to_company(
-		current_company_defaults.default_warehouse if current_company_defaults else None,
+		current_source_warehouse,
 		defaults.company,
 	):
-		updates["default_warehouse"] = defaults.source_warehouse
+		frappe.db.set_single_value(
+			"Stock Settings",
+			"default_warehouse",
+			defaults.source_warehouse,
+			update_modified=False,
+		)
 	if defaults.wip_warehouse and not warehouse_belongs_to_company(
 		current_company_defaults.default_wip_warehouse if current_company_defaults else None,
 		defaults.company,

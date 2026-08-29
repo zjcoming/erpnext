@@ -772,6 +772,7 @@ frappe.pages["quick-sales-order"].on_page_load = function (wrapper) {
 		return frappe
 			.call({
 				method: "process_simplification.api.quick_order.preflight_quick_sales_order",
+				type: "POST",
 				args: { payload },
 				freeze: openConfirmation,
 				freeze_message: __("正在进行下单前安全检查…"),
@@ -836,6 +837,7 @@ frappe.pages["quick-sales-order"].on_page_load = function (wrapper) {
 		frappe
 			.call({
 				method: "process_simplification.api.quick_order.submit_quick_sales_order",
+				type: "POST",
 				args: {
 					payload,
 					review_token: result.review_token,

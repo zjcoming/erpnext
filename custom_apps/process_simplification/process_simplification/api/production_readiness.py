@@ -53,6 +53,33 @@ def _free_stock_qty(snapshot, loaded_reserved_qty=0) -> float:
 	return max(flt(snapshot.get("available_qty")) - flt(loaded_reserved_qty), 0)
 
 
+def _loaded_work_order_stock_pool(
+	snapshot,
+	loaded_commitment_qty=0,
+	loaded_plan_reservation_qty=0,
+) -> float:
+	"""Return stock allocatable across the Work Orders loaded by this workbench.
+
+	ERPNext v16 includes every active Work Order's remaining requirement in
+	``Bin.reserved_qty_for_production`` even when the child row's
+	``stock_reserved_qty`` is zero.  For manufactured subassemblies it also puts
+	the loaded Production Plan's outstanding subassembly output in
+	``reserved_qty_for_production_plan``.  Both figures describe commitments that
+	are already represented by the loaded graph, so add them back without
+	stealing quantity committed to standalone Work Orders or unloaded plans.
+	"""
+	snapshot = frappe._dict(snapshot or {})
+	if snapshot.get("production_committed_qty") is None:
+		return _free_stock_qty(snapshot)
+	external_commitment_qty = max(
+		flt(snapshot.get("production_committed_qty"))
+		- flt(loaded_commitment_qty)
+		- flt(loaded_plan_reservation_qty),
+		0,
+	)
+	return max(flt(snapshot.get("available_qty")) - external_commitment_qty, 0)
+
+
 def build_work_order_graph(
 	plan,
 	work_orders,
@@ -66,7 +93,19 @@ def build_work_order_graph(
 	for item in required_items or []:
 		required_by_work_order[item.get("parent")].append(frappe._dict(item))
 
-	sub_assembly_by_name = {row.get("name"): frappe._dict(row) for row in sub_assemblies or []}
+	sub_assembly_rows = [frappe._dict(row) for row in sub_assemblies or []]
+	sub_assembly_by_name = {row.get("name"): row for row in sub_assembly_rows}
+	plan_reservations = defaultdict(float)
+	for row in sub_assembly_rows:
+		item_code = row.get("production_item")
+		warehouse = row.get("fg_warehouse")
+		if not item_code or not warehouse:
+			continue
+		planned_qty = flt(row.get("qty")) if flt(row.get("qty")) > 0 else flt(row.get("required_qty"))
+		plan_reservations[(item_code, warehouse)] += max(
+			planned_qty - flt(row.get("wo_produced_qty")),
+			0,
+		)
 	work_orders_by_name = {}
 	work_orders_by_item = defaultdict(list)
 	for source in work_orders or []:
@@ -154,6 +193,7 @@ def build_work_order_graph(
 			"priority_key": plan_priority_key(plan),
 			"work_orders_by_name": work_orders_by_name,
 			"execution_order": execution_order,
+			"plan_reservations": dict(plan_reservations),
 		}
 	)
 
@@ -224,7 +264,11 @@ def allocate_work_order_readiness(plans, stock_snapshots, supply_documents=None)
 	result = [deepcopy(plan) for plan in plans or []]
 	supply_documents = supply_documents or {}
 	reserved_stock = defaultdict(float)
+	loaded_commitments = defaultdict(float)
+	loaded_plan_reservations = defaultdict(float)
 	for plan in result:
+		for key, qty in (plan.get("plan_reservations") or {}).items():
+			loaded_plan_reservations[key] += max(flt(qty), 0)
 		for work_order in plan.work_orders_by_name.values():
 			if work_order.get("status") in TERMINAL_WORK_ORDER_STATUSES:
 				work_order.required_items = []
@@ -232,12 +276,22 @@ def allocate_work_order_readiness(plans, stock_snapshots, supply_documents=None)
 				continue
 			for item in work_order.get("required_items") or []:
 				key = (item.get("item_code"), item.get("source_warehouse"))
+				remaining_qty = _remaining_work_order_item_qty(work_order, item)
+				loaded_commitments[key] += remaining_qty
 				reserved_stock[key] += min(
 					max(flt(item.get("stock_reserved_qty")), 0),
-					_remaining_work_order_item_qty(work_order, item),
+					remaining_qty,
 				)
 	remaining_stock = {
-		key: _free_stock_qty(snapshot, reserved_stock.get(key, 0))
+		key: max(
+			_loaded_work_order_stock_pool(
+				snapshot,
+				loaded_commitments.get(key, 0),
+				loaded_plan_reservations.get(key, 0),
+			)
+			- reserved_stock.get(key, 0),
+			0,
+		)
 		for key, snapshot in (stock_snapshots or {}).items()
 	}
 	remaining_supply = {}
@@ -293,7 +347,15 @@ def allocate_work_order_readiness(plans, stock_snapshots, supply_documents=None)
 				continue
 			available = remaining_stock.setdefault(
 				key,
-				_free_stock_qty(snapshot, reserved_stock.get(key, 0)),
+				max(
+					_loaded_work_order_stock_pool(
+						snapshot,
+						loaded_commitments.get(key, 0),
+						loaded_plan_reservations.get(key, 0),
+					)
+					- reserved_stock.get(key, 0),
+					0,
+				),
 			)
 			reserved = min(max(flt(item.get("stock_reserved_qty")), 0), remaining_required)
 			allocated_free = min(max(remaining_required - reserved, 0), available)
@@ -520,6 +582,10 @@ def get_production_plan_readiness(company=None, sales_order_items=None):
 			"production_plan_item",
 			"sales_order",
 			"sales_order_item",
+			"qty",
+			"required_qty",
+			"wo_produced_qty",
+			"fg_warehouse",
 		],
 	)
 	linked_order_item_names = sorted(

@@ -6,6 +6,72 @@ from frappe.utils import add_days, nowdate
 
 
 class TestQuickOrderIntegration(IntegrationTestCase):
+	def test_product_search_uses_v16_product_bundle_lifecycle(self):
+		from process_simplification.api.quick_order import (
+			get_quick_order_item_defaults,
+			search_quick_order_products,
+		)
+		from process_simplification.api.utils import SimplifiedFlowError
+
+		suffix = frappe.generate_hash(length=8)
+		prefix = "QO-PB-{0}".format(suffix)
+		item_group = frappe.get_doc(
+			{
+				"doctype": "Item Group",
+				"item_group_name": "Quick Order Bundle Products {0}".format(suffix),
+				"parent_item_group": "All Item Groups",
+				"is_group": 0,
+			}
+		).insert()
+
+		def make_item(suffix_name, *, is_stock_item):
+			return frappe.get_doc(
+				{
+					"doctype": "Item",
+					"item_code": "{0}-{1}".format(prefix, suffix_name),
+					"item_name": "Quick Order {0}".format(suffix_name),
+					"item_group": item_group.name,
+					"stock_uom": "Nos",
+					"is_stock_item": is_stock_item,
+					"is_sales_item": 1,
+				}
+			).insert()
+
+		normal_item = make_item("NORMAL", is_stock_item=1)
+		bundle_child = make_item("CHILD", is_stock_item=1)
+		enabled_parent = make_item("ENABLED", is_stock_item=0)
+		disabled_parent = make_item("DISABLED", is_stock_item=0)
+		enabled_bundle = frappe.get_doc(
+			{
+				"doctype": "Product Bundle",
+				"new_item_code": enabled_parent.name,
+				"items": [{"item_code": bundle_child.name, "qty": 1}],
+			}
+		).insert()
+		disabled_bundle = frappe.get_doc(
+			{
+				"doctype": "Product Bundle",
+				"new_item_code": disabled_parent.name,
+				"disabled": 1,
+				"items": [{"item_code": bundle_child.name, "qty": 1}],
+			}
+		).insert()
+
+		self.assertEqual(enabled_bundle.docstatus, 0)
+		self.assertEqual(enabled_bundle.disabled, 0)
+		self.assertEqual(disabled_bundle.docstatus, 0)
+		self.assertEqual(disabled_bundle.disabled, 1)
+
+		with patch("process_simplification.api.quick_order.frappe.has_permission", return_value=True):
+			rows = search_quick_order_products("Item", prefix, "name", 0, 20, {})
+			with self.assertRaises(SimplifiedFlowError):
+				get_quick_order_item_defaults(enabled_parent.name)
+
+		result_item_codes = {row[0] for row in rows}
+		self.assertIn(normal_item.name, result_item_codes)
+		self.assertIn(disabled_parent.name, result_item_codes)
+		self.assertNotIn(enabled_parent.name, result_item_codes)
+
 	def test_production_required_preflight_explains_material_risk_without_creating_documents(self):
 		from erpnext.stock.doctype.stock_entry.stock_entry_utils import make_stock_entry
 

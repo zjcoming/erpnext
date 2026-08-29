@@ -9,16 +9,13 @@ from frappe.utils import (
 	add_days,
 	add_months,
 	flt,
+	getdate,
 	get_datetime,
 	get_first_day,
 	now_datetime,
 	nowdate,
 	random_string,
 )
-
-from erpnext.manufacturing.doctype.work_order.test_work_order import make_wo_order_test_record
-from erpnext.setup.doctype.employee.test_employee import make_employee
-from erpnext.tests.utils import load_test_records_for
 
 from process_simplification.production_reporting import service, summary
 from process_simplification.process_simplification.doctype.job_card_work_report.job_card_work_report import (
@@ -27,17 +24,155 @@ from process_simplification.process_simplification.doctype.job_card_work_report.
 
 
 class TestWorkerReporting(IntegrationTestCase):
+	TEST_COMPANY = "Worker Reporting Test Company"
+	TEST_COMPANY_ABBR = "WRT"
+	OTHER_COMPANY = "Worker Reporting Other Company"
+	OTHER_COMPANY_ABBR = "WRO"
+	TEST_OPERATION = "Worker Reporting Test Operation"
+	TEST_WORKSTATION = "Worker Reporting Test Workstation"
+	TEST_FINISHED_GOOD = "WRT-FG-001"
+	TEST_RAW_MATERIAL = "WRT-RM-001"
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		frappe.set_user("Administrator")
+		cls._ensure_master_fixtures()
+
+	@classmethod
+	def _ensure_company(cls, company_name, abbr):
+		if not frappe.db.exists("Company", company_name):
+			frappe.get_doc(
+				{
+					"doctype": "Company",
+					"company_name": company_name,
+					"abbr": abbr,
+					"default_currency": "INR",
+					"country": "India",
+					"create_chart_of_accounts_based_on": "Standard Template",
+				}
+			).insert(ignore_permissions=True)
+
+	@classmethod
+	def _ensure_warehouse(cls, warehouse_name):
+		name = "{0} - {1}".format(warehouse_name, cls.TEST_COMPANY_ABBR)
+		if not frappe.db.exists("Warehouse", name):
+			frappe.get_doc(
+				{
+					"doctype": "Warehouse",
+					"warehouse_name": warehouse_name,
+					"parent_warehouse": "All Warehouses - {0}".format(
+						cls.TEST_COMPANY_ABBR
+					),
+					"company": cls.TEST_COMPANY,
+				}
+			).insert(ignore_permissions=True)
+		return name
+
+	@classmethod
+	def _ensure_item(cls, item_code, *, is_sales_item=False, is_purchase_item=False):
+		if not frappe.db.exists("Item", item_code):
+			frappe.get_doc(
+				{
+					"doctype": "Item",
+					"item_code": item_code,
+					"item_name": item_code,
+					"description": item_code,
+					"item_group": "Products",
+					"stock_uom": "Nos",
+					"is_stock_item": 1,
+					"is_sales_item": int(is_sales_item),
+					"is_purchase_item": int(is_purchase_item),
+					"include_item_in_manufacturing": 1,
+					"valuation_rate": 1,
+				}
+			).insert(ignore_permissions=True)
+
+	@classmethod
+	def _ensure_master_fixtures(cls):
+		cls._ensure_company(cls.TEST_COMPANY, cls.TEST_COMPANY_ABBR)
+		cls._ensure_company(cls.OTHER_COMPANY, cls.OTHER_COMPANY_ABBR)
+		cls.source_warehouse = cls._ensure_warehouse("Worker Reporting Source")
+		cls.wip_warehouse = cls._ensure_warehouse("Worker Reporting WIP")
+		cls.fg_warehouse = cls._ensure_warehouse("Worker Reporting Finished Goods")
+		cls._ensure_item(cls.TEST_RAW_MATERIAL, is_purchase_item=True)
+		cls._ensure_item(cls.TEST_FINISHED_GOOD, is_sales_item=True)
+
+		if not frappe.db.exists("Workstation", cls.TEST_WORKSTATION):
+			frappe.get_doc(
+				{"doctype": "Workstation", "workstation_name": cls.TEST_WORKSTATION}
+			).insert(ignore_permissions=True)
+		if not frappe.db.exists("Operation", cls.TEST_OPERATION):
+			frappe.get_doc(
+				{
+					"doctype": "Operation",
+					"name": cls.TEST_OPERATION,
+					"workstation": cls.TEST_WORKSTATION,
+				}
+			).insert(ignore_permissions=True)
+
+		cls.master_bom = frappe.db.get_value(
+			"BOM",
+			{
+				"item": cls.TEST_FINISHED_GOOD,
+				"company": cls.TEST_COMPANY,
+				"docstatus": 1,
+				"is_active": 1,
+				"is_default": 1,
+			},
+			"name",
+		)
+		if not cls.master_bom:
+			bom = frappe.get_doc(
+				{
+					"doctype": "BOM",
+					"item": cls.TEST_FINISHED_GOOD,
+					"company": cls.TEST_COMPANY,
+					"currency": "INR",
+					"quantity": 1,
+					"is_active": 1,
+					"is_default": 1,
+					"with_operations": 1,
+					"operations": [
+						{
+							"operation": cls.TEST_OPERATION,
+							"workstation": cls.TEST_WORKSTATION,
+							"time_in_mins": 10,
+							"operating_cost": 1,
+						}
+					],
+					"items": [
+						{
+							"item_code": cls.TEST_RAW_MATERIAL,
+							"qty": 1,
+							"uom": "Nos",
+							"stock_uom": "Nos",
+							"rate": 1,
+							"operation": cls.TEST_OPERATION,
+							"source_warehouse": cls.source_warehouse,
+						}
+					],
+				}
+			)
+			with patch("erpnext.manufacturing.doctype.bom.bom.BOM.check_recursion"):
+				bom.insert(ignore_permissions=True)
+				bom.submit()
+			cls.master_bom = bom.name
+		frappe.db.set_value(
+			"Item", cls.TEST_FINISHED_GOOD, "default_bom", cls.master_bom
+		)
+		frappe.db.commit()
+
 	def setUp(self):
 		super().setUp()
 		# secondary_connection() intentionally leaves its connection active after
 		# first initialization; every test fixture belongs on the primary transaction.
 		frappe.local.db = self._primary_connection
-		self.globalTestRecords = load_test_records_for("BOM")
 		self.worker_user = self._make_worker()
 		self.worker = frappe.db.get_value("Employee", {"user_id": self.worker_user}, "name")
 		self.supervisor = self._make_supervisor()
 		self.wage_manager = self._make_user("Production Wage Manager")
-		self._grant_company(self.wage_manager, "_Test Company")
+		self._grant_company(self.wage_manager, self.TEST_COMPANY)
 
 	def tearDown(self):
 		try:
@@ -65,9 +200,33 @@ class TestWorkerReporting(IntegrationTestCase):
 
 	def _make_worker(self):
 		email = self._email("production-worker")
-		make_employee(email, company="_Test Company")
-		frappe.get_doc("User", email).add_roles("Production Worker")
+		frappe.get_doc(
+			{
+				"doctype": "User",
+				"email": email,
+				"first_name": "Production Worker",
+				"send_welcome_email": 0,
+				"roles": [{"role": "Production Worker"}],
+			}
+		).insert(ignore_permissions=True)
+		self._make_employee(email)
 		return email
+
+	def _make_employee(self, email):
+		return frappe.get_doc(
+			{
+				"doctype": "Employee",
+				"first_name": email,
+				"company": self.TEST_COMPANY,
+				"user_id": email,
+				"date_of_birth": "1990-05-08",
+				"date_of_joining": "2013-01-01",
+				"gender": "Female",
+				"company_email": email,
+				"prefered_contact_email": "Company Email",
+				"status": "Active",
+			}
+		).insert(ignore_permissions=True)
 
 	def _grant_company(self, user, company):
 		if not frappe.db.exists(
@@ -86,34 +245,50 @@ class TestWorkerReporting(IntegrationTestCase):
 
 	def _make_supervisor(self):
 		email = self._make_user("Production Supervisor")
-		make_employee(email, company="_Test Company")
+		self._make_employee(email)
 		return email
 
 	def _make_job_card(self, qty=100):
-		original_default_bom = frappe.db.get_value("Item", "_Test FG Item 2", "default_bom")
+		original_default_bom = frappe.db.get_value(
+			"Item", self.TEST_FINISHED_GOOD, "default_bom"
+		)
 		planned_qty_before = flt(
 			frappe.db.get_value(
 				"Bin",
-				{"item_code": "_Test FG Item 2", "warehouse": "_Test Warehouse 1 - _TC"},
+				{
+					"item_code": self.TEST_FINISHED_GOOD,
+					"warehouse": self.fg_warehouse,
+				},
 				"planned_qty",
 			)
 		)
-		bom = frappe.copy_doc(self.globalTestRecords["BOM"][2])
+		bom = frappe.copy_doc(frappe.get_doc("BOM", self.master_bom))
 		bom.set_rate_of_sub_assembly_item_based_on_bom = 0
 		bom.rm_cost_as_per = "Valuation Rate"
 		bom.is_default = 0
-		bom.items[0].uom = "_Test UOM 1"
-		bom.items[0].conversion_factor = 5
+		bom.items[0].uom = "Nos"
+		bom.items[0].conversion_factor = 1
 		bom.insert()
 		# Capacity scheduling is unrelated to worker-reporting invariants and can
 		# exhaust the shared test workstation after committed concurrency fixtures.
 		with self.change_settings("Manufacturing Settings", {"disable_capacity_planning": 1}):
-			work_order = make_wo_order_test_record(
-				item="_Test FG Item 2",
-				bom_no=bom.name,
-				qty=qty,
-				skip_transfer=1,
-			)
+			work_order = frappe.new_doc("Work Order")
+			work_order.production_item = self.TEST_FINISHED_GOOD
+			work_order.bom_no = bom.name
+			work_order.qty = qty
+			work_order.company = self.TEST_COMPANY
+			work_order.stock_uom = "Nos"
+			work_order.source_warehouse = self.source_warehouse
+			work_order.wip_warehouse = self.wip_warehouse
+			work_order.fg_warehouse = self.fg_warehouse
+			work_order.skip_transfer = 1
+			work_order.planned_start_date = now_datetime()
+			work_order.transfer_material_against = "Work Order"
+			work_order.get_items_and_operations_from_bom()
+			for row in work_order.required_items:
+				row.source_warehouse = self.source_warehouse
+			work_order.insert()
+			work_order.submit()
 		job_card_name = frappe.get_all(
 			"Job Card",
 			filters={"work_order": work_order.name, "docstatus": 0},
@@ -211,7 +386,7 @@ class TestWorkerReporting(IntegrationTestCase):
 				 completed_qty, reported_minutes, rate, wage_amount)
 			values
 				(%(name)s, 'Administrator', 'Administrator', now(6), now(6), 0,
-				 %(request_key)s, %(assignment)s, %(job_card)s, '_Test Company', '_Test Operation 1', 'raw-operation-row',
+				 %(request_key)s, %(assignment)s, %(job_card)s, %(company)s, %(operation)s, 'raw-operation-row',
 				 %(employee)s, %(employee_user)s, current_date(), %(wage_type)s, 'Pending Approval',
 				 %(qty)s, %(minutes)s, 1, 1)
 			""",
@@ -220,6 +395,8 @@ class TestWorkerReporting(IntegrationTestCase):
 				"request_key": f"raw-{name}",
 				"assignment": assignment,
 				"job_card": job_card,
+				"company": self.TEST_COMPANY,
+				"operation": self.TEST_OPERATION,
 				"employee": employee,
 				"employee_user": self.worker_user,
 				"wage_type": wage_type,
@@ -318,7 +495,7 @@ class TestWorkerReporting(IntegrationTestCase):
 		self.assertFalse(any(frappe.db.exists("Contact", contact) for contact in contacts))
 		original_default_bom = job_card.flags.get("worker_reporting_original_default_bom")
 		self.assertEqual(
-			frappe.db.get_value("Item", "_Test FG Item 2", "default_bom"),
+			frappe.db.get_value("Item", self.TEST_FINISHED_GOOD, "default_bom"),
 			original_default_bom,
 		)
 		self.assertTrue(frappe.db.exists("BOM", original_default_bom))
@@ -328,7 +505,7 @@ class TestWorkerReporting(IntegrationTestCase):
 				frappe.db.get_value(
 					"Bin",
 					{
-						"item_code": "_Test FG Item 2",
+						"item_code": self.TEST_FINISHED_GOOD,
 						"warehouse": job_card.flags.get("worker_reporting_fg_warehouse"),
 					},
 					"planned_qty",
@@ -369,14 +546,17 @@ class TestWorkerReporting(IntegrationTestCase):
 		self.assertEqual(len(job_card.time_logs), 1)
 
 	def test_fixture_uses_an_explicit_nondefault_bom(self):
-		original_default = frappe.db.get_value("Item", "_Test FG Item 2", "default_bom")
+		original_default = frappe.db.get_value(
+			"Item", self.TEST_FINISHED_GOOD, "default_bom"
+		)
 		job_card = self._make_job_card(qty=10)
 		test_bom = job_card.flags.worker_reporting_test_bom
 		self.assertEqual(job_card.bom_no, test_bom)
 		self.assertNotEqual(test_bom, original_default)
 		self.assertFalse(frappe.db.get_value("BOM", test_bom, "is_default"))
 		self.assertEqual(
-			frappe.db.get_value("Item", "_Test FG Item 2", "default_bom"), original_default
+			frappe.db.get_value("Item", self.TEST_FINISHED_GOOD, "default_bom"),
+			original_default,
 		)
 		self.assertTrue(frappe.db.exists("BOM", original_default))
 		self.assertTrue(frappe.db.get_value("BOM", original_default, "is_default"))
@@ -502,6 +682,106 @@ class TestWorkerReporting(IntegrationTestCase):
 			with self.assertRaises(frappe.ValidationError):
 				service.cancel_work_session(pending.name)
 
+	def test_worker_can_cancel_active_session_after_work_order_is_stopped(self):
+		job_card, assignment = self._setup_flow(qty=10)
+		with self.set_user(self.worker_user):
+			active = service.start_work_session(assignment.name, "stopped-order-cancel-start")
+		frappe.db.set_value(
+			"Work Order", job_card.work_order, "status", "Stopped", update_modified=False
+		)
+		with self.set_user(self.worker_user):
+			service.cancel_work_session(active.name)
+		self.assertFalse(frappe.db.exists("Job Card Work Report", active.name))
+
+	def test_supervisor_can_cancel_orphaned_active_session_after_worker_is_disabled(self):
+		job_card, assignment = self._setup_flow(qty=10)
+		with self.set_user(self.worker_user):
+			active = service.start_work_session(assignment.name, "disabled-worker-cancel-start")
+		frappe.db.set_value("User", self.worker_user, "enabled", 0, update_modified=False)
+		frappe.db.set_value(
+			"Work Order", job_card.work_order, "status", "Stopped", update_modified=False
+		)
+		with self.set_user(self.supervisor):
+			dashboard_assignment = next(
+				row
+				for row in service.get_review_dashboard()["assignments"]
+				if row.name == assignment.name
+			)
+			self.assertEqual(dashboard_assignment.active_report, active.name)
+			self.assertTrue(dashboard_assignment.can_cancel_session)
+			service.cancel_work_session(active.name)
+		self.assertFalse(frappe.db.exists("Job Card Work Report", active.name))
+
+	def test_material_transfer_caps_worker_reporting_and_current_approval(self):
+		job_card, assignment = self._setup_flow(qty=10)
+		frappe.db.set_value(
+			"Work Order",
+			job_card.work_order,
+			{
+				"skip_transfer": 0,
+				"material_transferred_for_manufacturing": 0,
+				"status": "Not Started",
+			},
+			update_modified=False,
+		)
+		with self.set_user(self.worker_user):
+			dashboard_assignment = next(
+				row
+				for row in service.get_worker_dashboard()["assignments"]
+				if row.name == assignment.name
+			)
+			self.assertFalse(dashboard_assignment.can_start)
+			self.assertEqual(dashboard_assignment.block_code, "MATERIAL_NOT_TRANSFERRED")
+			with self.assertRaises(frappe.ValidationError):
+				service.start_work_session(assignment.name, "unissued-material-start")
+
+		frappe.db.set_value(
+			"Work Order",
+			job_card.work_order,
+			{
+				"material_transferred_for_manufacturing": 2,
+				"status": "In Process",
+			},
+			update_modified=False,
+		)
+		with self.set_user(self.worker_user):
+			active = service.start_work_session(assignment.name, "partial-material-start")
+			with self.assertRaises(frappe.ValidationError):
+				service.finish_work_session(
+					active.name,
+					3,
+					"partial-material-too-much",
+					ended_at=get_datetime(active.actual_start_time) + timedelta(minutes=1),
+				)
+			pending = service.finish_work_session(
+				active.name,
+				2,
+				"partial-material-finish",
+				ended_at=get_datetime(active.actual_start_time) + timedelta(minutes=1),
+			)
+
+		frappe.db.set_value(
+			"Work Order",
+			job_card.work_order,
+			{
+				"material_transferred_for_manufacturing": 0,
+				"status": "Not Started",
+			},
+			update_modified=False,
+		)
+		with self.set_user(self.supervisor):
+			dashboard_report = next(
+				row
+				for row in service.get_review_dashboard()["reports"]
+				if row.name == pending.name
+			)
+			self.assertFalse(dashboard_report.can_approve)
+			self.assertEqual(dashboard_report.approve_block_code, "MATERIAL_NOT_TRANSFERRED")
+			self.assertTrue(dashboard_report.can_reject)
+			with self.assertRaises(frappe.ValidationError):
+				service.approve_work_report(pending.name)
+			service.reject_work_report(pending.name, "发料已撤销，退回重新报工")
+
 	def test_fractional_quantity_and_piecework_retry_use_normalized_values(self):
 		job_card, assignment = self._setup_flow(qty=1)
 		first = self._submit(assignment, 0.1, minutes=99, request_id="fractional-piecework")
@@ -514,6 +794,28 @@ class TestWorkerReporting(IntegrationTestCase):
 		job_card.reload()
 		self.assertEqual(job_card.total_completed_qty, 1)
 		self.assertEqual(job_card.docstatus, 1)
+
+	def test_piecework_session_over_24_hours_stays_active_for_safe_cancellation(self):
+		_, assignment = self._setup_flow(qty=10, wage_type="Piecework")
+		started_at = now_datetime()
+		with self.set_user(self.worker_user):
+			active = service.start_work_session(
+				assignment.name,
+				"stale-piecework-start",
+				started_at=started_at,
+			)
+			with self.assertRaises(frappe.ValidationError):
+				service.finish_work_session(
+					active.name,
+					1,
+					"stale-piecework-finish",
+					ended_at=started_at + timedelta(minutes=1441),
+				)
+			active.reload()
+			self.assertEqual(active.status, "In Progress")
+			self.assertFalse(active.completion_request_key)
+			service.cancel_work_session(active.name)
+		self.assertFalse(frappe.db.exists("Job Card Work Report", active.name))
 
 	def test_repeatable_read_pending_conflict_fails_closed(self):
 		job_card, assignment = self._setup_flow(qty=100)
@@ -600,6 +902,41 @@ class TestWorkerReporting(IntegrationTestCase):
 		with self.set_user(self.supervisor):
 			self.assertEqual(service.reject_work_report(report.name, "数量填写错误").name, report.name)
 
+	def test_approve_and_reject_decisions_are_mutually_exclusive(self):
+		approved_job_card, approved_assignment = self._setup_flow(qty=10)
+		approved_report = self._submit(approved_assignment, 3)
+		self._approve(approved_report)
+		with self.set_user(self.supervisor):
+			with self.assertRaises(frappe.ValidationError):
+				service.reject_work_report(approved_report.name, "迟到的驳回请求")
+		approved_report.reload()
+		approved_job_card.reload()
+		self.assertEqual(approved_report.status, "Approved")
+		self.assertEqual(approved_job_card.total_completed_qty, 3)
+		self.assertEqual(
+			len(
+				[
+					row
+					for row in approved_job_card.time_logs
+					if row.custom_job_card_work_report == approved_report.name
+				]
+			),
+			1,
+		)
+
+		rejected_job_card = self._make_job_card(qty=10)
+		rejected_assignment = self._assign(rejected_job_card)
+		rejected_report = self._submit(rejected_assignment, 3)
+		with self.set_user(self.supervisor):
+			service.reject_work_report(rejected_report.name, "先到的驳回请求")
+			with self.assertRaises(frappe.ValidationError):
+				service.approve_work_report(rejected_report.name)
+		rejected_report.reload()
+		rejected_job_card.reload()
+		self.assertEqual(rejected_report.status, "Rejected")
+		self.assertEqual(rejected_job_card.total_completed_qty, 0)
+		self.assertEqual(len(rejected_job_card.time_logs), 0)
+
 	def test_job_card_snapshot_conflict_blocks_approval_but_still_allows_rejection(self):
 		job_card, assignment = self._setup_flow(qty=100)
 		report = self._submit(assignment, 10)
@@ -636,6 +973,19 @@ class TestWorkerReporting(IntegrationTestCase):
 		with self.set_user("Administrator"):
 			with self.assertRaises(frappe.ValidationError):
 				job_card.cancel()
+
+	def test_full_approval_preserves_reviewer_web_session_identity(self):
+		job_card, assignment = self._setup_flow(qty=10)
+		report = self._submit(assignment, 10)
+		with self.set_user(self.supervisor):
+			frappe.session.sid = "worker-reporting-web-session"
+			approved = service.approve_work_report(report.name)
+			self.assertEqual(frappe.session.user, self.supervisor)
+			self.assertEqual(frappe.session.sid, "worker-reporting-web-session")
+
+		job_card.reload()
+		self.assertEqual(approved.status, "Approved")
+		self.assertEqual(job_card.docstatus, 1)
 
 	def test_native_unlinked_time_log_cannot_bypass_approval(self):
 		job_card, _ = self._setup_flow(qty=100)
@@ -813,13 +1163,15 @@ class TestWorkerReporting(IntegrationTestCase):
 		job_card = self._make_job_card(10)
 		rate = self._make_rate(job_card)
 		with self.set_user(self.wage_manager):
-			self.assertEqual(summary.get_wage_management_context()["companies"], ["_Test Company"])
+			self.assertEqual(
+				summary.get_wage_management_context()["companies"], [self.TEST_COMPANY]
+			)
 			self.assertIn(rate.name, frappe.get_list("Operation Wage Rate", pluck="name", limit=0))
 			self.assertTrue(frappe.has_permission("Operation Wage Rate", "read", doc=rate))
 			with self.assertRaises(frappe.PermissionError):
-				service.search_wage_employees("_Test Company 1")
+				service.search_wage_employees(self.OTHER_COMPANY)
 			with self.assertRaises(frappe.PermissionError):
-				summary.build_monthly_summaries("_Test Company 1", nowdate())
+				summary.build_monthly_summaries(self.OTHER_COMPANY, nowdate())
 
 		unscoped_manager = self._make_user("Production Wage Manager")
 		with self.set_user(unscoped_manager):
@@ -940,6 +1292,34 @@ class TestWorkerReporting(IntegrationTestCase):
 		job_card.reload()
 		self.assertEqual(job_card.total_time_in_mins, 720)
 
+	def test_cross_midnight_time_session_belongs_to_its_starting_production_day(self):
+		production_moment = datetime.combine(
+			get_datetime(nowdate()).date(), time(23, 30, 0, 123456)
+		)
+		with self.freeze_time(production_moment):
+			job_card, assignment = self._setup_flow(qty=10, wage_type="Time", rate=20)
+			with self.set_user(self.worker_user):
+				report = service.start_work_session(
+					assignment.name,
+					"cross-midnight-start",
+					started_at=production_moment,
+				)
+				report = service.finish_work_session(
+					report.name,
+					1,
+					"cross-midnight-finish",
+					ended_at=production_moment + timedelta(minutes=120),
+				)
+
+		self.assertEqual(getdate(report.labor_date), production_moment.date())
+		self.assertEqual(report.actual_minutes, 120)
+		self.assertEqual(report.reported_minutes, 120)
+		self.assertEqual(report.wage_amount, 40)
+		self.assertEqual(
+			getdate(report.actual_end_time),
+			(production_moment + timedelta(days=1)).date(),
+		)
+
 	def test_monthly_summary_contains_approved_reports(self):
 		previous_month = add_months(get_first_day(nowdate()), -1)
 		production_day = add_days(previous_month, 14)
@@ -953,7 +1333,9 @@ class TestWorkerReporting(IntegrationTestCase):
 			job_card.reload()
 
 		with self.set_user(self.wage_manager):
-			result = summary.build_monthly_summaries("_Test Company", previous_month, self.worker)
+			result = summary.build_monthly_summaries(
+				self.TEST_COMPANY, previous_month, self.worker
+			)
 			self.assertEqual(len(result["summaries"]), 1)
 			doc = summary.confirm_monthly_summary(result["summaries"][0])
 		doc.reload()
@@ -984,7 +1366,9 @@ class TestWorkerReporting(IntegrationTestCase):
 			self.assertEqual(job_card.docstatus, 0)
 
 		with self.set_user(self.wage_manager):
-			result = summary.build_monthly_summaries("_Test Company", previous_month, self.worker)
+			result = summary.build_monthly_summaries(
+				self.TEST_COMPANY, previous_month, self.worker
+			)
 			doc = summary.confirm_monthly_summary(result["summaries"][0])
 		self.assertEqual([row.source_report for row in doc.details], [previous_report.name])
 
@@ -1000,6 +1384,8 @@ class TestWorkerReporting(IntegrationTestCase):
 		report = self._submit(assignment, 10)
 		self._approve(report)
 		with self.set_user(self.wage_manager):
-			result = summary.build_monthly_summaries("_Test Company", nowdate(), self.worker)
+			result = summary.build_monthly_summaries(
+				self.TEST_COMPANY, nowdate(), self.worker
+			)
 			with self.assertRaises(frappe.ValidationError):
 				summary.confirm_monthly_summary(result["summaries"][0])

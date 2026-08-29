@@ -194,6 +194,7 @@ frappe.pages["shortage-purchase-planning"].on_page_load = function (wrapper) {
 		frappe.confirm(__("确认生成并提交采购申请？"), () => {
 			frappe.call({
 				method: "process_simplification.api.shortage.create_material_request",
+				type: "POST",
 				args: { shortage_rows: rows, schedule_date: schedule_date_field.get_value() },
 				freeze: true,
 				freeze_message: __("正在生成采购申请..."),

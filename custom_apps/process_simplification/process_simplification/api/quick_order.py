@@ -131,7 +131,7 @@ def validate_no_duplicate_finished_goods(items):
 
 	if duplicates:
 		throw_chinese(
-			"同一张快速开单中，同一个成品只能出现一次。请合并或改用标准销售订单：{0}".format(
+			"同一张快速开单中，同一个成品只能出现一次。请合并重复行后继续快速开单：{0}".format(
 				", ".join(duplicates)
 			)
 		)
@@ -190,8 +190,6 @@ def search_quick_order_products(doctype, txt, searchfield, start, page_len, filt
 			and not exists (
 				select 1 from `tabProduct Bundle` bundle
 				where bundle.new_item_code = item.name
-					and bundle.docstatus = 1
-					and bundle.is_active = 1
 					and bundle.disabled = 0
 			)
 			and (
@@ -259,9 +257,9 @@ def get_quick_order_item_defaults(item_code: str, company: str | None = None):
 		throw_chinese("产品 {0} 需要标准销售订单处理规格、序列号或批次。".format(item_code))
 	if frappe.db.exists(
 		"Product Bundle",
-		{"new_item_code": item_code, "docstatus": 1, "is_active": 1, "disabled": 0},
+		{"new_item_code": item_code, "disabled": 0},
 	):
-		throw_chinese("产品 {0} 是产品组合，请使用标准销售订单。".format(item_code))
+		throw_chinese("产品 {0} 是产品组合，快速销售订单暂不支持。".format(item_code))
 
 	company = company or get_default_company()
 	defaults = get_company_defaults(company)
@@ -492,6 +490,8 @@ def _quick_order_intent_digest(data) -> str:
 def quick_order_review_fingerprint(result) -> str:
 	stable = {
 		"intent_digest": result.get("intent_digest"),
+		"company": result.get("company"),
+		"currency": result.get("currency"),
 		"grand_total": normalize_qty(result.get("grand_total")),
 		"available_to_reserve": normalize_qty(result.get("available_to_reserve")),
 		"production_required": normalize_qty(result.get("production_required")),
@@ -505,11 +505,29 @@ def quick_order_review_fingerprint(result) -> str:
 		"rows": [
 			{
 				"item_code": row.get("item_code"),
+				"qty": normalize_qty(row.get("qty")),
+				"warehouse": row.get("warehouse"),
 				"available_to_reserve": normalize_qty(row.get("available_to_reserve")),
 				"production_required": normalize_qty(row.get("production_required")),
 				"bom_no": row.get("bom_no"),
 			}
 			for row in result.get("rows") or []
+		],
+		"commercial_rows": [
+			{
+				"item_code": row.get("item_code"),
+				"qty": normalize_qty(row.get("qty")),
+				"rate": normalize_qty(row.get("rate")),
+				"amount": normalize_qty(row.get("amount")),
+				"net_rate": normalize_qty(row.get("net_rate")),
+				"net_amount": normalize_qty(row.get("net_amount")),
+				"warehouse": row.get("warehouse"),
+				"bom_no": row.get("bom_no"),
+				"uom": row.get("uom"),
+				"conversion_factor": normalize_qty(row.get("conversion_factor")),
+				"delivery_date": str(row.get("delivery_date") or ""),
+			}
+			for row in result.get("commercial_rows") or []
 		],
 		"material_coverage": [
 			{
@@ -666,6 +684,22 @@ def _evaluate_quick_order(payload):
 	grand_total = normalize_qty(so.grand_total) if so else sum(
 		row["qty"] * row["rate"] for row in data.get("items")
 	)
+	commercial_rows = [
+		{
+			"item_code": row.get("item_code"),
+			"qty": normalize_qty(row.get("qty")),
+			"rate": normalize_qty(row.get("rate")),
+			"amount": normalize_qty(row.get("amount")),
+			"net_rate": normalize_qty(row.get("net_rate")),
+			"net_amount": normalize_qty(row.get("net_amount")),
+			"warehouse": row.get("warehouse"),
+			"bom_no": row.get("bom_no"),
+			"uom": row.get("uom"),
+			"conversion_factor": normalize_qty(row.get("conversion_factor")),
+			"delivery_date": str(row.get("delivery_date") or ""),
+		}
+		for row in (so.items if so else [])
+	]
 	result = {
 		"schema_version": QUICK_ORDER_SCHEMA_VERSION,
 		"status": "blocked" if blockers else "ready",
@@ -685,6 +719,7 @@ def _evaluate_quick_order(payload):
 		"material_requirements": material_requirements,
 		"material_groups": material_groups,
 		"rows": preview["rows"],
+		"commercial_rows": commercial_rows,
 		"blockers": blockers,
 		"warnings": warnings,
 		"checked_at": str(now_datetime()),
@@ -726,7 +761,7 @@ def _get_review_token(token: str):
 	return frappe._dict(stored)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def preflight_quick_sales_order(payload=None, **kwargs):
 	result = _evaluate_quick_order(payload or kwargs)
 	public = _public_result(result)
@@ -735,7 +770,7 @@ def preflight_quick_sales_order(payload=None, **kwargs):
 	return public
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def check_quick_order_shortage(payload=None, **kwargs):
 	return preflight_quick_sales_order(payload, **kwargs)
 
@@ -773,7 +808,7 @@ def _create_idempotency_record(name: str, key: str, intent_digest: str):
 	return record
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def submit_quick_sales_order(payload=None, review_token: str | None = None, idempotency_key: str | None = None, **kwargs):
 	frappe.has_permission("Sales Order", "create", throw=True)
 	data = normalize_quick_order_payload(payload or kwargs)
@@ -828,12 +863,12 @@ def submit_quick_sales_order(payload=None, review_token: str | None = None, idem
 	}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_quick_sales_order(payload=None, **kwargs):
 	throw_chinese("快速开单已升级，请刷新页面并完成库存预检后再提交。")
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def cleanup_quick_order_idempotency():
 	frappe.only_for("System Manager")
 	return cleanup_expired_quick_order_idempotency()

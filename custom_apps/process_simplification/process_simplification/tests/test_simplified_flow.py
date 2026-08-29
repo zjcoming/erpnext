@@ -9,6 +9,41 @@ from process_simplification.api.workbench import _remaining_reserved_qty, get_ac
 
 
 class TestSimplifiedFlow(UnitTestCase):
+	def test_all_business_mutations_require_post(self):
+		from process_simplification.api.actions import (
+			create_delivery_note,
+			create_work_order,
+			reserve_completed_stock,
+			reserve_stock,
+		)
+		from process_simplification.api.quick_order import (
+			check_quick_order_shortage,
+			cleanup_quick_order_idempotency,
+			create_quick_sales_order,
+			preflight_quick_sales_order,
+			submit_quick_sales_order,
+		)
+		from process_simplification.api.shortage import create_material_request
+
+		mutations = (
+			reserve_stock,
+			create_work_order,
+			reserve_completed_stock,
+			create_delivery_note,
+			preflight_quick_sales_order,
+			check_quick_order_shortage,
+			submit_quick_sales_order,
+			create_quick_sales_order,
+			cleanup_quick_order_idempotency,
+			create_material_request,
+		)
+		for method in mutations:
+			with self.subTest(method=method.__name__):
+				self.assertEqual(
+					frappe.allowed_http_methods_for_whitelisted_func.get(method),
+					["POST"],
+				)
+
 	@patch("process_simplification.api.workbench.frappe.get_doc")
 	@patch("process_simplification.api.workbench.ensure_submitted_sales_order")
 	def test_order_workbench_checks_document_read_permission(self, ensure_submitted, get_doc):
@@ -237,6 +272,33 @@ class TestSimplifiedFlow(UnitTestCase):
 		self.assertEqual(result["status_code"], "ready_to_ship")
 		self.assertTrue(result["direct_ship"])
 		self.assertEqual(result["risk_level"], "green")
+
+	def test_returned_stock_requires_reservation_before_order_is_ready_to_ship(self):
+		from process_simplification.api.workbench import build_fulfillment_order
+
+		order = frappe._dict(name="SO-RETURNED", customer="C1", customer_name="C1", creation="2026-08-01")
+		rows = [
+			{
+				"pending_qty": 1,
+				"reserved_qty": 0,
+				"available_to_reserve": 1,
+				"finished_stock_coverage_qty": 1,
+				"production_required_qty": 0,
+				"unplanned_production_qty": 0,
+				"active_work_order_qty": 0,
+				"delivered_qty": 1,
+				"order_qty": 2,
+				"delivery_date": "2026-08-06",
+				"next_actions": [{"action": "reserve_stock"}],
+			}
+		]
+
+		result = build_fulfillment_order(order, rows, today="2026-08-02")
+
+		self.assertEqual(result["status_code"], "awaiting_stock")
+		self.assertEqual(result["status_label"], "待预留")
+		self.assertFalse(result["direct_ship"])
+		self.assertFalse(result["needs_production"])
 
 	def test_fulfillment_order_uses_only_pending_rows_for_delivery_and_coverage(self):
 		from process_simplification.api.workbench import build_fulfillment_order
@@ -597,8 +659,10 @@ class TestSimplifiedFlow(UnitTestCase):
 			frappe._dict({"item_code": "FG-001"}),
 		]
 
-		with self.assertRaises(SimplifiedFlowError):
+		with self.assertRaises(SimplifiedFlowError) as error:
 			validate_no_duplicate_finished_goods(items)
+		self.assertIn("请合并重复行后继续快速开单", str(error.exception))
+		self.assertNotIn("标准销售订单", str(error.exception))
 
 	def test_remaining_reserved_qty_ignores_delivered_and_consumed_quantities(self):
 		entry = frappe._dict(
@@ -680,7 +744,8 @@ class TestSimplifiedFlow(UnitTestCase):
 		with self.assertRaises(SimplifiedFlowError):
 			create_delivery_note("SO-TEST", "SO-ITEM-TEST")
 
-		row_from_workbench.assert_called_once_with("SO-TEST", "SO-ITEM-TEST")
+		self.assertEqual(row_from_workbench.call_count, 2)
+		row_from_workbench.assert_called_with("SO-TEST", "SO-ITEM-TEST")
 
 	@patch("process_simplification.api.actions.make_delivery_note")
 	@patch("process_simplification.api.actions.get_sales_order_item")
@@ -750,6 +815,114 @@ class TestSimplifiedFlow(UnitTestCase):
 			reserve_stock("SO-TEST", "SO-ITEM-TEST")
 
 		row_from_workbench.assert_called_once_with("SO-TEST", "SO-ITEM-TEST")
+
+	@patch("process_simplification.api.actions._new_sre")
+	@patch("process_simplification.api.actions.get_available_qty_to_reserve", return_value=5)
+	@patch("process_simplification.api.actions.frappe.get_doc")
+	@patch("process_simplification.api.actions.frappe.has_permission", return_value=True)
+	@patch("process_simplification.api.actions.get_sales_order_item")
+	@patch("process_simplification.api.actions._row_from_workbench")
+	def test_reserve_stock_rejects_explicit_zero_instead_of_using_maximum(
+		self,
+		row_from_workbench,
+		get_sales_order_item,
+		has_permission,
+		get_doc,
+		get_available_qty_to_reserve,
+		new_sre,
+	):
+		from process_simplification.api.actions import reserve_stock
+
+		row_from_workbench.return_value = frappe._dict({"pending_qty": 10, "reserved_qty": 0})
+		get_sales_order_item.return_value = frappe._dict(
+			{"warehouse": "_Test Warehouse", "item_code": "_Test Item"}
+		)
+		get_doc.return_value = frappe._dict({"company": "_Test Company"})
+
+		with self.assertRaises(SimplifiedFlowError):
+			reserve_stock("SO-TEST", "SO-ITEM-TEST", qty=0)
+
+		new_sre.assert_not_called()
+		self.assertEqual(row_from_workbench.call_count, 2)
+
+	@patch("process_simplification.api.actions.create_work_orders_via_production_plan")
+	@patch("process_simplification.api.actions.resolve_production_source_warehouse")
+	@patch("process_simplification.api.actions.get_company_defaults")
+	@patch("process_simplification.api.actions.frappe.get_doc")
+	@patch("process_simplification.api.actions.get_sales_order_item")
+	@patch("process_simplification.api.actions.get_allocated_production_row")
+	@patch("process_simplification.api.actions.frappe.has_permission", return_value=True)
+	@patch("process_simplification.api.actions._row_from_workbench")
+	def test_create_work_order_rejects_explicit_zero_instead_of_using_unplanned_quantity(
+		self,
+		row_from_workbench,
+		has_permission,
+		get_allocated_production_row,
+		get_sales_order_item,
+		get_doc,
+		get_company_defaults,
+		resolve_production_source_warehouse,
+		create_work_orders,
+	):
+		from process_simplification.api.actions import create_work_order
+
+		row_from_workbench.return_value = frappe._dict({"unplanned_production_qty": 5})
+		get_allocated_production_row.return_value = frappe._dict({"unplanned_production_qty": 5})
+		get_sales_order_item.return_value = frappe._dict(
+			{"item_code": "_Test Item", "bom_no": "BOM-TEST", "warehouse": "_Test FG"}
+		)
+		get_doc.return_value = frappe._dict({"company": "_Test Company"})
+		get_company_defaults.return_value = frappe._dict(
+			{"fg_warehouse": "_Test FG", "wip_warehouse": "_Test WIP"}
+		)
+		resolve_production_source_warehouse.return_value = frappe._dict(
+			{"can_use": True, "warehouse": "_Test RM"}
+		)
+
+		with self.assertRaises(SimplifiedFlowError):
+			create_work_order("SO-TEST", "SO-ITEM-TEST", qty=0)
+
+		create_work_orders.assert_not_called()
+		self.assertEqual(row_from_workbench.call_count, 2)
+
+	@patch("process_simplification.api.actions._new_sre")
+	@patch("process_simplification.api.actions.get_available_qty_to_reserve", return_value=5)
+	@patch("process_simplification.api.actions._manufactured_finished_rows")
+	@patch("process_simplification.api.actions.get_sales_order_item")
+	@patch("process_simplification.api.actions.frappe.get_doc")
+	@patch("process_simplification.api.actions.frappe.has_permission", return_value=True)
+	@patch("process_simplification.api.actions._row_from_workbench")
+	def test_reserve_completed_stock_rejects_explicit_zero_instead_of_using_maximum(
+		self,
+		row_from_workbench,
+		has_permission,
+		get_doc,
+		get_sales_order_item,
+		manufactured_finished_rows,
+		get_available_qty_to_reserve,
+		new_sre,
+	):
+		from process_simplification.api.actions import reserve_completed_stock
+
+		row_from_workbench.return_value = frappe._dict({"completed_unreserved_qty": 5})
+		get_doc.return_value = frappe._dict({"company": "_Test Company"})
+		get_sales_order_item.return_value = frappe._dict({"item_code": "_Test Item"})
+		manufactured_finished_rows.return_value = [
+			frappe._dict(
+				{
+					"t_warehouse": "_Test FG",
+					"transfer_qty": 5,
+					"parent": "STE-TEST",
+					"name": "STE-ITEM-TEST",
+				}
+			)
+		]
+
+		with self.assertRaises(SimplifiedFlowError):
+			reserve_completed_stock("SO-TEST", "SO-ITEM-TEST", qty=0)
+
+		new_sre.assert_not_called()
+		self.assertEqual(row_from_workbench.call_count, 2)
 
 	@patch("process_simplification.api.shortage._workbench_row")
 	@patch("process_simplification.api.production_readiness.get_production_plan_readiness", return_value={})

@@ -6,6 +6,43 @@ from frappe.utils import add_days, nowdate
 
 
 class TestMaterialCoverageIntegration(IntegrationTestCase):
+	TEST_COMPANY = "Material Coverage Test Company"
+	TEST_COMPANY_ABBR = "MCT"
+	OTHER_COMPANY = "Material Coverage Other Company"
+	OTHER_COMPANY_ABBR = "MCO"
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		frappe.set_user("Administrator")
+		cls._ensure_company(cls.TEST_COMPANY, cls.TEST_COMPANY_ABBR)
+		cls._ensure_company(cls.OTHER_COMPANY, cls.OTHER_COMPANY_ABBR)
+		cls.supplier = "Material Coverage Supplier"
+		if not frappe.db.exists("Supplier", cls.supplier):
+			frappe.get_doc(
+				{
+					"doctype": "Supplier",
+					"supplier_name": cls.supplier,
+					"supplier_group": "All Supplier Groups",
+				}
+			).insert(ignore_permissions=True)
+		cls.source_warehouse = "Stores - {0}".format(cls.TEST_COMPANY_ABBR)
+		frappe.db.commit()
+
+	@classmethod
+	def _ensure_company(cls, company_name, abbr):
+		if not frappe.db.exists("Company", company_name):
+			frappe.get_doc(
+				{
+					"doctype": "Company",
+					"company_name": company_name,
+					"abbr": abbr,
+					"default_currency": "INR",
+					"country": "India",
+					"create_chart_of_accounts_based_on": "Standard Template",
+				}
+			).insert(ignore_permissions=True)
+
 	def _make_item(self, prefix, *, uoms=None):
 		item_code = "{0}-{1}".format(prefix, frappe.generate_hash(length=8))
 		item = frappe.get_doc(
@@ -31,8 +68,10 @@ class TestMaterialCoverageIntegration(IntegrationTestCase):
 			{
 				"doctype": "Warehouse",
 				"warehouse_name": "{0} {1}".format(prefix, frappe.generate_hash(length=6)),
-				"parent_warehouse": "_Test Warehouse Group - _TC",
-				"company": "_Test Company",
+				"parent_warehouse": "All Warehouses - {0}".format(
+					self.TEST_COMPANY_ABBR
+				),
+				"company": self.TEST_COMPANY,
 				**properties,
 			}
 		)
@@ -52,8 +91,8 @@ class TestMaterialCoverageIntegration(IntegrationTestCase):
 		material_request_item=None,
 	):
 		po = frappe.new_doc("Purchase Order")
-		po.company = "_Test Company"
-		po.supplier = "_Test Supplier"
+		po.company = self.TEST_COMPANY
+		po.supplier = self.supplier
 		po.transaction_date = nowdate()
 		po.schedule_date = schedule_date
 		po.append(
@@ -77,7 +116,7 @@ class TestMaterialCoverageIntegration(IntegrationTestCase):
 	def _make_material_request(self, *, item_code, warehouse, schedule_date, qty):
 		mr = frappe.new_doc("Material Request")
 		mr.material_request_type = "Purchase"
-		mr.company = "_Test Company"
+		mr.company = self.TEST_COMPANY
 		mr.transaction_date = nowdate()
 		mr.schedule_date = schedule_date
 		mr.append(
@@ -100,7 +139,7 @@ class TestMaterialCoverageIntegration(IntegrationTestCase):
 		from process_simplification.api.shortage import _po_outstanding
 
 		need_date = add_days(nowdate(), 5)
-		warehouse = "_Test Warehouse - _TC"
+		warehouse = self.source_warehouse
 		other_warehouse = self._make_warehouse("QO Other")
 		uom = "QO Box {0}".format(frappe.generate_hash(length=6))
 		frappe.get_doc({"doctype": "UOM", "uom_name": uom}).insert()
@@ -139,9 +178,84 @@ class TestMaterialCoverageIntegration(IntegrationTestCase):
 			conversion_factor=5,
 		)
 
-		self.assertEqual(_po_outstanding(item.name, warehouse, "_Test Company", need_date), 30)
-		self.assertEqual(_po_outstanding(item.name, other_warehouse, "_Test Company", need_date), 10)
+		self.assertEqual(
+			_po_outstanding(item.name, warehouse, self.TEST_COMPANY, need_date), 30
+		)
+		self.assertEqual(
+			_po_outstanding(item.name, other_warehouse, self.TEST_COMPANY, need_date), 10
+		)
 		self.assertEqual(_po_outstanding(item.name, warehouse, "Not The Company", need_date), 0)
+
+	def test_cancelled_purchase_order_immediately_releases_inbound_coverage(self):
+		from process_simplification.api.shortage import _po_documents, _po_outstanding
+
+		need_date = add_days(nowdate(), 5)
+		item = self._make_item("QO-CANCELLED-PO-RM")
+		purchase_order = self._make_purchase_order(
+			item_code=item.name,
+			warehouse=self.source_warehouse,
+			schedule_date=add_days(need_date, -1),
+			qty=10,
+		)
+		self.assertEqual(
+			_po_outstanding(item.name, self.source_warehouse, self.TEST_COMPANY, need_date),
+			10,
+		)
+
+		purchase_order.cancel()
+		self.assertEqual(
+			_po_outstanding(item.name, self.source_warehouse, self.TEST_COMPANY, need_date),
+			0,
+		)
+		self.assertEqual(
+			_po_documents(item.name, self.source_warehouse, self.TEST_COMPANY, need_date),
+			[],
+		)
+
+	def test_purchase_return_reopens_po_inbound_coverage_and_allows_rereceipt(self):
+		from erpnext.buying.doctype.purchase_order.purchase_order import make_purchase_receipt
+		from erpnext.stock.doctype.purchase_receipt.purchase_receipt import make_purchase_return
+
+		from process_simplification.api.shortage import _po_documents, _po_outstanding
+
+		need_date = add_days(nowdate(), 5)
+		item = self._make_item("QO-RETURNED-PO-RM")
+		purchase_order = self._make_purchase_order(
+			item_code=item.name,
+			warehouse=self.source_warehouse,
+			schedule_date=add_days(need_date, -1),
+			qty=1,
+		)
+
+		first_receipt = make_purchase_receipt(purchase_order.name)
+		first_receipt.insert()
+		first_receipt.submit()
+		self.assertEqual(
+			_po_outstanding(item.name, self.source_warehouse, self.TEST_COMPANY, need_date),
+			0,
+		)
+
+		purchase_return = make_purchase_return(first_receipt.name)
+		purchase_return.insert()
+		purchase_return.submit()
+		purchase_order.reload()
+
+		self.assertEqual(purchase_order.items[0].received_qty, 0)
+		self.assertEqual(
+			_po_outstanding(item.name, self.source_warehouse, self.TEST_COMPANY, need_date),
+			1,
+		)
+		self.assertEqual(_po_documents(
+			item.name, self.source_warehouse, self.TEST_COMPANY, need_date
+		)[0]["outstanding_qty"], 1)
+
+		second_receipt = make_purchase_receipt(purchase_order.name)
+		second_receipt.insert()
+		second_receipt.submit()
+		self.assertEqual(
+			_po_outstanding(item.name, self.source_warehouse, self.TEST_COMPANY, need_date),
+			0,
+		)
 
 	def test_real_material_request_and_linked_purchase_order_do_not_double_count(self):
 		from erpnext.buying.doctype.purchase_order.purchase_order import make_purchase_receipt
@@ -154,7 +268,7 @@ class TestMaterialCoverageIntegration(IntegrationTestCase):
 		)
 
 		need_date = add_days(nowdate(), 5)
-		warehouse = "_Test Warehouse - _TC"
+		warehouse = self.source_warehouse
 		item = self._make_item("QO-MR-RM")
 		open_request = self._make_material_request(
 			item_code=item.name,
@@ -176,7 +290,7 @@ class TestMaterialCoverageIntegration(IntegrationTestCase):
 		)
 
 		po = make_purchase_order(converted_request.name)
-		po.supplier = "_Test Supplier"
+		po.supplier = self.supplier
 		po.items[0].warehouse = warehouse
 		po.items[0].schedule_date = add_days(need_date, -1)
 		po.insert()
@@ -190,7 +304,7 @@ class TestMaterialCoverageIntegration(IntegrationTestCase):
 			{
 				"doctype": "BOM",
 				"item": finished_good.name,
-				"company": "_Test Company",
+				"company": self.TEST_COMPANY,
 				"currency": "INR",
 				"quantity": 1,
 				"is_active": 1,
@@ -214,12 +328,16 @@ class TestMaterialCoverageIntegration(IntegrationTestCase):
 		converted_request.reload()
 		self.assertEqual(open_request.items[0].ordered_qty, 0)
 		self.assertEqual(converted_request.items[0].ordered_qty, 20)
-		self.assertEqual(_mr_outstanding(item.name, warehouse, "_Test Company", need_date), 10)
-		self.assertEqual(_po_outstanding(item.name, warehouse, "_Test Company", need_date), 15)
+		self.assertEqual(
+			_mr_outstanding(item.name, warehouse, self.TEST_COMPANY, need_date), 10
+		)
+		self.assertEqual(
+			_po_outstanding(item.name, warehouse, self.TEST_COMPANY, need_date), 15
+		)
 		self.assertEqual(_mr_outstanding(item.name, warehouse, "Not The Company", need_date), 0)
 		coverage = calculate_material_coverage(
 			[{"bom_no": bom.name, "qty": 1}],
-			"_Test Company",
+			self.TEST_COMPANY,
 			need_by_date=need_date,
 			defaults=frappe._dict({"source_warehouse": warehouse}),
 		)
@@ -231,8 +349,8 @@ class TestMaterialCoverageIntegration(IntegrationTestCase):
 	def test_operation_bom_uses_item_rows_and_the_same_validated_work_order_source_warehouse(self):
 		from process_simplification.api.shortage import calculate_material_coverage
 
-		company = "_Test Company"
-		work_order_source = "_Test Warehouse - _TC"
+		company = self.TEST_COMPANY
+		work_order_source = self.source_warehouse
 		bom_line_source = self._make_warehouse("QO BOM Source")
 		finished_good = self._make_item("QO-OP-FG")
 		raw_material = self._make_item("QO-OP-RM")
@@ -305,26 +423,26 @@ class TestMaterialCoverageIntegration(IntegrationTestCase):
 		from process_simplification.api.setup import resolve_production_source_warehouse
 
 		fallback = resolve_production_source_warehouse(
-			"_Test Company",
+			self.TEST_COMPANY,
 			defaults=frappe._dict({"source_warehouse": None}),
-			sales_order_item_warehouse="_Test Warehouse - _TC",
+			sales_order_item_warehouse=self.source_warehouse,
 		)
 		self.assertTrue(fallback.can_use)
-		self.assertEqual(fallback.warehouse, "_Test Warehouse - _TC")
+		self.assertEqual(fallback.warehouse, self.source_warehouse)
 
 		group_warehouse = self._make_warehouse("QO Group", is_group=1)
 		disabled_warehouse = self._make_warehouse("QO Disabled", disabled=1)
 
 		for company, source_warehouse in (
-			("_Test Company", group_warehouse),
-			("_Test Company", disabled_warehouse),
-			("_Test Company 1", "_Test Warehouse - _TC"),
+			(self.TEST_COMPANY, group_warehouse),
+			(self.TEST_COMPANY, disabled_warehouse),
+			(self.OTHER_COMPANY, self.source_warehouse),
 		):
 			with self.subTest(company=company, source_warehouse=source_warehouse):
 				result = resolve_production_source_warehouse(
 					company,
 					defaults=frappe._dict({"source_warehouse": source_warehouse}),
-					sales_order_item_warehouse="_Test Warehouse - _TC",
+					sales_order_item_warehouse=self.source_warehouse,
 				)
 				self.assertFalse(result.can_use)
 				self.assertEqual(result.warehouse, source_warehouse)

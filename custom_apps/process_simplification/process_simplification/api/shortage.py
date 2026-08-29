@@ -930,6 +930,18 @@ def _purchase_source_key(source):
 	)
 
 
+def _requested_purchase_qty(row):
+	"""Keep an explicitly entered zero/negative quantity for validation.
+
+	Older callers may omit ``purchase_qty`` and rely on ``shortage_qty`` as the
+	default.  Once the field is present, however, a falsy value is user input and
+	must not silently fall back to the suggested shortage.
+	"""
+	return normalize_qty(
+		row.get("purchase_qty") if "purchase_qty" in row else row.get("shortage_qty")
+	)
+
+
 def revalidate_purchase_rows(shortage_rows, current_shortages):
 	current_by_key = {
 		(row.get("item_code"), row.get("warehouse")): frappe._dict(row)
@@ -955,9 +967,11 @@ def revalidate_purchase_rows(shortage_rows, current_shortages):
 		current_shortage_qty = sum(
 			normalize_qty(source.get("shortage_qty")) for source in matching_sources
 		)
-		purchase_qty = normalize_qty(row.get("purchase_qty") or row.get("shortage_qty"))
+		purchase_qty = _requested_purchase_qty(row)
 		if current_shortage_qty <= 0:
 			throw_chinese("第 {0} 行已不再缺料，请刷新后重试。".format(index))
+		if purchase_qty <= 0:
+			throw_chinese("第 {0} 行采购数量必须大于 0。".format(index))
 		if purchase_qty > current_shortage_qty:
 			throw_chinese(
 				"第 {0} 行采购数量超过最新采购缺口 {1}，请刷新后重试。".format(
@@ -970,7 +984,7 @@ def revalidate_purchase_rows(shortage_rows, current_shortages):
 	return validated
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_material_request(shortage_rows, company: str | None = None, schedule_date: str | None = None):
 	frappe.has_permission("Material Request", "create", throw=True)
 	shortage_rows = _parse(shortage_rows) or []
@@ -1016,7 +1030,7 @@ def create_material_request(shortage_rows, company: str | None = None, schedule_
 
 	for index, row in enumerate(shortage_rows, start=1):
 		row = frappe._dict(row)
-		qty = normalize_qty(row.get("purchase_qty") or row.get("shortage_qty"))
+		qty = _requested_purchase_qty(row)
 		shortage_qty = normalize_qty(row.get("shortage_qty"))
 		if qty <= 0:
 			throw_chinese("第 {0} 行采购数量必须大于 0。".format(index))

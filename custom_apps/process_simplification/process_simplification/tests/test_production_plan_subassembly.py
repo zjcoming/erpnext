@@ -274,6 +274,88 @@ class TestProductionPlanSubassemblyAdapter(UnitTestCase):
 		self.assertEqual(result["work_orders"], ["WO-FG", "WO-SA"])
 		self.assertLess(events.index("plan-submit"), events.index("work-orders-generate"))
 
+	def test_adapter_replaces_v16_finished_goods_source_fallback_before_submit(self):
+		adapter = self._adapter()
+		events = []
+
+		class FakePP:
+			def __init__(self):
+				self.name = "PP-0005"
+				self.po_items = []
+				self.sub_assembly_items = []
+				self.flags = frappe._dict()
+
+			def append(self, table, row):
+				child = frappe._dict(row)
+				child.name = "PP-ROW-1"
+				getattr(self, table).append(child)
+				return child
+
+			def insert(self, *args, **kwargs):
+				pass
+
+			def get_sub_assembly_items(self):
+				pass
+
+			def save(self):
+				pass
+
+			def submit(self):
+				pass
+
+			def make_work_order(self):
+				pass
+
+		class FakeWO:
+			def __init__(self, name, fg_warehouse):
+				self.name = name
+				self.fg_warehouse = fg_warehouse
+				self.source_warehouse = fg_warehouse
+
+			def set_required_items(self, *, reset_source_warehouse=False):
+				events.append(("required", self.name, reset_source_warehouse, self.source_warehouse))
+
+			def save(self):
+				events.append(("save", self.name, self.source_warehouse))
+
+			def submit(self):
+				events.append(("submit", self.name, self.source_warehouse))
+
+		work_orders = {
+			"WO-FG": FakeWO("WO-FG", "Finished Goods - TC"),
+			"WO-SA": FakeWO("WO-SA", "Stores - TC"),
+		}
+		with (
+			patch.object(adapter.frappe, "new_doc", return_value=FakePP()),
+			patch.object(adapter, "_work_orders_for_plan", return_value=list(work_orders)),
+			patch.object(
+				adapter.frappe,
+				"get_doc",
+				side_effect=lambda _doctype, name: work_orders[name],
+			),
+			patch.object(adapter.frappe.db, "savepoint"),
+		):
+			adapter.create_work_orders_via_production_plan(
+				sales_order="SO-001",
+				sales_order_item="SOI-001",
+				company="_Test Company",
+				item_code="FG-001",
+				bom_no="BOM-FG-001",
+				planned_qty=10,
+				fg_warehouse="Finished Goods - TC",
+				sub_assembly_warehouse="Stores - TC",
+				source_warehouse="Stores - TC",
+				delivery_date=None,
+			)
+
+		for work_order in work_orders.values():
+			self.assertEqual(work_order.source_warehouse, "Stores - TC")
+			self.assertIn(("required", work_order.name, True, "Stores - TC"), events)
+			self.assertLess(
+				events.index(("save", work_order.name, "Stores - TC")),
+				events.index(("submit", work_order.name, "Stores - TC")),
+			)
+
 	def test_adapter_rolls_back_batch_when_any_work_order_submit_fails(self):
 		adapter = self._adapter()
 

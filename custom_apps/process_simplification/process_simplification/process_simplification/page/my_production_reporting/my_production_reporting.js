@@ -20,6 +20,7 @@ function workReportButtonMeta(assignment, translate = (message) => message) {
 		NO_REMAINING_QTY: translate("已完成"),
 		RATE_MISSING: translate("缺少计价规则"),
 		DAILY_MINUTES_LIMIT: translate("今日工时已满"),
+		MATERIAL_NOT_TRANSFERRED: translate("等待发料"),
 		JOB_CARD_UNAVAILABLE: translate("不可报工"),
 		TIME_LOG_SETTING: translate("配置不兼容"),
 		PROCESS_LOSS: translate("需主管处理"),
@@ -48,6 +49,14 @@ function normalizeFrappeDateTime(value) {
 		: value;
 }
 
+function workReportFinishDialogStartedAt(assignment) {
+	return normalizeFrappeDateTime(assignment?.active_started_at);
+}
+
+function runWorkerReportingToolbarLoad(load) {
+	load();
+}
+
 const myProductionReportingApi = {
 	workReportStatusMeta,
 	workReportButtonMeta,
@@ -55,6 +64,8 @@ const myProductionReportingApi = {
 	workReportRemainingMinutes,
 	workReportWageLabel,
 	normalizeFrappeDateTime,
+	workReportFinishDialogStartedAt,
+	runWorkerReportingToolbarLoad,
 };
 if (typeof module !== "undefined" && module.exports) module.exports = myProductionReportingApi;
 
@@ -160,11 +171,11 @@ if (typeof frappe !== "undefined") {
 				fields: [
 					{ fieldname: "job_card", fieldtype: "Data", label: __("Job Card"), read_only: 1, default: row.job_card },
 					{ fieldname: "operation", fieldtype: "Data", label: __("工序"), read_only: 1, default: row.operation },
-					{ fieldname: "started_at", fieldtype: "Datetime", label: __("实际开始时间"), read_only: 1, default: row.active_started_at },
+					{ fieldname: "started_at", fieldtype: "Datetime", label: __("实际开始时间"), read_only: 1, default: workReportFinishDialogStartedAt(row) },
 					{ fieldname: "wage", fieldtype: "Data", label: __("计价方式与单价"), read_only: 1, default: `${row.wage_type === "Time" ? __("计时") : __("计件")} · ${number(row.rate)}` },
 					{ fieldname: "remaining", fieldtype: "Float", label: __("当前可报数量"), read_only: 1, default: row.reportable_qty },
 					{ fieldname: "completed_qty", fieldtype: "Float", label: __("本次完成数量"), reqd: 1 },
-					{ fieldname: "time_note", fieldtype: "HTML", options: `<p class="text-muted">${__("实际生产分钟由服务器根据开始和结束时间计算；计时工资直接使用该分钟数。")}</p>` },
+					{ fieldname: "time_note", fieldtype: "HTML", options: `<p class="text-muted">${__("实际生产分钟由服务器根据开始和结束时间计算；计时工资直接使用该分钟数。跨零点的夜班仍归入开始计时当天的生产日和工资月份。")}</p>` },
 				],
 				primary_action_label: __("提交主管审核"),
 				primary_action: async (values) => {
@@ -213,7 +224,7 @@ if (typeof frappe !== "undefined") {
 			if (action === "start") startWork(row);
 			if (action === "finish") openFinishDialog(row);
 		});
-		page.add_inner_button(__("刷新"), load);
+		page.add_inner_button(__("刷新"), () => runWorkerReportingToolbarLoad(load));
 	};
 
 	frappe.pages["my-production-reporting"].refresh = function (wrapper) {

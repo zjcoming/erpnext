@@ -13,7 +13,8 @@ after_install = "process_simplification.install.after_install"
 after_migrate = "process_simplification.install.after_migrate"
 
 extend_doctype_class = {
-	"Work Order": "process_simplification.production_reporting.work_order.WorkerReportingWorkOrderMixin"
+	"Work Order": "process_simplification.production_reporting.work_order.WorkerReportingWorkOrderMixin",
+	"Stock Entry": "process_simplification.production_reporting.stock_entry.SubassemblyReservationStockEntryMixin",
 }
 
 doc_events = {

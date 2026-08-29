@@ -60,6 +60,27 @@ def _submit_work_orders(work_orders: list[str]) -> None:
 		frappe.get_doc("Work Order", name).submit()
 
 
+def _apply_guided_source_warehouse(work_orders: list[str], source_warehouse: str | None) -> None:
+	"""Keep ERPNext v16 from falling back to the finished-goods warehouse.
+
+	Production Plan v16 derives a Work Order's source warehouse only from
+	``BOM.default_source_warehouse``.  When that optional field is empty it
+	falls back to the Work Order's finished-goods warehouse, which makes raw
+	material procurement target the finished-goods warehouse.  The simplified
+	flow already validated one guided source warehouse, so apply it to every
+	generated draft Work Order and rebuild its direct required-item rows before
+	submission.
+	"""
+	if not source_warehouse:
+		return
+
+	for name in work_orders:
+		work_order = frappe.get_doc("Work Order", name)
+		work_order.source_warehouse = source_warehouse
+		work_order.set_required_items(reset_source_warehouse=True)
+		work_order.save()
+
+
 def create_work_orders_via_production_plan(
 	*,
 	sales_order: str,
@@ -70,6 +91,7 @@ def create_work_orders_via_production_plan(
 	planned_qty: float,
 	fg_warehouse: str | None,
 	sub_assembly_warehouse: str | None,
+	source_warehouse: str | None = None,
 	delivery_date=None,
 ):
 	"""Create the finished-good Work Order and one Work Order per in-house
@@ -115,6 +137,7 @@ def create_work_orders_via_production_plan(
 			plan.make_work_order()
 
 		work_orders = _work_orders_for_plan(plan.name)
+		_apply_guided_source_warehouse(work_orders, source_warehouse)
 		_submit_work_orders(work_orders)
 	except Exception:
 		frappe.db.rollback(save_point=_AUTO_SUBMIT_SAVEPOINT)

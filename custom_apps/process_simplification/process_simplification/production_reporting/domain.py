@@ -368,6 +368,65 @@ def reportable_qty(job_card: frappe._dict, *, for_update: bool = False) -> float
 	)
 
 
+def work_order_material_capacity(
+	job_card: frappe._dict,
+	*,
+	for_update: bool = False,
+) -> float | None:
+	"""Return the finished-good quantity currently covered by issued materials.
+
+	``None`` means the Work Order consumes directly (``skip_transfer``) or has no
+	positive material requirement, so worker reporting keeps the native Job Card
+	quantity boundary. Otherwise the v16 Work Order transfer quantity is the
+	maximum production quantity that may be reported for each operation.
+	"""
+	if not job_card or not job_card.work_order:
+		return 0.0
+	work_order = frappe.db.get_value(
+		"Work Order",
+		job_card.work_order,
+		["qty", "skip_transfer", "material_transferred_for_manufacturing"],
+		as_dict=True,
+		for_update=for_update,
+	)
+	if not work_order:
+		return 0.0
+	if work_order.skip_transfer:
+		return None
+	required_item = frappe.db.get_value(
+		"Work Order Item",
+		{"parent": job_card.work_order, "required_qty": [">", 0]},
+		"name",
+		for_update=for_update,
+	)
+	if not required_item:
+		return None
+	return max(
+		0.0,
+		min(
+			flt(work_order.material_transferred_for_manufacturing),
+			flt(work_order.qty),
+		),
+	)
+
+
+def material_reportable_qty(job_card: frappe._dict, *, for_update: bool = False) -> float:
+	"""Apply both Job Card quantity and issued-material boundaries."""
+	precision = job_card_qty_precision()
+	job_card_remaining = reportable_qty(job_card, for_update=for_update)
+	material_capacity = work_order_material_capacity(job_card, for_update=for_update)
+	if material_capacity is None:
+		return job_card_remaining
+	used = flt(job_card.total_completed_qty, precision) + pending_report_qty(
+		job_card.name,
+		for_update=for_update,
+	)
+	return flt(
+		max(0.0, min(job_card_remaining, flt(material_capacity, precision) - used)),
+		precision,
+	)
+
+
 def get_wage_rate(
 	company: str,
 	operation: str,

@@ -448,6 +448,10 @@ function refreshProductionOverview(page, demandKey) {
 	return loadOverview();
 }
 
+function runProductionWorkbenchToolbarLoad(loadOverview) {
+	loadOverview();
+}
+
 const productionWorkbenchApi = {
 	filterProductionDemands,
 	productionMaterialStatusMeta,
@@ -458,6 +462,7 @@ const productionWorkbenchApi = {
 	workbenchPaginationHtml: workbenchPaginationHtmlSafe,
 	productionDemandHtml,
 	refreshProductionOverview,
+	runProductionWorkbenchToolbarLoad,
 };
 
 if (typeof module !== "undefined" && module.exports) {
@@ -602,7 +607,7 @@ if (typeof frappe !== "undefined") {
 				? `${__("确认按当前未安排数量创建生产计划并生成层级工单？")}<br>${frappe.utils.escape_html(demand?.item_code || "")} · ${format_number(flt(demand?.unplanned_production_qty), null, 2)}`
 				: __("确认将当前可用完工成品回补到来源订单？");
 			frappe.confirm(message, () => {
-				frappe.call({ method: methods[action], args: { sales_order: salesOrder, sales_order_item: salesOrderItem }, freeze: true }).then((r) => {
+				frappe.call({ method: methods[action], type: "POST", args: { sales_order: salesOrder, sales_order_item: salesOrderItem }, freeze: true }).then((r) => {
 					const created = (r && r.message) || {};
 					let done = __("操作完成，已按最新数据重新检查。");
 					if (action === "create_work_order") {
@@ -638,7 +643,7 @@ if (typeof frappe !== "undefined") {
 			const $button = $(event.currentTarget);
 			runAction($button.data("action"), $button.data("sales-order"), $button.data("row"));
 		});
-		page.add_inner_button(__("刷新"), loadOverview);
+		page.add_inner_button(__("刷新"), () => runProductionWorkbenchToolbarLoad(loadOverview));
 	};
 
 	frappe.pages["production-workbench"].refresh = function (wrapper) {

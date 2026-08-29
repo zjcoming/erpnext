@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import contextmanager
 
 import frappe
 from frappe import _
@@ -35,6 +36,7 @@ from process_simplification.production_reporting.domain import (
 	job_card_block,
 	job_card_qty_precision,
 	job_card_values,
+	material_reportable_qty,
 	money,
 	pending_report_qty,
 	reportable_qty,
@@ -44,15 +46,40 @@ from process_simplification.production_reporting.domain import (
 	require_worker,
 	user_roles,
 	wage_manager_companies,
+	work_order_material_capacity,
 )
+
+
+MAX_WORK_SESSION_MINUTES = 24 * 60
 
 
 def _hash_key(*values) -> str:
 	return hashlib.sha256("|".join(str(value or "") for value in values).encode()).hexdigest()
 
 
+@contextmanager
+def _allow_work_order_update_for_approval(work_order: str):
+	"""Permit only the named parent Work Order update without changing web identity."""
+	previous_work_order = getattr(
+		frappe.flags, "worker_reporting_approval_work_order", None
+	)
+	try:
+		frappe.flags.worker_reporting_approval_work_order = work_order
+		yield
+	finally:
+		if previous_work_order is None:
+			frappe.flags.pop("worker_reporting_approval_work_order", None)
+		else:
+			frappe.flags.worker_reporting_approval_work_order = previous_work_order
+
+
 def _assert_reviewer_scope(supervisor: str, *, for_update: bool = False):
-	if not frappe.db.get_value("User", supervisor, "enabled", for_update=for_update):
+	# Administrator has virtual all-role semantics and its live Desk session updates
+	# the User row. Locking that special row adds contention without protecting any
+	# role data, because Administrator has no mutable Has Role rows to validate.
+	if supervisor != "Administrator" and not frappe.db.get_value(
+		"User", supervisor, "enabled", for_update=for_update
+	):
 		frappe.throw(_("The reviewing supervisor User is disabled."))
 	if not user_roles(supervisor, for_update=for_update).intersection(REVIEW_ROLES):
 		frappe.throw(_("The reviewing supervisor must have a production reporting review role."))
@@ -300,10 +327,13 @@ def assign_worker(job_card: str, employee: str, supervisor: str | None = None, n
 	if not employee_row or employee_row.status != "Active" or employee_row.company != jc.company:
 		frappe.throw(_("The worker must be an active Employee in the Job Card company."))
 	worker_user = employee_user(employee, for_update=True)
-	# Administrator/System Manager may assign another reviewer. Pre-lock both
+	# Administrator/System Manager may assign another reviewer. Pre-lock mutable
 	# reviewer users in a stable order before role checks to avoid U1 -> U2 / U2 -> U1.
+	# The special Administrator row is intentionally excluded; see
+	# _assert_reviewer_scope for why it has no role-drift lock requirement.
 	for reviewer_user in sorted({supervisor, frappe.session.user}):
-		frappe.db.get_value("User", reviewer_user, "name", for_update=True)
+		if reviewer_user != "Administrator":
+			frappe.db.get_value("User", reviewer_user, "name", for_update=True)
 	_assert_reviewer_scope(supervisor, for_update=True)
 	_assert_supervisor_company(supervisor, jc.company)
 	if worker_user == supervisor:
@@ -558,7 +588,7 @@ def get_worker_dashboard():
 				code="JOB_CARD_QUANTITY_CHANGED",
 				message=_("Job Card quantity changed after worker assignment."),
 			)
-		assignment.reportable_qty = reportable_qty(jc) if jc else 0
+		assignment.reportable_qty = material_reportable_qty(jc) if jc else 0
 		assignment.active_report = active_session.name if active_session else None
 		assignment.active_started_at = active_session.actual_start_time if active_session else None
 		assignment.wage_type = (
@@ -597,8 +627,14 @@ def get_worker_dashboard():
 			assignment.block_message = _("A report is waiting for supervisor review.")
 		elif assignment.reportable_qty <= 0:
 			assignment.can_start = False
-			assignment.block_code = "NO_REMAINING_QTY"
-			assignment.block_message = _("The Job Card quantity is fully reported.")
+			if jc and reportable_qty(jc) > 0:
+				assignment.block_code = "MATERIAL_NOT_TRANSFERRED"
+				assignment.block_message = _(
+					"Materials have not been issued for the remaining production quantity."
+				)
+			else:
+				assignment.block_code = "NO_REMAINING_QTY"
+				assignment.block_message = _("The Job Card quantity is fully reported.")
 		elif not rate:
 			assignment.can_start = False
 			assignment.block_code = "RATE_MISSING"
@@ -770,7 +806,9 @@ def start_work_session(
 	)
 	if active:
 		frappe.throw(_("You already have an active work session {0}.").format(active.name))
-	if reportable_qty(jc, for_update=True) <= 0:
+	if material_reportable_qty(jc, for_update=True) <= 0:
+		if reportable_qty(jc, for_update=True) > 0:
+			frappe.throw(_("Materials have not been issued for the remaining production quantity."))
 		frappe.throw(_("The Job Card has no remaining reportable quantity."))
 	started_at = get_datetime(started_at or now_datetime())
 	labor_date = getdate(started_at)
@@ -863,7 +901,7 @@ def finish_work_session(
 		frappe.throw(_("This employee's monthly wage summary is already confirmed."))
 	if qty <= 0:
 		frappe.throw(_("Completed quantity must be greater than zero."))
-	remaining = reportable_qty(jc, for_update=True)
+	remaining = material_reportable_qty(jc, for_update=True)
 	if qty > remaining:
 		frappe.throw(_("This Job Card currently allows at most {0}.").format(remaining))
 	ended_at = get_datetime(ended_at or now_datetime())
@@ -875,6 +913,12 @@ def finish_work_session(
 	actual_minutes = flt(time_diff_in_hours(ended_at, started_at) * 60, 6)
 	if actual_minutes <= 0:
 		frappe.throw(_("Actual production minutes must be greater than zero."))
+	if actual_minutes > MAX_WORK_SESSION_MINUTES:
+		frappe.throw(
+			_(
+				"A single work session cannot exceed 24 hours. Cancel this active session and report again."
+			)
+		)
 	minutes = actual_minutes if doc.wage_type == "Time" else 0
 	if doc.wage_type == "Time":
 		used = _daily_used_minutes(employee, doc.labor_date, for_update=True)
@@ -910,19 +954,49 @@ def cancel_work_session(report: str):
 	initial = frappe.db.get_value(
 		"Job Card Work Report",
 		report,
-		["name", "assignment"],
+		["name", "assignment", "job_card", "work_order", "employee", "employee_user"],
 		as_dict=True,
 	)
 	if not initial:
 		frappe.throw(_("Work session does not exist."))
-	employee, _job_card, task = _lock_worker_assignment(initial.assignment)
+	jc = job_card_values(initial.job_card, for_update=True)
+	if initial.work_order:
+		frappe.db.get_value("Work Order", initial.work_order, "name", for_update=True)
+	frappe.db.get_value("Employee", initial.employee, "name", for_update=True)
+	task = frappe.db.get_value(
+		"Job Card Worker Assignment",
+		initial.assignment,
+		[
+			"name",
+			"job_card",
+			"work_order",
+			"company",
+			"employee",
+			"employee_user",
+			"supervisor",
+			"status",
+		],
+		as_dict=True,
+		for_update=True,
+	)
 	doc = frappe.get_doc("Job Card Work Report", report, for_update=True)
 	if (
-		doc.assignment != task.name
-		or doc.employee != employee
-		or doc.employee_user != frappe.session.user
+		not task
+		or doc.assignment != task.name
+		or doc.job_card != task.job_card
+		or doc.work_order != task.work_order
+		or doc.employee != task.employee
+		or doc.employee_user != task.employee_user
+		or (jc and jc.name != task.job_card)
 	):
-		frappe.throw(_("You can only cancel your own active work session."), frappe.PermissionError)
+		frappe.throw(_("Work session no longer matches its worker assignment."))
+	if doc.employee_user == frappe.session.user:
+		require_worker()
+	else:
+		require_reviewer(for_update=True)
+		if not is_admin_reviewer(for_update=True) and task.supervisor != frappe.session.user:
+			frappe.throw(_("You can only cancel active sessions assigned to you."), frappe.PermissionError)
+		_assert_supervisor_company(frappe.session.user, task.company)
 	if doc.status != "In Progress":
 		frappe.throw(_("Only an active work session can be cancelled."))
 	doc.flags.worker_reporting_action = True
@@ -1031,6 +1105,19 @@ def get_review_dashboard():
 				code="QUANTITY_CONFLICT",
 				message=_("Approved production plus pending work reports exceeds the Job Card quantity."),
 			)
+		material_capacity = work_order_material_capacity(jc) if jc else 0
+		if (
+			not block
+			and material_capacity is not None
+			and flt(flt(jc.total_completed_qty, precision) + all_pending, precision)
+			> flt(material_capacity, precision)
+		):
+			block = frappe._dict(
+				code="MATERIAL_NOT_TRANSFERRED",
+				message=_(
+					"Issued materials do not cover the pending production quantity; reject or wait for material transfer."
+				),
+			)
 		if not block and (
 			any(
 				snapshot.get(fieldname) != jc.get(fieldname)
@@ -1061,6 +1148,15 @@ def get_review_dashboard():
 		limit=0,
 	)
 	for assignment in assignments:
+		active_session = frappe.db.get_value(
+			"Job Card Work Report",
+			{"assignment": assignment.name, "status": "In Progress"},
+			["name", "actual_start_time"],
+			as_dict=True,
+		)
+		assignment.active_report = active_session.name if active_session else None
+		assignment.active_started_at = active_session.actual_start_time if active_session else None
+		assignment.can_cancel_session = bool(active_session)
 		assignment.can_unassign = not frappe.db.exists(
 			"Job Card Work Report", {"assignment": assignment.name}
 		)
@@ -1235,6 +1331,16 @@ def approve_work_report(name: str):
 		jc_values.for_quantity, precision
 	):
 		frappe.throw(_("Pending reports no longer fit the Job Card quantity. Reject the incorrect report."))
+	material_capacity = work_order_material_capacity(jc_values, for_update=True)
+	if material_capacity is not None and flt(
+		flt(jc_values.total_completed_qty, precision) + all_pending,
+		precision,
+	) > flt(material_capacity, precision):
+		frappe.throw(
+			_(
+				"Issued materials currently cover at most {0}; reject or wait for material transfer."
+			).format(flt(material_capacity, precision))
+		)
 
 	job_card = frappe.get_doc("Job Card", doc.job_card, for_update=True)
 	job_card.append(
@@ -1259,15 +1365,11 @@ def approve_work_report(name: str):
 	if flt(job_card.total_completed_qty, precision) == flt(job_card.for_quantity, precision):
 		# ERPNext's Job Card submit updates the parent Work Order through a fresh
 		# document, which does not inherit this service's ignore_permissions flag.
-		# Perform only that native, fully validated submit as Administrator, then
-		# immediately restore the real reviewer used by the immutable report audit.
-		previous_user = frappe.session.user
-		try:
-			frappe.set_user("Administrator")
+		# Keep the real web session intact and expose only the exact parent Work
+		# Order name to the request-local Work Order mixin for this native submit.
+		with _allow_work_order_update_for_approval(job_card.work_order):
 			job_card.flags.ignore_permissions = True
 			job_card.submit()
-		finally:
-			frappe.set_user(previous_user)
 
 	doc.status = "Approved"
 	doc.reviewed_by = reviewer

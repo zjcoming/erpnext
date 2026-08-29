@@ -224,6 +224,10 @@ function refreshFulfillmentOverview(page, salesOrder) {
 	return loadOverview();
 }
 
+function runOrderWorkbenchToolbarLoad(loadOverview) {
+	loadOverview();
+}
+
 const fulfillmentOverviewApi = {
 	filterFulfillmentOrders,
 	overviewSummary,
@@ -233,6 +237,7 @@ const fulfillmentOverviewApi = {
 	refreshFulfillmentOverview,
 	productionWorkbenchRoute,
 	deliveryNoteRouteFromResponse,
+	runOrderWorkbenchToolbarLoad,
 };
 
 if (typeof module !== "undefined" && module.exports) {
@@ -394,6 +399,7 @@ if (typeof frappe !== "undefined") {
 				() => {
 					frappe.call({
 						method,
+						type: "POST",
 						args: { sales_order: salesOrder, sales_order_item: salesOrderItem },
 						freeze: true,
 						callback: (response) => {
@@ -448,7 +454,7 @@ if (typeof frappe !== "undefined") {
 			runRowAction($button.data("action"), $button.data("sales-order"), $button.data("row"), $button);
 		});
 		$root.on("click", ".fulfillment-export", exportVisibleOrders);
-		page.add_inner_button(__("刷新"), loadOverview);
+		page.add_inner_button(__("刷新"), () => runOrderWorkbenchToolbarLoad(loadOverview));
 
 	};
 

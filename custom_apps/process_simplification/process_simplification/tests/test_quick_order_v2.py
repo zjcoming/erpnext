@@ -248,6 +248,11 @@ class TestQuickOrderV2(UnitTestCase):
 		with self.assertRaises(SimplifiedFlowError):
 			get_quick_order_item_defaults("BUNDLE-001", "_Test Company")
 
+		db_exists.assert_called_once_with(
+			"Product Bundle",
+			{"new_item_code": "BUNDLE-001", "disabled": 0},
+		)
+
 	def test_lightweight_preview_batches_multiple_lines(self):
 		from process_simplification.api.quick_order import preview_quick_order_items
 
@@ -633,12 +638,39 @@ class TestQuickOrderV2(UnitTestCase):
 
 		base = {
 			"intent_digest": "intent-1",
+			"company": "_Test Company",
+			"currency": "CNY",
 			"grand_total": 100,
 			"available_to_reserve": 3,
 			"production_required": 7,
 			"shortage_item_count": 2,
 			"blockers": [],
 			"warnings": [{"code": "RAW_MATERIAL_SHORTAGE"}],
+			"rows": [
+				{
+					"item_code": "FG-001",
+					"qty": 1,
+					"warehouse": "Finished Goods - TC",
+					"available_to_reserve": 3,
+					"production_required": 7,
+					"bom_no": "BOM-FG-001",
+				}
+			],
+			"commercial_rows": [
+				{
+					"item_code": "FG-001",
+					"qty": 1,
+					"rate": 100,
+					"amount": 100,
+					"net_rate": 100,
+					"net_amount": 100,
+					"warehouse": "Finished Goods - TC",
+					"bom_no": "BOM-FG-001",
+					"uom": "Nos",
+					"conversion_factor": 1,
+					"delivery_date": "2026-08-31",
+				}
+			],
 			"material_coverage": [
 				{
 					"item_code": "RM-001",
@@ -677,6 +709,24 @@ class TestQuickOrderV2(UnitTestCase):
 				{**later["material_requirements"][0], "production_required_qty": 4}
 			],
 		}
+		changed_company = {**later, "company": "Another Company"}
+		changed_currency = {**later, "currency": "USD"}
+		changed_warehouse = {
+			**later,
+			"rows": [{**later["rows"][0], "warehouse": "Overflow - TC"}],
+		}
+		changed_rate_with_same_total = {
+			**later,
+			"commercial_rows": [
+				{
+					**later["commercial_rows"][0],
+					"rate": 90,
+					"amount": 90,
+					"net_rate": 90,
+					"net_amount": 90,
+				}
+			],
+		}
 
 		self.assertEqual(quick_order_review_fingerprint(base), quick_order_review_fingerprint(later))
 		self.assertNotEqual(quick_order_review_fingerprint(base), quick_order_review_fingerprint(changed))
@@ -684,6 +734,16 @@ class TestQuickOrderV2(UnitTestCase):
 			quick_order_review_fingerprint(base),
 			quick_order_review_fingerprint(changed_subassembly),
 		)
+		for changed_commercial_fact in (
+			changed_company,
+			changed_currency,
+			changed_warehouse,
+			changed_rate_with_same_total,
+		):
+			self.assertNotEqual(
+				quick_order_review_fingerprint(base),
+				quick_order_review_fingerprint(changed_commercial_fact),
+			)
 
 	def test_standard_sales_order_mapping_preserves_po_remark_and_bom_snapshot(self):
 		from process_simplification.api.quick_order import _build_sales_order
@@ -1501,6 +1561,7 @@ class TestQuickOrderV2(UnitTestCase):
 		kwargs = create_via_pp.call_args.kwargs
 		self.assertEqual(kwargs["bom_no"], "BOM-FG-001-OLD")
 		self.assertEqual(kwargs["sub_assembly_warehouse"], "Stores - TC")
+		self.assertEqual(kwargs["source_warehouse"], "Stores - TC")
 		self.assertEqual(kwargs["fg_warehouse"], "Finished Goods - TC")
 		self.assertEqual(kwargs["planned_qty"], 4)
 		self.assertEqual(kwargs["sales_order"], "SO-001")

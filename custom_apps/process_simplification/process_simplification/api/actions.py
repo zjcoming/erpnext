@@ -44,6 +44,16 @@ def _payload(data):
 	return frappe._dict(data or {})
 
 
+def _requested_qty(value, default):
+	# An omitted/blank optional field means "use the current maximum". An
+	# explicit numeric zero is user input and must reach the normal <= 0 guard;
+	# treating it as omitted can create the maximum reservation or production
+	# quantity after a cleared browser field or a stale/double action.
+	if value is None or value == "":
+		return default
+	return normalize_qty(value)
+
+
 def _row_from_workbench(sales_order: str, sales_order_item: str):
 	workbench = get_order_workbench(sales_order)
 	for row in workbench["rows"]:
@@ -52,6 +62,14 @@ def _row_from_workbench(sales_order: str, sales_order_item: str):
 				throw_chinese(row.get("unsupported_reason") or "该订单行暂不支持简化操作。")
 			return frappe._dict(row)
 	throw_chinese("销售订单明细不属于该销售订单。")
+
+
+def _locked_row_from_workbench(sales_order: str, sales_order_item: str):
+	# The first permission-aware snapshot is taken by the caller. Serialize on
+	# the shared Sales Order Item, then rebuild the snapshot inside the lock so
+	# two tabs/users cannot both act on the same pre-lock availability.
+	frappe.db.get_value("Sales Order Item", sales_order_item, "name", for_update=True)
+	return _row_from_workbench(sales_order, sales_order_item)
 
 
 def _new_sre(
@@ -90,10 +108,13 @@ def _new_sre(
 	return sre
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def reserve_stock(sales_order: str, sales_order_item: str, qty: float | None = None, warehouse: str | None = None):
 	frappe.has_permission("Stock Reservation Entry", "create", throw=True)
 	row = _row_from_workbench(sales_order, sales_order_item)
+	if row.pending_qty - row.reserved_qty <= 0:
+		throw_chinese("当前没有可预留库存。")
+	row = _locked_row_from_workbench(sales_order, sales_order_item)
 	so = frappe.get_doc("Sales Order", sales_order)
 	item = get_sales_order_item(sales_order_item)
 	warehouse = warehouse or item.warehouse
@@ -102,7 +123,7 @@ def reserve_stock(sales_order: str, sales_order_item: str, qty: float | None = N
 
 	available_qty = get_available_qty_to_reserve(item.item_code, warehouse)
 	max_qty = min(row.pending_qty - row.reserved_qty, available_qty)
-	reserve_qty = normalize_qty(qty) if qty else max_qty
+	reserve_qty = _requested_qty(qty, max_qty)
 	if reserve_qty <= 0:
 		throw_chinese("当前没有可预留库存。")
 	if reserve_qty > max_qty:
@@ -120,12 +141,18 @@ def reserve_stock(sales_order: str, sales_order_item: str, qty: float | None = N
 	return {"stock_reservation_entry": sre.name, "reserved_qty": reserve_qty}
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_work_order(sales_order: str, sales_order_item: str, qty: float | None = None):
 	for doctype in ("Production Plan", "Work Order"):
 		for permission_type in ("create", "submit"):
 			frappe.has_permission(doctype, permission_type, throw=True)
 	row = _row_from_workbench(sales_order, sales_order_item)
+	unplanned_qty = row.get("unplanned_production_qty")
+	if unplanned_qty is None:
+		unplanned_qty = row.get("uncovered_qty")
+	if not unplanned_qty or unplanned_qty <= 0:
+		throw_chinese("该订单行已经被库存预留或生产任务覆盖，不能重复创建生产任务。")
+	row = _locked_row_from_workbench(sales_order, sales_order_item)
 	unplanned_qty = row.get("unplanned_production_qty")
 	if unplanned_qty is None:
 		unplanned_qty = row.get("uncovered_qty")
@@ -148,7 +175,7 @@ def create_work_order(sales_order: str, sales_order_item: str, qty: float | None
 		defaults=defaults,
 		sales_order_item_warehouse=item.warehouse,
 	)
-	work_order_qty = normalize_qty(qty) if qty else unplanned_qty
+	work_order_qty = _requested_qty(qty, unplanned_qty)
 	if work_order_qty <= 0 or work_order_qty > unplanned_qty:
 		throw_chinese("本次生产数量不能超过当前尚未覆盖数量。")
 
@@ -172,6 +199,7 @@ def create_work_order(sales_order: str, sales_order_item: str, qty: float | None
 		planned_qty=work_order_qty,
 		fg_warehouse=fg_warehouse,
 		sub_assembly_warehouse=resolved_source.warehouse,
+		source_warehouse=resolved_source.warehouse,
 		delivery_date=item.delivery_date,
 	)
 	work_orders = result.get("work_orders") or []
@@ -203,16 +231,19 @@ def _manufactured_finished_rows(sales_order: str, sales_order_item: str):
 	)
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def reserve_completed_stock(sales_order: str, sales_order_item: str, qty: float | None = None):
 	frappe.has_permission("Stock Reservation Entry", "create", throw=True)
 	row = _row_from_workbench(sales_order, sales_order_item)
 	if row.completed_unreserved_qty <= 0:
 		throw_chinese("当前没有完工待预留数量。")
+	row = _locked_row_from_workbench(sales_order, sales_order_item)
+	if row.completed_unreserved_qty <= 0:
+		throw_chinese("当前没有完工待预留数量。")
 
 	so = frappe.get_doc("Sales Order", sales_order)
 	item = get_sales_order_item(sales_order_item)
-	qty_to_reserve = normalize_qty(qty) if qty else row.completed_unreserved_qty
+	qty_to_reserve = _requested_qty(qty, row.completed_unreserved_qty)
 	if qty_to_reserve <= 0 or qty_to_reserve > row.completed_unreserved_qty:
 		throw_chinese("预留完工成品数量不能超过完工待预留数量。")
 
@@ -269,12 +300,12 @@ def _get_existing_draft_delivery_note(sales_order: str, sales_order_item: str):
 	return delivery_note
 
 
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 def create_delivery_note(sales_order: str, sales_order_item: str):
 	frappe.has_permission("Delivery Note", "create", throw=True)
 	row = _row_from_workbench(sales_order, sales_order_item)
 	# Serialize requests for the same order row so concurrent clicks cannot both create a draft.
-	frappe.db.get_value("Sales Order Item", sales_order_item, "name", for_update=True)
+	row = _locked_row_from_workbench(sales_order, sales_order_item)
 	existing_draft = _get_existing_draft_delivery_note(sales_order, sales_order_item)
 	if existing_draft:
 		return {"delivery_note": existing_draft.name, "docstatus": existing_draft.docstatus, "reused": True}

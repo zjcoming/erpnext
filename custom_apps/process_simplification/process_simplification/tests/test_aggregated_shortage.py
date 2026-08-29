@@ -293,6 +293,77 @@ class TestAggregatedShortage(UnitTestCase):
 		self.assertEqual(validated[0].shortage_qty, 2)
 		self.assertEqual([source.sales_order_item for source in validated[0].sources], ["SOI-A"])
 
+	def test_purchase_revalidation_rejects_explicit_zero_instead_of_using_suggested_shortage(self):
+		from process_simplification.api import shortage
+		from process_simplification.api.utils import SimplifiedFlowError
+
+		with self.assertRaisesRegex(SimplifiedFlowError, "采购数量必须大于 0"):
+			shortage.revalidate_purchase_rows(
+				[
+					{
+						"item_code": "RM-SHARED",
+						"warehouse": "Stores - TC",
+						"purchase_qty": 0,
+						"shortage_qty": 5,
+						"sources": [{"sales_order_item": "SOI-A"}],
+					}
+				],
+				[
+					{
+						"item_code": "RM-SHARED",
+						"warehouse": "Stores - TC",
+						"sources": [{"sales_order_item": "SOI-A", "shortage_qty": 5}],
+					}
+				],
+			)
+
+	def test_purchase_revalidation_rejects_explicit_negative_quantity(self):
+		from process_simplification.api import shortage
+		from process_simplification.api.utils import SimplifiedFlowError
+
+		with self.assertRaisesRegex(SimplifiedFlowError, "采购数量必须大于 0"):
+			shortage.revalidate_purchase_rows(
+				[
+					{
+						"item_code": "RM-SHARED",
+						"warehouse": "Stores - TC",
+						"purchase_qty": -1,
+						"shortage_qty": 5,
+						"sources": [{"sales_order_item": "SOI-A"}],
+					}
+				],
+				[
+					{
+						"item_code": "RM-SHARED",
+						"warehouse": "Stores - TC",
+						"sources": [{"sales_order_item": "SOI-A", "shortage_qty": 5}],
+					}
+				],
+			)
+
+	def test_purchase_revalidation_uses_shortage_when_purchase_quantity_is_omitted(self):
+		from process_simplification.api import shortage
+
+		validated = shortage.revalidate_purchase_rows(
+			[
+				{
+					"item_code": "RM-SHARED",
+					"warehouse": "Stores - TC",
+					"shortage_qty": 5,
+					"sources": [{"sales_order_item": "SOI-A"}],
+				}
+			],
+			[
+				{
+					"item_code": "RM-SHARED",
+					"warehouse": "Stores - TC",
+					"sources": [{"sales_order_item": "SOI-A", "shortage_qty": 5}],
+				}
+			],
+		)
+
+		self.assertEqual(shortage._requested_purchase_qty(validated[0]), 5)
+
 	@patch("process_simplification.api.shortage.revalidate_purchase_rows")
 	@patch("process_simplification.api.shortage.calculate_plan_purchase_shortages", return_value=[])
 	@patch(

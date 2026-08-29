@@ -20,13 +20,41 @@ function reviewActionState(report, translate = (message) => message) {
 	};
 }
 
+function reviewAssignmentActionState(assignment, translate = (message) => message) {
+	if (assignment.active_report) {
+		return {
+			action: "cancel_session",
+			label: translate("取消活动计时"),
+			message: translate("工人仍在计时；可先取消活动计时，再处理派工。"),
+		};
+	}
+	if (assignment.can_unassign) {
+		return { action: "unassign", label: translate("取消派工"), message: "" };
+	}
+	return {
+		action: null,
+		label: "",
+		message: assignment.unassign_block_message || translate("已有报工记录"),
+	};
+}
+
 function normalizeFrappeDateTime(value) {
 	return typeof value === "string"
 		? value.replace(/(\d{2}:\d{2}:\d{2})\.\d{1,6}(?=(?:Z|[+-]\d{2}:?\d{2})?$)/, "$1")
 		: value;
 }
 
-const productionReportReviewApi = { reviewStatusMeta, reviewActionState, normalizeFrappeDateTime };
+function runReviewToolbarLoad(load) {
+	load();
+}
+
+const productionReportReviewApi = {
+	reviewStatusMeta,
+	reviewActionState,
+	reviewAssignmentActionState,
+	normalizeFrappeDateTime,
+	runReviewToolbarLoad,
+};
 if (typeof module !== "undefined" && module.exports) module.exports = productionReportReviewApi;
 
 if (typeof frappe !== "undefined") {
@@ -73,7 +101,15 @@ if (typeof frappe !== "undefined") {
 			$root.find(".report-assignment-list").html(
 				rows.length
 					? `<div class="table-responsive"><table class="table table-bordered"><thead><tr><th>${__("工人")}</th><th>${__("Job Card")}</th><th>${__("工序")}</th><th>${__("主管")}</th><th></th></tr></thead><tbody>${rows
-							.map((row) => `<tr><td>${esc(row.employee)}</td><td>${esc(row.job_card)}</td><td>${esc(row.operation)}</td><td>${esc(row.supervisor)}</td><td>${row.can_unassign ? `<button class="btn btn-xs btn-default assignment-remove" data-assignment="${esc(row.name)}">${__("取消派工")}</button>` : `<span class="text-muted small">${esc(row.unassign_block_message || __("已有报工记录"))}</span>`}</td></tr>`)
+							.map((row) => {
+								const action = reviewAssignmentActionState(row, __);
+								const control = action.action === "cancel_session"
+									? `<button class="btn btn-xs btn-warning assignment-cancel-session" data-assignment="${esc(row.name)}">${esc(action.label)}</button>`
+									: action.action === "unassign"
+										? `<button class="btn btn-xs btn-default assignment-remove" data-assignment="${esc(row.name)}">${esc(action.label)}</button>`
+										: "";
+								return `<tr><td>${esc(row.employee)}</td><td>${esc(row.job_card)}</td><td>${esc(row.operation)}</td><td>${esc(row.supervisor)}</td><td>${control}${action.message ? `<div class="text-muted small">${esc(action.message)}</div>` : ""}</td></tr>`;
+							})
 							.join("")}</tbody></table></div>`
 					: `<div class="text-muted worker-reporting-empty">${__("当前没有活动派工。")}</div>`
 			);
@@ -205,6 +241,26 @@ if (typeof frappe !== "undefined") {
 			dialog.show();
 		}
 
+		function openCancelSessionDialog(row) {
+			const dialog = new frappe.ui.Dialog({
+				title: __("取消工人活动计时"),
+				fields: [{ fieldtype: "HTML", options: `<p>${__("只删除尚未提交的活动计时，不会产生 Job Card 数量或工资。")}</p><p><strong>${esc(row.employee)} · ${esc(row.job_card)}</strong><br>${__("开始时间")}：${esc(dateTime(row.active_started_at))}</p>` }],
+				primary_action_label: __("确认取消计时"),
+				primary_action: async () => {
+					setDialogBusy(dialog, true, __("确认取消计时"));
+					try {
+						await frappe.call({ method: "process_simplification.api.production_reporting.cancel_work_session", type: "POST", args: { report: row.active_report } });
+						dialog.hide();
+						frappe.show_alert({ message: __("活动计时已取消。"), indicator: "orange" });
+						await load();
+					} finally {
+						setDialogBusy(dialog, false, __("确认取消计时"));
+					}
+				},
+			});
+			dialog.show();
+		}
+
 		function openBuildSummaryDialog() {
 			const companies = state.data.companies || [];
 			const dialog = new frappe.ui.Dialog({
@@ -243,8 +299,12 @@ if (typeof frappe !== "undefined") {
 			const row = (state.data.assignments || []).find((item) => item.name === $(event.currentTarget).data("assignment"));
 			if (row?.can_unassign) openUnassignDialog(row);
 		});
+		$root.on("click", ".assignment-cancel-session", (event) => {
+			const row = (state.data.assignments || []).find((item) => item.name === $(event.currentTarget).data("assignment"));
+			if (row?.active_report) openCancelSessionDialog(row);
+		});
 		page.add_inner_button(__("新增派工"), openAssignmentDialog);
-		page.add_inner_button(__("刷新"), load);
+		page.add_inner_button(__("刷新"), () => runReviewToolbarLoad(load));
 	};
 
 	frappe.pages["production-report-review"].refresh = function (wrapper) {

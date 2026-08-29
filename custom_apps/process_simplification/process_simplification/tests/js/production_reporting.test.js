@@ -12,6 +12,33 @@ const reviewPage = require(path.join(
 	appDirectory,
 	"process_simplification/page/production_report_review/production_report_review.js"
 ));
+const orderWorkbench = require(path.join(
+	appDirectory,
+	"process_simplification/page/order_workbench/order_workbench.js"
+));
+const productionWorkbench = require(path.join(
+	appDirectory,
+	"process_simplification/page/production_workbench/production_workbench.js"
+));
+
+test("v16 toolbar refresh wrappers start loading without returning a thenable", () => {
+	const calls = [];
+	const pending = Promise.resolve();
+	const loaders = [
+		[workerPage.runWorkerReportingToolbarLoad, "worker"],
+		[reviewPage.runReviewToolbarLoad, "review"],
+		[orderWorkbench.runOrderWorkbenchToolbarLoad, "order"],
+		[productionWorkbench.runProductionWorkbenchToolbarLoad, "production"],
+	];
+	for (const [run, name] of loaders) {
+		const result = run(() => {
+			calls.push(name);
+			return pending;
+		});
+		assert.equal(result, undefined);
+	}
+	assert.deepEqual(calls, ["worker", "review", "order", "production"]);
+});
 
 test("worker report exposes active timing plus the three review statuses", () => {
 	assert.deepEqual(workerPage.workReportStatusMeta("In Progress"), {
@@ -50,6 +77,10 @@ test("worker button state is driven by server block codes", () => {
 		workerPage.workReportButtonMeta({ can_start: false, block_code: "RATE_MISSING" }),
 		{ action: null, label: "缺少计价规则", disabled: true }
 	);
+	assert.deepEqual(
+		workerPage.workReportButtonMeta({ can_start: false, block_code: "MATERIAL_NOT_TRANSFERRED" }),
+		{ action: null, label: "等待发料", disabled: true }
+	);
 });
 
 test("piecework and time wage previews use different quantities", () => {
@@ -60,6 +91,10 @@ test("piecework and time wage previews use different quantities", () => {
 test("worker and review pages strip database microseconds before Frappe datetime formatting", () => {
 	const value = "2026-08-27 23:31:23.424982";
 	assert.equal(workerPage.normalizeFrappeDateTime(value), "2026-08-27 23:31:23");
+	assert.equal(
+		workerPage.workReportFinishDialogStartedAt({ active_started_at: value }),
+		"2026-08-27 23:31:23"
+	);
 	assert.equal(reviewPage.normalizeFrappeDateTime(value), "2026-08-27 23:31:23");
 });
 
@@ -86,6 +121,25 @@ test("capacity conflict disables whole approval but still permits rejection", ()
 			message: "不能审核自己的报工",
 		}
 	);
+});
+
+test("supervisor assignment action exposes orphaned active-session cleanup", () => {
+	assert.deepEqual(
+		reviewPage.reviewAssignmentActionState({
+			active_report: "JCWR-1",
+			can_unassign: false,
+		}),
+		{
+			action: "cancel_session",
+			label: "取消活动计时",
+			message: "工人仍在计时；可先取消活动计时，再处理派工。",
+		}
+	);
+	assert.deepEqual(reviewPage.reviewAssignmentActionState({ can_unassign: true }), {
+		action: "unassign",
+		label: "取消派工",
+		message: "",
+	});
 });
 
 test("reporting and wage navigation use isolated roles", () => {
