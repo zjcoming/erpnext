@@ -25,11 +25,11 @@
  "fields": [
   {"fieldname": "naming_series", "fieldtype": "Select", "label": "编号规则", "options": "JCWA-.YYYY.-.#####", "default": "JCWA-.YYYY.-.#####", "reqd": 1},
   {"fieldname": "assignment_key", "fieldtype": "Data", "label": "派工唯一键", "read_only": 1, "unique": 1, "hidden": 1, "no_copy": 1},
-  {"fieldname": "job_card", "fieldtype": "Link", "label": "Job Card", "options": "Job Card", "read_only": 1, "reqd": 1, "search_index": 1},
+  {"fieldname": "job_card", "fieldtype": "Link", "label": "工序任务（Job Card）", "options": "Job Card", "read_only": 1, "reqd": 1, "search_index": 1},
   {"fieldname": "work_order", "fieldtype": "Link", "label": "生产工单", "options": "Work Order", "read_only": 1, "search_index": 1},
   {"fieldname": "company", "fieldtype": "Link", "label": "公司", "options": "Company", "read_only": 1, "reqd": 1},
   {"fieldname": "operation", "fieldtype": "Link", "label": "工序", "options": "Operation", "read_only": 1, "reqd": 1},
-  {"fieldname": "operation_id", "fieldtype": "Data", "label": "生产工单工序行", "read_only": 1, "reqd": 1},
+  {"fieldname": "operation_id", "fieldtype": "Data", "label": "工序内部标识", "read_only": 1, "reqd": 1, "hidden": 1},
   {"fieldname": "job_card_qty", "fieldtype": "Float", "label": "Job Card数量快照", "read_only": 1, "non_negative": 1},
   {"fieldname": "employee", "fieldtype": "Link", "label": "工人", "options": "Employee", "read_only": 1, "reqd": 1, "ignore_user_permissions": 1},
   {"fieldname": "employee_user", "fieldtype": "Link", "label": "工人账号", "options": "User", "read_only": 1, "reqd": 1},
@@ -46,6 +46,7 @@
  "name": "Job Card Worker Assignment",
  "owner": "Administrator",
  "permissions": [
+  {"role": "Process Simplification Owner", "read": 1},
   {"role": "Production Supervisor", "read": 1},
   {"role": "System Manager", "read": 1}
  ],

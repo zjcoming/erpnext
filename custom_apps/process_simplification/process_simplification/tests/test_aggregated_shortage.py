@@ -5,6 +5,7 @@ raw-material need across orders by (item, warehouse), and returns the shortages
 so one Material Request can be raised for the combined quantity.
 """
 
+from contextlib import nullcontext
 from unittest.mock import patch
 
 import frappe
@@ -12,6 +13,39 @@ from frappe.tests import UnitTestCase
 
 
 class TestAggregatedShortage(UnitTestCase):
+	@patch(
+		"process_simplification.api.shortage._create_material_request_locked",
+		return_value={"material_request": "MAT-MR-TEST", "docstatus": 1},
+	)
+	@patch("process_simplification.api.shortage.frappe.cache.lock")
+	@patch("process_simplification.api.shortage.get_company_defaults")
+	def test_material_request_creation_is_serialized_by_company(
+		self, get_company_defaults, cache_lock, create_locked
+	):
+		from process_simplification.api.shortage import create_material_request
+
+		get_company_defaults.return_value = frappe._dict(
+			company="_Test Company",
+			source_warehouse="Stores - TC",
+		)
+		cache_lock.return_value = nullcontext()
+		row = {
+			"company": "_Test Company",
+			"item_code": "RM-1",
+			"warehouse": "Stores - TC",
+			"sources": [{"sales_order_item": "SOI-1"}],
+		}
+
+		result = create_material_request([row])
+
+		self.assertEqual(result["material_request"], "MAT-MR-TEST")
+		cache_lock.assert_called_once_with(
+			"process_simplification:material_request:_Test Company",
+			timeout=120,
+			blocking_timeout=10,
+		)
+		create_locked.assert_called_once()
+
 	def test_plan_shortages_purchase_only_leaf_materials_even_if_subassembly_is_purchasable(self):
 		from process_simplification.api import shortage
 
@@ -364,6 +398,7 @@ class TestAggregatedShortage(UnitTestCase):
 
 		self.assertEqual(shortage._requested_purchase_qty(validated[0]), 5)
 
+	@patch("process_simplification.api.shortage.frappe.db.commit")
 	@patch("process_simplification.api.shortage.revalidate_purchase_rows")
 	@patch("process_simplification.api.shortage.calculate_plan_purchase_shortages", return_value=[])
 	@patch(
@@ -379,6 +414,7 @@ class TestAggregatedShortage(UnitTestCase):
 		get_production_plan_readiness,
 		calculate_shortages,
 		revalidate_rows,
+		commit,
 	):
 		from process_simplification.api import shortage
 
@@ -418,6 +454,7 @@ class TestAggregatedShortage(UnitTestCase):
 		self.assertEqual(result["material_request"], "MAT-MR-TEST")
 		self.assertEqual(mr.company, "_Other Company")
 		get_company_defaults.assert_called_once_with("_Other Company")
+		commit.assert_called_once_with()
 		get_production_plan_readiness.assert_called_once_with(
 			company="_Other Company",
 			sales_order_items=["SOI-1"],

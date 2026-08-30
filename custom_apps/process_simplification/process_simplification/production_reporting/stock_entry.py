@@ -4,6 +4,9 @@ import frappe
 
 
 def before_submit(doc, method=None):
+	from process_simplification.production_exceptions.service import validate_linked_stock_entry
+
+	validate_linked_stock_entry(doc)
 	# Finished-goods posting is the only native path that can make a Work Order
 	# Completed. Do not let it strand a Draft Job Card with immutable wage history.
 	if doc.get("purpose") != "Manufacture" or not doc.get("work_order"):
@@ -13,6 +16,14 @@ def before_submit(doc, method=None):
 	)
 
 	assert_no_managed_draft_job_cards(doc.work_order)
+
+
+def on_trash(doc, method=None):
+	from process_simplification.production_exceptions.service import (
+		prevent_linked_stock_entry_delete,
+	)
+
+	prevent_linked_stock_entry_delete(doc)
 
 
 class SubassemblyReservationStockEntryMixin:
@@ -28,11 +39,17 @@ class SubassemblyReservationStockEntryMixin:
 	def on_submit(self):
 		result = super().on_submit()
 		_refresh_subassembly_bin(self)
+		from process_simplification.production_exceptions.service import complete_linked_stock_entry
+
+		complete_linked_stock_entry(self)
 		return result
 
 	def on_cancel(self):
 		result = super().on_cancel()
 		_refresh_subassembly_bin(self)
+		from process_simplification.production_exceptions.service import reopen_cancelled_stock_entry
+
+		reopen_cancelled_stock_entry(self)
 		return result
 
 

@@ -6,10 +6,10 @@
  "engine": "InnoDB",
  "field_order": ["source_report", "job_card", "operation", "operation_id", "labor_date", "wage_type", "completed_qty", "reported_minutes", "rate", "amount"],
  "fields": [
-  {"fieldname": "source_report", "fieldtype": "Link", "label": "报工单", "options": "Job Card Work Report", "read_only": 1, "reqd": 1, "in_list_view": 1},
-  {"fieldname": "job_card", "fieldtype": "Link", "label": "Job Card", "options": "Job Card", "read_only": 1, "in_list_view": 1},
+  {"fieldname": "source_report", "fieldtype": "Link", "label": "报工记录", "options": "Job Card Work Report", "read_only": 1, "reqd": 1, "in_list_view": 1},
+  {"fieldname": "job_card", "fieldtype": "Link", "label": "工序任务（Job Card）", "options": "Job Card", "read_only": 1, "in_list_view": 1},
   {"fieldname": "operation", "fieldtype": "Link", "label": "工序", "options": "Operation", "read_only": 1, "in_list_view": 1},
-  {"fieldname": "operation_id", "fieldtype": "Data", "label": "生产工单工序行", "read_only": 1},
+  {"fieldname": "operation_id", "fieldtype": "Data", "label": "工序内部标识", "read_only": 1, "hidden": 1},
   {"fieldname": "labor_date", "fieldtype": "Date", "label": "生产日期", "read_only": 1, "in_list_view": 1},
   {"fieldname": "wage_type", "fieldtype": "Select", "label": "计价方式", "options": "Piecework\nTime", "read_only": 1, "in_list_view": 1},
   {"fieldname": "completed_qty", "fieldtype": "Float", "label": "数量", "read_only": 1, "in_list_view": 1},

@@ -23,14 +23,20 @@ class TestStockEntryHooks(UnitTestCase):
 		class ExtendedStockEntry(SubassemblyReservationStockEntryMixin, NativeStockEntry):
 			pass
 
-		with patch(
-			"process_simplification.production_reporting.stock_entry._refresh_subassembly_bin",
-			side_effect=lambda doc: events.append("refresh"),
+		with (
+			patch(
+				"process_simplification.production_reporting.stock_entry._refresh_subassembly_bin",
+				side_effect=lambda doc: events.append("refresh"),
+			),
+			patch(
+				"process_simplification.production_exceptions.service.complete_linked_stock_entry",
+				side_effect=lambda doc: events.append("exception"),
+			),
 		):
 			result = ExtendedStockEntry().on_submit()
 
 		self.assertEqual(result, "submitted")
-		self.assertEqual(events, ["native", "refresh"])
+		self.assertEqual(events, ["native", "refresh", "exception"])
 
 	def test_cancel_refresh_runs_after_native_stock_entry_controller(self):
 		events = []
@@ -43,14 +49,20 @@ class TestStockEntryHooks(UnitTestCase):
 		class ExtendedStockEntry(SubassemblyReservationStockEntryMixin, NativeStockEntry):
 			pass
 
-		with patch(
-			"process_simplification.production_reporting.stock_entry._refresh_subassembly_bin",
-			side_effect=lambda doc: events.append("refresh"),
+		with (
+			patch(
+				"process_simplification.production_reporting.stock_entry._refresh_subassembly_bin",
+				side_effect=lambda doc: events.append("refresh"),
+			),
+			patch(
+				"process_simplification.production_exceptions.service.reopen_cancelled_stock_entry",
+				side_effect=lambda doc: events.append("exception"),
+			),
 		):
 			result = ExtendedStockEntry().on_cancel()
 
 		self.assertEqual(result, "cancelled")
-		self.assertEqual(events, ["native", "refresh"])
+		self.assertEqual(events, ["native", "refresh", "exception"])
 
 	def test_non_manufacture_entry_does_not_refresh_bin(self):
 		with patch(

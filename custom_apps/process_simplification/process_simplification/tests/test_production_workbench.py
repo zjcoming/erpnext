@@ -5,6 +5,80 @@ from frappe.tests import UnitTestCase
 
 
 class TestProductionWorkbench(UnitTestCase):
+	def test_material_names_are_searchable_inside_the_production_chain(self):
+		production = self._module()
+		demand = frappe._dict(
+			demand_key="SOI-IDENTITY",
+			item_code="901000790",
+			item_name="传感器成品",
+			delivery_timing="later",
+			status_code="ready_to_start",
+			risk_level="green",
+			material_summary={"shortage_item_count": 0},
+			unplanned_production_qty=0,
+			work_orders=[
+				frappe._dict(
+					name="WO-IDENTITY",
+					production_item="301008201014",
+					production_item_name="插针骨架半成品",
+					required_items=[frappe._dict(item_code="204001004", item_name="PA6德尔隆")],
+				)
+			],
+		)
+
+		self.assertEqual(
+			production.filter_production_demands([demand], {"search": "PA6德尔隆"}),
+			[demand],
+		)
+
+	def test_visible_worker_assignment_counts_are_batched_and_permission_aware(self):
+		production = self._module()
+		demands = [
+			frappe._dict(
+				work_orders=[
+					frappe._dict(name="WO-1"),
+					frappe._dict(name="WO-2"),
+					frappe._dict(name="WO-3"),
+				]
+			)
+		]
+		with (
+			patch.object(production.frappe, "session", frappe._dict(user="supervisor@example.com")),
+			patch.object(production.frappe, "get_roles", return_value=["Production Supervisor"]),
+			patch.object(
+				production.frappe,
+				"get_list",
+				return_value=[
+					frappe._dict(work_order="WO-1"),
+					frappe._dict(work_order="WO-1"),
+					frappe._dict(work_order="WO-2"),
+				],
+			) as get_list,
+		):
+			production.attach_visible_worker_assignment_counts(demands)
+
+		self.assertEqual(
+			[row.worker_assignment_history_count for row in demands[0].work_orders],
+			[2, 1, 0],
+		)
+		self.assertEqual(get_list.call_args.args[0], "Job Card Worker Assignment")
+		self.assertEqual(get_list.call_args.kwargs["limit"], 0)
+
+	def test_non_reviewer_does_not_load_worker_assignment_history(self):
+		production = self._module()
+		demands = [frappe._dict(work_orders=[frappe._dict(name="WO-1")])]
+		with (
+			patch.object(production.frappe, "session", frappe._dict(user="worker@example.com")),
+			patch.object(production.frappe, "get_roles", return_value=["Production Worker"]),
+			patch.object(
+				production.frappe,
+				"get_list",
+				side_effect=AssertionError("Non-reviewers must not query assignment history"),
+			),
+		):
+			production.attach_visible_worker_assignment_counts(demands)
+		self.assertNotIn("worker_assignment_history_count", demands[0].work_orders[0])
+
 	def test_unlinked_work_orders_use_permission_aware_query(self):
 		production = self._module()
 		visible_rows = [

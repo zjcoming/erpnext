@@ -3,8 +3,15 @@ from __future__ import annotations
 import frappe
 
 from process_simplification.defaults import configure_company_manufacturing_defaults
+from process_simplification.management_access import ensure_management_access
+from process_simplification.patches.v0_0.add_management_navigation import (
+	execute as add_management_navigation,
+)
 from process_simplification.patches.v0_0.add_worker_reporting_navigation import (
 	execute as add_worker_reporting_navigation,
+)
+from process_simplification.patches.v0_0.group_process_simplification_navigation import (
+	execute as group_process_simplification_navigation,
 )
 from process_simplification.production_reporting.setup import setup_worker_reporting
 
@@ -23,9 +30,15 @@ def after_install():
 	set_default_language()
 	configure_company_manufacturing_defaults()
 	setup_worker_reporting()
+	ensure_management_access()
 	add_worker_reporting_navigation()
+	add_management_navigation()
+	group_process_simplification_navigation()
 
 
 def after_migrate():
 	setup_worker_reporting()
+	ensure_management_access()
 	add_worker_reporting_navigation()
+	add_management_navigation()
+	group_process_simplification_navigation()

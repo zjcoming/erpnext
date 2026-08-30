@@ -162,6 +162,13 @@ test("expanded product rows explain stock coverage and production demand", () =>
 	}
 });
 
+test("expanded product rows show the product name before a labeled code", () => {
+	const html = orderOverviewHtml(order("SO-IDENTITY"), helpers);
+
+	assert.ok(html.indexOf("Finished SO-IDENTITY") < html.indexOf("产品编码：FG-SO-IDENTITY"));
+	assert.match(html, /href="\/app\/item\/FG-SO-IDENTITY"/);
+});
+
 test("expanded product rows link their Production Plans and priority dates", () => {
 	const plannedOrder = order("SO-PLANNED");
 	plannedOrder.rows[0].production_plans = [

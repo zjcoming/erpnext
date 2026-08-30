@@ -12,7 +12,7 @@ from process_simplification.api.setup import (
 	get_default_bom,
 	resolve_production_source_warehouse,
 )
-from process_simplification.api.utils import normalize_qty, throw_chinese
+from process_simplification.api.utils import apply_current_item_names, normalize_qty, throw_chinese
 from process_simplification.api.workbench import get_order_workbench
 
 
@@ -441,6 +441,7 @@ def calculate_material_coverage(
 			material["status"] = "new_purchase_required"
 
 	material_rows = sorted(materials.values(), key=lambda material: (material["warehouse"] or "", material["item_code"]))
+	apply_current_item_names(material_rows)
 	return frappe._dict(
 		{
 			"materials": material_rows,
@@ -747,6 +748,7 @@ def calculate_multilevel_material_coverage(
 		walk_bom(demand, capture=True)
 
 	materials = _aggregate_multilevel_purchased_rows(purchased_rows)
+	apply_current_item_names([*requirements, *materials])
 	return frappe._dict(
 		{
 			"requirements": requirements,
@@ -843,7 +845,12 @@ def calculate_plan_purchase_shortages(readiness_by_sales_order_item, selected_sa
 							"shortage_qty": normalize_qty(item.get("shortage_qty")),
 						}
 					)
-	return sorted(materials.values(), key=lambda row: (row.get("warehouse") or "", row.get("item_code") or ""))
+	return apply_current_item_names(
+		sorted(
+			materials.values(),
+			key=lambda row: (row.get("warehouse") or "", row.get("item_code") or ""),
+		)
+	)
 
 
 def get_all_material_demands(company: str):
@@ -984,24 +991,9 @@ def revalidate_purchase_rows(shortage_rows, current_shortages):
 	return validated
 
 
-@frappe.whitelist(methods=["POST"])
-def create_material_request(shortage_rows, company: str | None = None, schedule_date: str | None = None):
-	frappe.has_permission("Material Request", "create", throw=True)
-	shortage_rows = _parse(shortage_rows) or []
-	if not shortage_rows:
-		throw_chinese("请至少选择一条缺料记录。")
-
-	row_companies = {row.get("company") for row in shortage_rows if row.get("company")}
-	if len(row_companies) > 1:
-		throw_chinese("一次只能为同一公司生成采购申请。")
-	row_company = next(iter(row_companies), None)
-	defaults = get_company_defaults(company or row_company)
-	company = company or row_company or defaults.company
-	if not company:
-		throw_chinese("默认公司缺失，请先设置公司。")
-	if any(row.get("company") and row.get("company") != company for row in shortage_rows):
-		throw_chinese("缺料记录不属于当前公司。")
+def _create_material_request_locked(shortage_rows, company, defaults, schedule_date=None):
 	from process_simplification.api.production_readiness import get_production_plan_readiness
+
 	selected_sales_order_items = sorted(
 		{
 			source.get("sales_order_item")
@@ -1050,4 +1042,31 @@ def create_material_request(shortage_rows, company: str | None = None, schedule_
 
 	mr.insert()
 	mr.submit()
+	# The company-scoped lock must remain held until this submitted request is
+	# visible to the next revalidation. Otherwise two users can both pass the
+	# shortage check before request-level auto-commit and create duplicate MRs.
+	frappe.db.commit()
 	return {"material_request": mr.name, "docstatus": mr.docstatus}
+
+
+@frappe.whitelist(methods=["POST"])
+def create_material_request(shortage_rows, company: str | None = None, schedule_date: str | None = None):
+	frappe.has_permission("Material Request", "create", throw=True)
+	shortage_rows = _parse(shortage_rows) or []
+	if not shortage_rows:
+		throw_chinese("请至少选择一条缺料记录。")
+
+	row_companies = {row.get("company") for row in shortage_rows if row.get("company")}
+	if len(row_companies) > 1:
+		throw_chinese("一次只能为同一公司生成采购申请。")
+	row_company = next(iter(row_companies), None)
+	defaults = get_company_defaults(company or row_company)
+	company = company or row_company or defaults.company
+	if not company:
+		throw_chinese("默认公司缺失，请先设置公司。")
+	if any(row.get("company") and row.get("company") != company for row in shortage_rows):
+		throw_chinese("缺料记录不属于当前公司。")
+
+	lock_name = "process_simplification:material_request:{0}".format(company)
+	with frappe.cache.lock(lock_name, timeout=120, blocking_timeout=10):
+		return _create_material_request_locked(shortage_rows, company, defaults, schedule_date)

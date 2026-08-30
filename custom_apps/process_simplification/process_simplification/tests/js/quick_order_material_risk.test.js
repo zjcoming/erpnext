@@ -146,6 +146,22 @@ test("builds product BOM cards and one aggregated shared-material summary", () =
 	assert.equal(view.summary[0].required_qty, 30);
 });
 
+test("material risk uses names first and labels codes without inventing missing names", () => {
+	const html = materialRiskHtml(buildMaterialRiskView(fixtureWithSharedMaterial), helpers);
+	const missingHtml = materialRiskHtml(
+		buildMaterialRiskView({
+			...fixtureWithSharedMaterial,
+			material_groups: [group(1, { item_code: "301001790", item_name: "301001790" })],
+		}),
+		helpers
+	);
+
+	assert.ok(html.indexOf("Shared Material") < html.indexOf("物料编码：RM-SHARED"));
+	assert.match(html, /产品编码：FG-001/);
+	assert.match(missingHtml, /名称待维护/);
+	assert.match(missingHtml, /产品编码：301001790/);
+});
+
 test("maps every backend material status without deriving severity", () => {
 	const cases = [
 		["ready_now", "当前可生产", "green"],

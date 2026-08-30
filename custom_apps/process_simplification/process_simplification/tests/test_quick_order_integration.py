@@ -6,6 +6,35 @@ from frappe.utils import add_days, nowdate
 
 
 class TestQuickOrderIntegration(IntegrationTestCase):
+	def test_product_search_prioritizes_products_without_hiding_exact_matches(self):
+		from process_simplification.api.quick_order import search_quick_order_products
+
+		suffix = frappe.generate_hash(length=8)
+		prefix = "QO-SEARCH-{0}".format(suffix)
+
+		def make_item(suffix_name, *, item_group, is_stock_item):
+			return frappe.get_doc(
+				{
+					"doctype": "Item",
+					"item_code": "{0}-{1}".format(prefix, suffix_name),
+					"item_name": "Quick Order Search {0}".format(suffix_name),
+					"item_group": item_group,
+					"stock_uom": "Nos",
+					"is_stock_item": is_stock_item,
+					"is_sales_item": 1,
+				}
+			).insert()
+
+		product_item = make_item("SERVICE-PRODUCT", item_group="Products", is_stock_item=1)
+		service_item = make_item("SERVICE", item_group="Services", is_stock_item=0)
+
+		with patch("process_simplification.api.quick_order.frappe.has_permission", return_value=True):
+			rows = search_quick_order_products("Item", prefix, "name", 0, 20, {})
+			exact_rows = search_quick_order_products("Item", service_item.name, "name", 0, 20, {})
+
+		self.assertEqual(rows[0][0], product_item.name)
+		self.assertEqual(exact_rows[0][0], service_item.name)
+
 	def test_product_search_uses_v16_product_bundle_lifecycle(self):
 		from process_simplification.api.quick_order import (
 			get_quick_order_item_defaults,

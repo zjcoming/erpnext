@@ -180,7 +180,12 @@ def search_quick_order_products(doctype, txt, searchfield, start, page_len, filt
 	search_value = "%{0}%".format(txt or "")
 	rows = frappe.db.sql(
 		f"""
-		select item.name, item.item_name
+		select item.name,
+			case
+				when coalesce(nullif(trim(item.item_name), ''), item.name) = item.name
+					then concat('名称待维护 · 产品编码：', item.name)
+				else concat(item.item_name, ' · 产品编码：', item.name)
+			end as item_label
 		from `tabItem` item
 		where item.disabled = 0
 			and item.is_sales_item = 1
@@ -197,11 +202,41 @@ def search_quick_order_products(doctype, txt, searchfield, start, page_len, filt
 				or item.item_name like %(txt)s
 				or item.name like %(txt)s
 			)
-		order by case when item.name like %(prefix)s then 0 else 1 end, item.modified desc
+		order by
+			case
+				when %(query)s != '' and (
+					item.`{searchfield}` = %(query)s
+					or item.item_name = %(query)s
+					or item.name = %(query)s
+				) then 0
+				when %(query)s != '' and (
+					item.`{searchfield}` like %(prefix)s
+					or item.item_name like %(prefix)s
+					or item.name like %(prefix)s
+				) then 1
+				else 2
+			end,
+			case
+				when item.item_group = 'Products' then 0
+				when exists (
+					select 1 from `tabBOM` bom
+					where bom.item = item.name
+						and bom.docstatus = 1
+						and bom.is_active = 1
+				) then 1
+				when item.is_stock_item = 1 then 2
+				else 3
+			end,
+			case
+				when coalesce(nullif(trim(item.item_name), ''), item.name) = item.name then 1
+				else 0
+			end,
+			item.name asc
 		limit %(start)s, %(page_len)s
 		""",
 		{
 			"txt": search_value,
+			"query": txt or "",
 			"prefix": "{0}%".format(txt or ""),
 			"start": start,
 			"page_len": page_len,

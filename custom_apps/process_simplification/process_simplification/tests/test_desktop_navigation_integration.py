@@ -178,7 +178,9 @@ class TestDesktopNavigationIntegration(IntegrationTestCase):
 		sidebar = frappe.get_doc("Workspace Sidebar", SIDEBAR_NAME)
 		workspace = frappe.get_doc("Workspace", "process-simplification")
 		for route, label in {
+			"active-production-work": "正在做",
 			"my-production-reporting": "我的报工",
+			"production-report-history": "报工历史",
 			"production-report-review": "报工审核",
 		}.items():
 			sidebar_rows = [row for row in sidebar.items if row.link_to == route]
@@ -187,6 +189,8 @@ class TestDesktopNavigationIntegration(IntegrationTestCase):
 			self.assertEqual(len(workspace_rows), 1)
 			self.assertEqual(sidebar_rows[0].label, label)
 			self.assertEqual(sidebar_rows[0].link_type, "Page")
+			if route == "production-report-review":
+				self.assertEqual(sidebar_rows[0].icon, "file-check")
 			self.assertEqual(workspace_rows[0].label, label)
 			self.assertEqual(workspace_rows[0].link_type, "Page")
 			self.assertLess(
@@ -194,7 +198,7 @@ class TestDesktopNavigationIntegration(IntegrationTestCase):
 				next(index for index, row in enumerate(sidebar.items) if row.link_to == "shortage-purchase-planning"),
 			)
 		core_card = next(row for row in workspace.links if row.type == "Card Break" and row.label == "核心流程")
-		self.assertEqual(core_card.link_count, 8)
+		self.assertEqual(core_card.link_count, 14)
 		workspace_roles = {row.role for row in workspace.roles}
 		self.assertTrue(
 			{"Production Worker", "Production Supervisor", "Production Wage Manager"}.issubset(
@@ -263,7 +267,61 @@ class TestDesktopNavigationIntegration(IntegrationTestCase):
 		core_card = next(
 			row for row in workspace.links if row.type == "Card Break" and row.label == "核心流程"
 		)
-		self.assertEqual(core_card.link_count, 8)
+		self.assertEqual(core_card.link_count, 14)
+
+	def test_management_navigation_is_idempotent_and_role_scoped(self):
+		from process_simplification.management_access import APP_MANAGED_ROLES
+		from process_simplification.patches.v0_0.add_management_navigation import execute
+
+		execute()
+		execute()
+
+		sidebar = frappe.get_doc("Workspace Sidebar", SIDEBAR_NAME)
+		workspace = frappe.get_doc("Workspace", "process-simplification")
+		for route, label in {
+			"executive-dashboard": "经营总览",
+			"process-access-management": "权限管理",
+		}.items():
+			self.assertEqual(len([row for row in sidebar.items if row.link_to == route]), 1)
+			self.assertEqual(len([row for row in workspace.links if row.link_to == route]), 1)
+			self.assertEqual(next(row.label for row in sidebar.items if row.link_to == route), label)
+			self.assertEqual(next(row.label for row in workspace.links if row.link_to == route), label)
+
+		core_card = next(row for row in workspace.links if row.type == "Card Break" and row.label == "核心流程")
+		self.assertEqual(core_card.link_count, 14)
+		self.assertTrue(set(APP_MANAGED_ROLES).issubset({row.role for row in workspace.roles}))
+
+	def test_sidebar_grouping_patch_is_idempotent(self):
+		from process_simplification.patches.v0_0.group_process_simplification_navigation import (
+			GROUPS,
+			execute,
+		)
+
+		execute()
+		execute()
+
+		sidebar = frappe.get_doc("Workspace Sidebar", SIDEBAR_NAME)
+		self.assertEqual(sidebar.items[0].link_to, "process-simplification")
+		self.assertEqual(sidebar.items[0].child, 0)
+
+		cursor = 1
+		for label, links in GROUPS:
+			section = sidebar.items[cursor]
+			self.assertEqual(section.type, "Section Break")
+			self.assertEqual(section.label, label)
+			self.assertEqual(section.collapsible, 1)
+			cursor += 1
+			for link in links:
+				item = sidebar.items[cursor]
+				self.assertEqual(item.link_to, link)
+				self.assertEqual(item.child, 1)
+				cursor += 1
+
+		self.assertEqual(cursor, len(sidebar.items))
+		self.assertEqual(
+			len([row for row in sidebar.items if row.type == "Section Break"]),
+			len(GROUPS),
+		)
 
 	def test_sidebar_identity_matches_the_page_module_for_native_route_fallback(self):
 		sidebar = frappe.get_doc("Workspace Sidebar", SIDEBAR_NAME)

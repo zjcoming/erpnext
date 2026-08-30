@@ -18,6 +18,7 @@ from process_simplification.api.workbench import (
 	order_item_priority_key,
 	paginate_workbench_rows,
 )
+from process_simplification.management_access import OWNER_ROLE, PRODUCTION_MANAGER_ROLE
 
 
 STATUS_LABELS = {
@@ -301,6 +302,7 @@ def attach_production_plan_readiness(demands, readiness_by_sales_order_item):
 				**deepcopy(dict(item)),
 				"work_order": work_order.get("name"),
 				"production_item": work_order.get("production_item"),
+				"production_item_name": work_order.get("production_item_name"),
 				"production_plan": plan.get("name"),
 				"planned_date": plan.get("planned_date"),
 			}
@@ -571,7 +573,19 @@ def _other_work_orders():
 		order_by="expected_delivery_date asc, creation asc",
 		limit=0,
 	)
-	return [dict(row) for row in rows if not row.get("sales_order") or not row.get("sales_order_item")]
+	other_rows = [dict(row) for row in rows if not row.get("sales_order") or not row.get("sales_order_item")]
+	item_codes = sorted({row.get("production_item") for row in other_rows if row.get("production_item")})
+	item_names = {
+		row.get("name"): row.get("item_name")
+		for row in frappe.get_all(
+			"Item",
+			filters={"name": ["in", item_codes]},
+			fields=["name", "item_name"],
+		)
+	} if item_codes else {}
+	for row in other_rows:
+		row["production_item_name"] = item_names.get(row.get("production_item"))
+	return other_rows
 
 
 def is_production_due_within_7_days(demand):
@@ -584,6 +598,20 @@ def filter_production_demands(demands, filters=None):
 	search = str(filters.get("search") or "").strip().lower()
 
 	def matches(demand):
+		work_order_values = [
+			value
+			for work_order in demand.get("work_orders") or []
+			for value in [
+				work_order.get("name"),
+				work_order.get("production_item"),
+				work_order.get("production_item_name"),
+				*[
+					identity
+					for item in work_order.get("required_items") or []
+					for identity in [item.get("item_code"), item.get("item_name")]
+				],
+			]
+		]
 		searchable = " ".join(
 			str(value or "")
 			for value in [
@@ -593,7 +621,7 @@ def filter_production_demands(demands, filters=None):
 				demand.get("customer_name"),
 				demand.get("item_code"),
 				demand.get("item_name"),
-				*[row.get("name") for row in demand.get("work_orders") or []],
+				*work_order_values,
 			]
 		).lower()
 		delivery_window = filters.get("deliveryWindow")
@@ -643,6 +671,37 @@ def production_customers(demands):
 	return [{"value": value, "label": label} for value, label in sorted(customers.items(), key=lambda row: row[1])]
 
 
+def attach_visible_worker_assignment_counts(demands):
+	"""Attach permission-filtered assignment history counts to visible Work Orders."""
+	roles = set(frappe.get_roles(frappe.session.user))
+	if frappe.session.user != "Administrator" and not roles.intersection(
+		{"System Manager", "Production Supervisor", PRODUCTION_MANAGER_ROLE, OWNER_ROLE}
+	):
+		return demands
+	work_order_names = sorted(
+		{
+			work_order.get("name")
+			for demand in demands or []
+			for work_order in demand.get("work_orders") or []
+			if work_order.get("name")
+		}
+	)
+	if not work_order_names:
+		return demands
+	counts = {}
+	for row in frappe.get_list(
+		"Job Card Worker Assignment",
+		filters={"work_order": ["in", work_order_names]},
+		fields=["work_order"],
+		limit=0,
+	):
+		counts[row.work_order] = counts.get(row.work_order, 0) + 1
+	for demand in demands or []:
+		for work_order in demand.get("work_orders") or []:
+			work_order["worker_assignment_history_count"] = counts.get(work_order.get("name"), 0)
+	return demands
+
+
 @frappe.whitelist()
 def get_production_overview(page=1, page_size=DEFAULT_WORKBENCH_PAGE_SIZE, filters=None):
 	frappe.has_permission("Sales Order", "read", throw=True)
@@ -690,6 +749,7 @@ def get_production_overview(page=1, page_size=DEFAULT_WORKBENCH_PAGE_SIZE, filte
 	covered_demands.sort(key=production_sort_key)
 	filtered_demands = filter_production_demands(covered_demands, filters)
 	paged_demands, pagination = paginate_workbench_rows(filtered_demands, page=page, page_size=page_size)
+	attach_visible_worker_assignment_counts(paged_demands)
 	return {
 		"checked_at": checked_at,
 		"summary": production_overview_summary(filtered_demands),

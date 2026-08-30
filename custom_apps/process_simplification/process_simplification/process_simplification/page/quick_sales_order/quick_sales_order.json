@@ -12,10 +12,16 @@
  "page_name": "quick-sales-order",
  "roles": [
   {
+   "role": "Process Simplification Owner"
+  },
+  {
    "role": "Sales User"
   },
   {
    "role": "Manufacturing User"
+  },
+  {
+   "role": "Process Simplification Sales Operator"
   },
   {
    "role": "System Manager"

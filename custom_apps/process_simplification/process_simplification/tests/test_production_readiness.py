@@ -7,6 +7,18 @@ from frappe.tests import UnitTestCase
 
 
 class TestProductionPlanGraph(UnitTestCase):
+	def test_attaches_item_master_names_without_replacing_work_order_codes(self):
+		from process_simplification.api.production_readiness import attach_work_order_item_names
+
+		work_orders = [frappe._dict(name="WO-SA", production_item="301008201014")]
+		attach_work_order_item_names(
+			work_orders,
+			{"301008201014": frappe._dict(item_name="插针骨架半成品")},
+		)
+
+		self.assertEqual(work_orders[0].production_item, "301008201014")
+		self.assertEqual(work_orders[0].production_item_name, "插针骨架半成品")
+
 	def test_earlier_production_plan_date_has_priority(self):
 		from process_simplification.api.production_readiness import plan_priority_key
 

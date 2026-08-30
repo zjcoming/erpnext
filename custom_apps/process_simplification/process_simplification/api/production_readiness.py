@@ -6,6 +6,7 @@ from copy import deepcopy
 import frappe
 from frappe.utils import flt, getdate
 
+from process_simplification.api.utils import resolve_item_display_name
 from process_simplification.api.workbench import order_item_priority_key
 
 
@@ -44,6 +45,18 @@ def work_order_priority_key(plan, work_order) -> tuple:
 def _remaining_work_order_item_qty(work_order, item) -> float:
 	completed_field = "consumed_qty" if work_order.get("skip_transfer") else "transferred_qty"
 	return max(flt(item.get("required_qty")) - flt(item.get(completed_field)), 0)
+
+
+def attach_work_order_item_names(work_orders, item_by_name):
+	"""Attach the Item master name without replacing the transactional item code."""
+	for work_order in work_orders or []:
+		item = item_by_name.get(work_order.get("production_item")) or {}
+		work_order["production_item_name"] = resolve_item_display_name(
+			work_order.get("production_item"),
+			item.get("item_name"),
+			work_order.get("production_item_name"),
+		)
+	return work_orders
 
 
 def _free_stock_qty(snapshot, loaded_reserved_qty=0) -> float:
@@ -643,13 +656,18 @@ def get_production_plan_readiness(company=None, sales_order_items=None):
 	item_rows = frappe.get_all(
 		"Item",
 		filters={"name": ["in", sorted(all_item_codes)]},
-		fields=["name", "is_purchase_item"],
+		fields=["name", "item_name", "is_purchase_item"],
 	)
 	item_by_name = {row.get("name"): row for row in item_rows}
+	attach_work_order_item_names(work_orders, item_by_name)
 	for item in required_items:
-		item.is_purchase_item = (item_by_name.get(item.get("item_code")) or {}).get(
-			"is_purchase_item"
+		master_item = item_by_name.get(item.get("item_code")) or {}
+		item.item_name = resolve_item_display_name(
+			item.get("item_code"),
+			master_item.get("item_name"),
+			item.get("item_name"),
 		)
+		item.is_purchase_item = master_item.get("is_purchase_item")
 
 	work_orders_by_plan = defaultdict(list)
 	items_by_work_order = defaultdict(list)
@@ -710,6 +728,9 @@ def get_production_plan_readiness(company=None, sales_order_items=None):
 			sub_assemblies_by_plan[plan.name],
 			active_bom_items=active_bom_items,
 		)
+		for graph_work_order in graph.work_orders_by_name.values():
+			parent_item = item_by_name.get(graph_work_order.get("parent_item_code")) or {}
+			graph_work_order.parent_item_name = parent_item.get("item_name")
 		graph.company = plan.get("company")
 		graph.posting_date = str(plan.get("posting_date") or "")
 		graph.status = plan.get("status")

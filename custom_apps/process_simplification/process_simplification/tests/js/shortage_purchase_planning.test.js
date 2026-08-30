@@ -52,3 +52,17 @@ test("shortage rows use required quantity and escape every source label", () => 
 	assert.doesNotMatch(html, /<script>/);
 	assert.doesNotMatch(html, /<img src=x/);
 });
+
+test("shortage rows show a readable material name before the labeled code", () => {
+	const html = shortageRowsHtml(
+		[{ item_code: "204001004", item_name: "PA6德尔隆", shortage_qty: 2 }],
+		{
+			escapeHtml,
+			formatQty: (value) => Number(value || 0).toFixed(2),
+			translate: (message) => message,
+		}
+	);
+
+	assert.ok(html.indexOf("PA6德尔隆") < html.indexOf("物料编码：204001004"));
+	assert.match(html, /href="\/app\/item\/204001004"/);
+});

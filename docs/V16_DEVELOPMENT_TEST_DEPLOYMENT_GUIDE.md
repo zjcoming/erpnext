@@ -261,21 +261,40 @@ cd /home/frappe/projects/erpnext/custom_apps/process_simplification
 node --test process_simplification/tests/js/*.test.js
 ```
 
-当前基线：`64/64` 通过。
+当前基线：`91/91` 通过。
 
 ### 8.2 Python 全量测试
 
 ```bash
 docker compose exec -T frappe bash -lc \
-'cd /workspace/erpnext/development/frappe-bench && bench --site development.localhost run-tests --app process_simplification --test-category all'
+'set -e
+cd /workspace/erpnext/development/frappe-bench
+bench --site development.localhost set-config allow_tests true
+trap "bench --site development.localhost set-config allow_tests false" EXIT
+bench --site development.localhost run-tests --app process_simplification --test-category all --skip-before-tests'
+```
+
+长期使用的开发站点必须带 `--skip-before-tests`。ERPNext 的测试初始化会把 System Settings 时区写成
+`Asia/Kolkata`，直接在开发站点运行会让“今日审核”、报工生产日、每日工时和月工资边界偏移。完整的
+ERPNext 测试初始化只允许在可丢弃的独立测试站点执行。测试前后都要核对：
+
+同一个站点不得并行运行两组集成测试。工人报工用例会创建隔离的随机 User/Employee，两个测试进程同时写入
+`tabUser.username` 唯一索引时会触发 MariaDB gap-lock 死锁；这属于测试运行方式冲突，结果必须在单进程下重跑。
+
+```bash
+bench --site development.localhost execute frappe.utils.get_system_timezone
+# 中国工厂应返回 Asia/Shanghai；若测试污染了开发站点，恢复后清缓存：
+bench --site development.localhost execute frappe.db.set_single_value \
+  --kwargs '{"doctype":"System Settings","fieldname":"time_zone","value":"Asia/Shanghai"}'
+bench --site development.localhost clear-cache
 ```
 
 当前基线：
 
-- Python 单元测试：`143/143`
-- Python 集成测试：`50/50`
-- Python 合计：`193/193`
-- 自动化总计：`257/257`
+- Python 单元测试：`170/170`
+- Python 集成测试：`85/85`
+- Python 合计：`255/255`
+- 自动化总计：`346/346`
 
 测试数量以后可以增加，但不得无说明减少。若减少，必须在评审中说明删除或合并了哪些测试以及原因。
 
@@ -376,7 +395,7 @@ Compose 会把站点 `developer_mode` 固定为 `0`，避免安装或迁移时�
 1. 从 `rc/develop-v16` 创建候选版本。
 2. 将 Custom App 版本更新到目标版本。
 3. 在预生产环境使用生产数据脱敏副本演练迁移。
-4. 执行 257 项以上自动化测试和完整业务验收。
+4. 执行 346 项以上自动化测试和完整业务验收。
 5. 检查 ERPNext/Frappe 官方源码没有非预期修改。
 6. 创建带注释 Git 标签并推送。
 7. 记录标签、完整 SHA、镜像 digest、数据库版本和迁移清单。

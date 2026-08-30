@@ -21,9 +21,11 @@ from process_simplification.api.utils import (
 	action,
 	delivered_stock_qty,
 	ensure_submitted_sales_order,
+	get_current_item_names,
 	item_stock_qty,
 	pending_delivery_qty,
 	remaining_qty,
+	resolve_item_display_name,
 	row_to_dict,
 )
 
@@ -229,6 +231,51 @@ def get_completed_reserved_qty(sales_order_item: str, manufacture_entries) -> fl
 	return sum(flt(entry.reserved_qty) for entry in reservations)
 
 
+def get_current_completed_unreserved_qty(
+	*,
+	item_code: str,
+	manufacture_entries,
+	completed_qty: float,
+	completed_reserved_qty: float,
+	pending_unreserved_qty: float,
+) -> float:
+	"""Cap historical completed output by stock that can still be reserved now.
+
+	A Work Order's cumulative produced quantity remains useful history, but it is
+	not an executable stock balance. Finished goods may already have been
+	delivered, transferred, reserved, or otherwise consumed. Count each output
+	warehouse once and cap the action quantity by both current free stock and the
+	Sales Order's remaining unreserved demand.
+	"""
+	historical_unreserved_qty = remaining_qty(completed_qty, completed_reserved_qty)
+	pending_unreserved_qty = max(flt(pending_unreserved_qty), 0)
+	if historical_unreserved_qty <= 0 or pending_unreserved_qty <= 0:
+		return 0
+
+	entry_names = [entry.name for entry in manufacture_entries or [] if entry.get("name")]
+	if not entry_names:
+		return 0
+	warehouses = {
+		row.t_warehouse
+		for row in frappe.get_all(
+			"Stock Entry Detail",
+			filters={
+				"parent": ["in", entry_names],
+				"item_code": item_code,
+				"is_finished_item": 1,
+			},
+			fields=["t_warehouse"],
+			limit=0,
+		)
+		if row.t_warehouse
+	}
+	current_available_qty = sum(
+		max(flt(get_available_qty_to_reserve(item_code, warehouse)), 0)
+		for warehouse in warehouses
+	)
+	return min(historical_unreserved_qty, pending_unreserved_qty, current_available_qty)
+
+
 def get_material_status(item_code: str) -> str:
 	return "未检查" if get_default_bom(item_code) else "不涉及生产"
 
@@ -284,6 +331,8 @@ def get_order_workbench(sales_order: str):
 	so = frappe.get_doc("Sales Order", sales_order)
 	so.check_permission("read")
 	duplicates = _duplicate_supported_items(so.items)
+	item_codes = sorted({item.item_code for item in so.items if item.item_code})
+	current_item_names = get_current_item_names(item_codes)
 	rows = []
 
 	for item in so.items:
@@ -305,7 +354,13 @@ def get_order_workbench(sales_order: str):
 		completed_qty = get_completed_qty(work_orders)
 		manufacture_entries = get_manufacture_stock_entries(work_orders)
 		completed_reserved_qty = get_completed_reserved_qty(item.name, manufacture_entries)
-		completed_unreserved_qty = remaining_qty(completed_qty, completed_reserved_qty)
+		completed_unreserved_qty = get_current_completed_unreserved_qty(
+			item_code=item.item_code,
+			manufacture_entries=manufacture_entries,
+			completed_qty=completed_qty,
+			completed_reserved_qty=completed_reserved_qty,
+			pending_unreserved_qty=pending_qty - production.reserved_qty,
+		)
 		has_bom = bool(get_default_bom(item.item_code))
 
 		row = WorkbenchRow(
@@ -313,7 +368,11 @@ def get_order_workbench(sales_order: str):
 			sales_order_item=item.name,
 			customer=so.customer,
 			item_code=item.item_code,
-			item_name=item.item_name,
+			item_name=resolve_item_display_name(
+				item.item_code,
+				current_item_names.get(item.item_code),
+				item.item_name,
+			),
 			warehouse=item.warehouse,
 			delivery_date=str(item.delivery_date) if item.delivery_date else None,
 			order_qty=order_qty,
@@ -744,6 +803,12 @@ def get_fulfillment_overview(page=1, page_size=DEFAULT_WORKBENCH_PAGE_SIZE, filt
 
 @frappe.whitelist()
 def get_work_order_details(sales_order: str, sales_order_item: str):
+	# This endpoint returns required materials and Stock Entry history through
+	# permission-bypassing aggregate queries. Anchor it to the same readable
+	# Sales Order row as the parent workbench before exposing those details.
+	workbench = get_order_workbench(sales_order)
+	if not any(row.get("sales_order_item") == sales_order_item for row in workbench.get("rows") or []):
+		frappe.throw(_("Sales Order Item does not belong to this Sales Order."), frappe.PermissionError)
 	work_orders = get_work_orders(sales_order, sales_order_item)
 	if not work_orders:
 		return {"work_orders": []}

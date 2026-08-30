@@ -5,17 +5,21 @@
  "creation": "2026-08-19 00:00:00.000000",
  "doctype": "DocType",
  "engine": "InnoDB",
- "field_order": ["naming_series", "company", "operation", "wage_type", "rate", "valid_from", "valid_to", "enabled", "revision"],
+ "field_order": ["naming_series", "company", "operation", "enable_piecework", "piecework_rate", "enable_time", "hourly_rate", "valid_from", "valid_to", "enabled", "revision", "wage_type", "rate"],
  "fields": [
   {"fieldname": "naming_series", "fieldtype": "Select", "label": "编号规则", "options": "OWR-.YYYY.-.#####", "default": "OWR-.YYYY.-.#####", "reqd": 1},
   {"fieldname": "company", "fieldtype": "Link", "label": "公司", "options": "Company", "reqd": 1, "search_index": 1},
   {"fieldname": "operation", "fieldtype": "Link", "label": "工序", "options": "Operation", "reqd": 1, "search_index": 1},
-  {"fieldname": "wage_type", "fieldtype": "Select", "label": "计价方式", "options": "Piecework\nTime", "reqd": 1},
-  {"fieldname": "rate", "fieldtype": "Currency", "label": "单价", "non_negative": 1, "reqd": 1, "description": "计件为每件单价；计时为每小时单价。"},
+  {"default": "1", "description": "启用后，工人可按完成数量计薪。", "fieldname": "enable_piecework", "fieldtype": "Check", "label": "启用计件"},
+  {"depends_on": "eval:doc.enable_piecework", "description": "每完成 1 件的工资单价。", "fieldname": "piecework_rate", "fieldtype": "Currency", "label": "计件单价（每件）", "mandatory_depends_on": "eval:doc.enable_piecework", "non_negative": 1},
+  {"default": "0", "description": "启用后，工人可按计薪工时计薪。可与计件同时启用。", "fieldname": "enable_time", "fieldtype": "Check", "label": "启用计时"},
+  {"depends_on": "eval:doc.enable_time", "description": "每小时的工资单价。", "fieldname": "hourly_rate", "fieldtype": "Currency", "label": "计时单价（每小时）", "mandatory_depends_on": "eval:doc.enable_time", "non_negative": 1},
   {"fieldname": "valid_from", "fieldtype": "Date", "label": "生效日期", "reqd": 1},
   {"fieldname": "valid_to", "fieldtype": "Date", "label": "失效日期"},
   {"fieldname": "enabled", "fieldtype": "Check", "label": "启用", "default": "1"},
-  {"fieldname": "revision", "fieldtype": "Int", "label": "版本", "read_only": 1, "default": "1"}
+  {"fieldname": "revision", "fieldtype": "Int", "label": "版本", "read_only": 1, "default": "1"},
+  {"fieldname": "wage_type", "fieldtype": "Select", "hidden": 1, "label": "旧版默认计价方式", "options": "Piecework\nTime", "read_only": 1},
+  {"fieldname": "rate", "fieldtype": "Currency", "hidden": 1, "label": "旧版默认单价", "non_negative": 1, "read_only": 1}
  ],
  "index_web_pages_for_search": 0,
  "modified": "2026-08-19 00:00:00.000000",
@@ -24,6 +28,7 @@
  "name": "Operation Wage Rate",
  "owner": "Administrator",
  "permissions": [
+  {"role": "Process Simplification Owner", "read": 1, "create": 1, "write": 1},
   {"role": "Production Wage Manager", "read": 1, "create": 1, "write": 1},
   {"role": "System Manager", "read": 1, "create": 1, "write": 1}
  ],

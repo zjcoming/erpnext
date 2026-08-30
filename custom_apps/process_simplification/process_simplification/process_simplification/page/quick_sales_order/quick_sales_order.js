@@ -1,3 +1,7 @@
+const quickOrderItemIdentity = typeof module !== "undefined" && module.exports
+	? require("../../../public/js/item_identity.js")
+	: window.process_simplification.item_identity;
+
 function materialStatusMeta(status, translate = (message) => message) {
 	const materialStatusCopy = {
 		ready_now: { label: translate("当前可生产"), indicator: "green" },
@@ -60,13 +64,12 @@ function materialRiskHtml(view, helpers) {
 	const translate = helpers.translate;
 	const escape = (value) => helpers.escapeHtml(String(value ?? ""));
 	const number = (value) => escape(helpers.formatNumber(Number(value || 0)));
-	const label = (code, name) => {
-		const safeCode = escape(code);
-		const safeName = escape(name);
-		return safeName && safeName !== safeCode
-			? `<strong>${safeCode}</strong><small>${safeName}</small>`
-			: `<strong>${safeCode}</strong>`;
-	};
+	const label = (code, name, options = {}) => quickOrderItemIdentity.itemIdentityHtml(
+		code,
+		name,
+		{ translate, escapeHtml: helpers.escapeHtml },
+		{ linkToItem: true, ...options }
+	);
 	const unit = (material) => (material.stock_uom ? ` <small>${escape(material.stock_uom)}</small>` : "");
 	const statusPill = (status) => {
 		const meta = materialStatusMeta(status, translate);
@@ -123,7 +126,7 @@ function materialRiskHtml(view, helpers) {
 					group.has_shortage ? " has-shortage" : ""
 				}" data-material-group="${escape(group.row)}"${group.has_shortage || group.has_production ? " open" : ""}>
 					<summary>
-						<div class="quick-material-product">${label(group.item_code, group.item_name)}</div>
+						<div class="quick-material-product">${label(group.item_code, group.item_name, { codeLabel: translate("产品编码") })}</div>
 						<div class="quick-material-product-facts">
 							<span>${escape(translate("订单数量"))} <strong>${number(group.qty)}</strong></span>
 							<span>${escape(translate("可预留成品"))} <strong>${number(group.available_to_reserve)}</strong></span>
@@ -214,9 +217,12 @@ function confirmationHtml(result, helpers) {
 			const procurementCoverage =
 				Number(material.open_material_request_qty || 0) +
 				Number(material.open_purchase_order_qty || 0);
-			return `<tr><td>${escape(material.item_code)}${
-				material.item_name ? `<small>${escape(material.item_name)}</small>` : ""
-			}</td><td>${escape(material.warehouse || translate("未设置"))}</td><td>${number(
+			return `<tr><td>${quickOrderItemIdentity.itemIdentityHtml(
+				material.item_code,
+				material.item_name,
+				{ translate, escapeHtml: helpers.escapeHtml },
+				{ linkToItem: true }
+			)}</td><td>${escape(material.warehouse || translate("未设置"))}</td><td>${number(
 				material.current_gap_qty
 			)}</td><td>${number(procurementCoverage)}</td><td>${number(material.shortage_qty)}</td></tr>`;
 		})
@@ -513,13 +519,17 @@ frappe.pages["quick-sales-order"].on_page_load = function (wrapper) {
 		const title = blocker ? __("无法下单") : warning ? __("需要生产") : __("库存可覆盖");
 		const indicator = blocker ? "red" : warning ? "orange" : "green";
 		const issueText = blocker?.message || warning?.message || __("当前可预留成品足够。 ");
-		row.$element
-			.find(".quick-row-help")
-			.text(
-				[preview.item_name, preview.stock_uom ? `${__("单位")}: ${preview.stock_uom}` : ""]
-					.filter(Boolean)
-					.join(" · ")
-			);
+		row.$element.find(".quick-row-help").html(
+			quickOrderItemIdentity.itemIdentityHtml(
+				preview.item_code,
+				preview.item_name,
+				{ translate: __, escapeHtml: frappe.utils.escape_html },
+				{ linkToItem: true, codeLabel: __("产品编码") }
+			) +
+				(preview.stock_uom
+					? `<small>${frappe.utils.escape_html(__("单位"))}：${frappe.utils.escape_html(preview.stock_uom)}</small>`
+					: "")
+		);
 		row.$element.find(".quick-fulfillment").html(`
 			<div><span class="indicator-pill ${indicator}">${frappe.utils.escape_html(title)}</span></div>
 			<div class="quick-fulfillment-numbers">
@@ -593,13 +603,17 @@ frappe.pages["quick-sales-order"].on_page_load = function (wrapper) {
 				if (!state.rows.has(row.id) || row.item_code.get_value() !== itemCode) return;
 				const detail = response.message || {};
 				if (!flt(row.rate.get_value()) && detail.rate) row.rate.set_value(detail.rate);
-				row.$element
-					.find(".quick-row-help")
-					.text(
-						[detail.item_name, detail.stock_uom ? `${__("单位")}: ${detail.stock_uom}` : ""]
-							.filter(Boolean)
-							.join(" · ")
-					);
+				row.$element.find(".quick-row-help").html(
+					quickOrderItemIdentity.itemIdentityHtml(
+						detail.item_code || itemCode,
+						detail.item_name,
+						{ translate: __, escapeHtml: frappe.utils.escape_html },
+						{ linkToItem: true, codeLabel: __("产品编码") }
+					) +
+						(detail.stock_uom
+							? `<small>${frappe.utils.escape_html(__("单位"))}：${frappe.utils.escape_html(detail.stock_uom)}</small>`
+							: "")
+				);
 				schedulePreview();
 			});
 	}

@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import hashlib
 from contextlib import contextmanager
+from math import ceil
 
 import frappe
 from frappe import _
+from frappe.query_builder import Order
 from frappe.utils import (
+	cint,
 	flt,
 	get_datetime,
 	get_first_day,
@@ -25,6 +28,7 @@ from process_simplification.production_reporting.constants import (
 	WAGE_ROLES,
 )
 from process_simplification.production_reporting.domain import (
+	WAGE_TYPES,
 	approved_report_qty,
 	assert_worker_user_isolated,
 	assert_supported_job_card,
@@ -32,6 +36,7 @@ from process_simplification.production_reporting.domain import (
 	employee_for_user,
 	employee_user,
 	get_wage_rate,
+	get_wage_rates,
 	is_admin_reviewer,
 	job_card_block,
 	job_card_qty_precision,
@@ -51,10 +56,170 @@ from process_simplification.production_reporting.domain import (
 
 
 MAX_WORK_SESSION_MINUTES = 24 * 60
+DEFAULT_REVIEW_PAGE_LENGTH = 20
+MAX_REVIEW_PAGE_LENGTH = 100
 
 
 def _hash_key(*values) -> str:
 	return hashlib.sha256("|".join(str(value or "") for value in values).encode()).hexdigest()
+
+
+def manual_time_entry_enabled() -> bool:
+	"""Return the global time-wage input mode, defaulting safely to manual entry."""
+	if not frappe.db.exists("DocType", "Process Simplification Settings"):
+		return True
+	value = frappe.db.get_single_value(
+		"Process Simplification Settings", "allow_manual_time_entry"
+	)
+	return True if value in (None, "") else bool(cint(value))
+
+
+def _work_report_wage_options(doc) -> list[frappe._dict]:
+	"""Return the wage choices frozen when this work session started."""
+	options = []
+	piecework_rate = flt(doc.get("piecework_rate_snapshot"))
+	hourly_rate = flt(doc.get("hourly_rate_snapshot"))
+	if piecework_rate > 0:
+		options.append(frappe._dict(wage_type="Piecework", rate=piecework_rate))
+	if hourly_rate > 0:
+		options.append(frappe._dict(wage_type="Time", rate=hourly_rate))
+
+	# Reports created before dual-method snapshots were introduced retain their
+	# original single frozen choice. Never substitute a live rule for old work.
+	if not options and doc.get("wage_type") in WAGE_TYPES and flt(doc.get("rate")) > 0:
+		options.append(
+			frappe._dict(wage_type=doc.get("wage_type"), rate=flt(doc.get("rate")))
+		)
+	return options
+
+
+def _time_manual_entry_available(doc) -> bool:
+	if flt(doc.get("hourly_rate_snapshot")) > 0:
+		return bool(cint(doc.get("time_manual_entry_snapshot")))
+	if not flt(doc.get("piecework_rate_snapshot")) and doc.get("wage_type") == "Time":
+		return bool(cint(doc.get("manual_time_entry")))
+	return False
+
+
+def _select_work_report_wage_option(doc, wage_type: str | None = None) -> frappe._dict:
+	requested_type = str(wage_type or "").strip()
+	if requested_type and requested_type not in WAGE_TYPES:
+		frappe.throw(_("Wage type must be Piecework or Time."))
+	options = _work_report_wage_options(doc)
+	if not options:
+		frappe.throw(_("The work session has no frozen wage option."))
+	if not requested_type:
+		# Options are deliberately ordered Piecework then Time.
+		return options[0]
+	for option in options:
+		if option.wage_type == requested_type:
+			return option
+	frappe.throw(_("The selected wage type was not enabled when this work session started."))
+
+
+def _validate_work_report_wage_selection(doc) -> None:
+	selected = _select_work_report_wage_option(doc, doc.get("wage_type"))
+	if flt(selected.rate, 6) != flt(doc.get("rate"), 6):
+		frappe.throw(_("The selected wage rate does not match its frozen work-session snapshot."))
+	expected_manual = bool(
+		doc.get("wage_type") == "Time" and _time_manual_entry_available(doc)
+	)
+	if bool(cint(doc.get("manual_time_entry"))) != expected_manual:
+		frappe.throw(_("The time-wage input mode does not match its frozen work-session snapshot."))
+
+
+def _time_segments(doc):
+	return list(doc.get("time_segments") or [])
+
+
+def _segment_duration(started_at, ended_at) -> float:
+	return flt(time_diff_in_hours(get_datetime(ended_at), get_datetime(started_at)) * 60, 6)
+
+
+def _append_time_segment(doc, started_at, request_key: str):
+	segments = _time_segments(doc)
+	if segments and not segments[-1].ended_at:
+		frappe.throw(_("The work timer is already running."))
+	return doc.append(
+		"time_segments",
+		{
+			"started_at": get_datetime(started_at),
+			"start_request_key": request_key,
+		},
+	)
+
+
+def _ensure_open_time_segment(doc):
+	segments = _time_segments(doc)
+	if not segments:
+		return _append_time_segment(doc, doc.actual_start_time, doc.request_key)
+	if segments[-1].ended_at:
+		frappe.throw(_("The work timer is paused."))
+	return segments[-1]
+
+
+def _close_time_segment(doc, ended_at, request_key: str):
+	segment = _ensure_open_time_segment(doc)
+	ended_at = get_datetime(ended_at)
+	if ended_at <= get_datetime(segment.started_at):
+		frappe.throw(_("Timer stop time must be later than its start time."))
+	segment.ended_at = ended_at
+	segment.duration_minutes = _segment_duration(segment.started_at, ended_at)
+	segment.stop_request_key = request_key
+	return segment
+
+
+def _captured_timer_minutes(doc, *, include_running_until=None) -> float:
+	total = 0.0
+	segments = _time_segments(doc)
+	if not segments and doc.actual_start_time and include_running_until:
+		return _segment_duration(doc.actual_start_time, include_running_until)
+	for segment in segments:
+		if segment.ended_at:
+			total += _segment_duration(segment.started_at, segment.ended_at)
+		elif include_running_until:
+			total += _segment_duration(segment.started_at, include_running_until)
+	return flt(total, 6)
+
+
+def _validate_time_segments(doc):
+	segments = _time_segments(doc)
+	if not segments:
+		return
+	previous_end = None
+	for index, segment in enumerate(segments):
+		if not segment.started_at:
+			frappe.throw(_("Every timer segment requires a start time."))
+		started_at = get_datetime(segment.started_at)
+		if index == 0 and get_datetime(doc.actual_start_time) != started_at:
+			frappe.throw(_("The first timer segment must match the work session start time."))
+		if previous_end and started_at < previous_end:
+			frappe.throw(_("Work timer segments cannot overlap."))
+		if segment.ended_at:
+			ended_at = get_datetime(segment.ended_at)
+			if ended_at <= started_at:
+				frappe.throw(_("Timer segment end time must be later than its start time."))
+			duration = _segment_duration(started_at, ended_at)
+			if flt(segment.duration_minutes, 6) != duration:
+				frappe.throw(_("Timer segment duration does not match its captured times."))
+			previous_end = ended_at
+		elif index != len(segments) - 1:
+			frappe.throw(_("Only the last timer segment may still be running."))
+
+	open_segment = bool(segments and not segments[-1].ended_at)
+	if doc.status == "In Progress":
+		if doc.timer_paused_at:
+			if open_segment or get_datetime(doc.timer_paused_at) != get_datetime(segments[-1].ended_at):
+				frappe.throw(_("Paused timer state does not match its last segment."))
+		elif not open_segment:
+			frappe.throw(_("An active timer must be running or explicitly paused."))
+	else:
+		if open_segment or doc.timer_paused_at:
+			frappe.throw(_("A submitted work report cannot retain an active or paused timer."))
+		if flt(doc.actual_minutes, 6) != _captured_timer_minutes(doc):
+			frappe.throw(_("Actual production minutes must equal the captured timer segments."))
+		if get_datetime(doc.actual_end_time) != get_datetime(segments[-1].ended_at):
+			frappe.throw(_("Actual end time must match the final timer segment."))
 
 
 @contextmanager
@@ -191,6 +356,7 @@ def validate_report_document(doc):
 	)
 	if not assignment:
 		frappe.throw(_("The work report must reference an existing worker assignment."))
+	doc.employee_name = frappe.db.get_value("Employee", doc.employee, "employee_name")
 	for fieldname in (
 		"job_card",
 		"work_order",
@@ -203,6 +369,8 @@ def validate_report_document(doc):
 			frappe.throw(_("Work report identity does not match its worker assignment."))
 	if not doc.request_key or not doc.wage_rate or flt(doc.rate) <= 0:
 		frappe.throw(_("Work session is missing its immutable request or wage-rate snapshot."))
+	_validate_work_report_wage_selection(doc)
+	_validate_time_segments(doc)
 	if doc.status == "In Progress":
 		if not doc.actual_start_time:
 			frappe.throw(_("An active work session requires its actual start time."))
@@ -226,10 +394,14 @@ def validate_report_document(doc):
 		if doc.wage_type == "Time":
 			if flt(doc.reported_minutes) <= 0:
 				frappe.throw(_("Wage minutes must be greater than zero for a time wage."))
-			if doc.actual_start_time and flt(doc.reported_minutes, 6) != flt(doc.actual_minutes, 6):
+			if (
+				not cint(doc.manual_time_entry)
+				and doc.actual_start_time
+				and flt(doc.reported_minutes, 6) != flt(doc.actual_minutes, 6)
+			):
 				frappe.throw(_("Timed wage minutes must equal the captured actual minutes."))
-		elif flt(doc.reported_minutes):
-			frappe.throw(_("Piecework reports cannot contain wage minutes."))
+		elif flt(doc.reported_minutes) or cint(doc.manual_time_entry):
+			frappe.throw(_("Piecework reports cannot contain wage minutes or manual time mode."))
 	if doc.is_new():
 		return
 	old = frappe.db.get_value(
@@ -248,6 +420,10 @@ def validate_report_document(doc):
 			"employee_user",
 			"labor_date",
 			"wage_type",
+			"manual_time_entry",
+			"piecework_rate_snapshot",
+			"hourly_rate_snapshot",
+			"time_manual_entry_snapshot",
 			"status",
 			"actual_start_time",
 			"actual_end_time",
@@ -274,14 +450,26 @@ def validate_report_document(doc):
 		"employee",
 		"employee_user",
 		"labor_date",
-		"wage_type",
 		"actual_start_time",
 		"wage_rate",
 		"wage_rate_revision",
-		"rate",
+		"piecework_rate_snapshot",
+		"hourly_rate_snapshot",
+		"time_manual_entry_snapshot",
 	}
 	if any(old.get(fieldname) != doc.get(fieldname) for fieldname in identity_fields):
 		frappe.throw(_("Work session identity and start facts are immutable."))
+	selection_fields = {"wage_type", "manual_time_entry", "rate"}
+	selection_changed = any(
+		old.get(fieldname) != doc.get(fieldname) for fieldname in selection_fields
+	)
+	selection_at_submission = bool(
+		old.status == "In Progress"
+		and doc.status == "Pending Approval"
+		and getattr(doc.flags, "worker_reporting_wage_selection", False)
+	)
+	if selection_changed and not selection_at_submission:
+		frappe.throw(_("The wage method may only be selected while submitting the work report."))
 	if old.status == "In Progress" and doc.status == "Pending Approval":
 		return
 	immutable_completion_fields = {
@@ -404,9 +592,14 @@ def assign_worker(job_card: str, employee: str, supervisor: str | None = None, n
 	job_card_doc = frappe.get_doc("Job Card", jc.name, for_update=True)
 	job_card_doc.custom_worker_reporting_enabled = 1
 	job_card_doc.custom_worker_reporting_supervisor = supervisor
-	# Native pending_qty means quantity intentionally left for another Job Card.
-	# This flow keeps reporting repeatedly on the same card, so it stays zero.
-	job_card_doc.pending_qty = 0
+	# v16 keeps unfinished quantity explicit. Supervisor-approved process-loss
+	# requests reduce this balance without ever becoming paid completed quantity.
+	job_card_doc.pending_qty = max(
+		flt(job_card_doc.for_quantity)
+		- flt(job_card_doc.total_completed_qty)
+		- flt(job_card_doc.process_loss_qty),
+		0,
+	)
 	job_card_doc.flags.worker_reporting_assignment = True
 	job_card_doc.save(ignore_permissions=True)
 	frappe.db.set_value(
@@ -516,6 +709,7 @@ def get_worker_dashboard():
 	employee = employee_for_user()
 	today = getdate(nowdate())
 	used_minutes = _daily_used_minutes(employee, today)
+	manual_entry_enabled = manual_time_entry_enabled()
 	assignments = frappe.get_all(
 		"Job Card Worker Assignment",
 		filters={"employee": employee, "status": "Active"},
@@ -561,11 +755,24 @@ def get_worker_dashboard():
 				"name",
 				"actual_start_time",
 				"wage_type",
+				"manual_time_entry",
+				"piecework_rate_snapshot",
+				"hourly_rate_snapshot",
+				"time_manual_entry_snapshot",
+				"timer_paused_at",
 				"rate",
 			],
 			as_dict=True,
 		)
-		rate = get_wage_rate(assignment.company, assignment.operation, today) if jc else None
+		configured_rate_options = (
+			get_wage_rates(assignment.company, assignment.operation, today) if jc else []
+		)
+		rate_options = (
+			_work_report_wage_options(active_session)
+			if active_session
+			else configured_rate_options
+		)
+		rate = rate_options[0] if rate_options else None
 		assignment.for_quantity = flt(jc.for_quantity) if jc else 0
 		assignment.completed_qty = flt(jc.total_completed_qty) if jc else 0
 		assignment.production_item = jc.production_item if jc else None
@@ -591,12 +798,39 @@ def get_worker_dashboard():
 		assignment.reportable_qty = material_reportable_qty(jc) if jc else 0
 		assignment.active_report = active_session.name if active_session else None
 		assignment.active_started_at = active_session.actual_start_time if active_session else None
+		assignment.timer_paused_at = active_session.timer_paused_at if active_session else None
+		assignment.active_minutes = (
+			_captured_timer_minutes(
+				frappe.get_doc("Job Card Work Report", active_session.name),
+				include_running_until=None if active_session.timer_paused_at else now_datetime(),
+			)
+			if active_session
+			else 0
+		)
 		assignment.wage_type = (
 			active_session.wage_type if active_session else (rate.wage_type if rate else None)
 		)
 		assignment.rate = flt(
 			active_session.rate if active_session else (rate.rate if rate else 0)
 		)
+		assignment.manual_time_entry = bool(
+			active_session.manual_time_entry
+			if active_session
+			else (rate and rate.wage_type == "Time" and manual_entry_enabled)
+		)
+		assignment.time_manual_entry_available = bool(
+			_time_manual_entry_available(active_session)
+			if active_session
+			else (
+				manual_entry_enabled
+				and any(option.wage_type == "Time" for option in rate_options)
+			)
+		)
+		assignment.wage_options = [
+			{"wage_type": option.wage_type, "rate": flt(option.rate)}
+			for option in rate_options
+		]
+		assignment.can_choose_wage_type = bool(active_session and len(rate_options) > 1)
 		assignment.daily_minutes_used = used_minutes
 		assignment.daily_minutes_limit = daily_minutes_limit()
 		assignment.has_pending_report = bool(
@@ -635,14 +869,19 @@ def get_worker_dashboard():
 			else:
 				assignment.block_code = "NO_REMAINING_QTY"
 				assignment.block_message = _("The Job Card quantity is fully reported.")
-		elif not rate:
+		elif not configured_rate_options:
 			assignment.can_start = False
 			assignment.block_code = "RATE_MISSING"
 			assignment.block_message = _("No enabled wage rate exists for today.")
-		elif rate.wage_type == "Time" and used_minutes >= daily_minutes_limit():
+		elif (
+			all(option.wage_type == "Time" for option in configured_rate_options)
+			and used_minutes >= daily_minutes_limit()
+		):
 			assignment.can_start = False
 			assignment.block_code = "DAILY_MINUTES_LIMIT"
 			assignment.block_message = _("The daily wage-minute limit is already reached.")
+
+	assignments.sort(key=_worker_assignment_priority)
 
 	reports = frappe.get_all(
 		"Job Card Work Report",
@@ -654,6 +893,7 @@ def get_worker_dashboard():
 			"operation",
 			"labor_date",
 			"wage_type",
+			"manual_time_entry",
 			"status",
 			"actual_start_time",
 			"actual_end_time",
@@ -675,7 +915,72 @@ def get_worker_dashboard():
 		"reports": reports,
 		"daily_minutes_used": used_minutes,
 		"daily_minutes_limit": daily_minutes_limit(),
+		"allow_manual_time_entry": manual_entry_enabled,
 	}
+
+
+def _worker_assignment_priority(assignment) -> int:
+	"""Keep active and actionable work ahead of passive material waits."""
+	if assignment.get("active_report"):
+		return 0
+	if assignment.get("can_start"):
+		return 1
+	if assignment.get("block_code") == "PENDING_REPORT":
+		return 2
+	if assignment.get("block_code") == "MATERIAL_NOT_TRANSFERRED":
+		return 4
+	return 3
+
+
+def get_worker_report_history(
+	page=1,
+	page_length=DEFAULT_REVIEW_PAGE_LENGTH,
+	status=None,
+	operation=None,
+	work_order=None,
+	job_card=None,
+	from_date=None,
+	to_date=None,
+):
+	"""Return only the signed-in worker's submitted reports and review trail."""
+	require_worker()
+	employee = employee_for_user()
+	allowed_statuses = {"Pending Approval", "Approved", "Rejected"}
+	if status and status not in allowed_statuses:
+		frappe.throw(_("Report history status must be Pending Approval, Approved, or Rejected."))
+
+	filters = {
+		"employee": employee,
+		"employee_user": frappe.session.user,
+		"status": status or ("in", sorted(allowed_statuses)),
+	}
+	if operation:
+		filters["operation"] = operation
+	if work_order:
+		filters["work_order"] = work_order
+	if job_card:
+		filters["job_card"] = job_card
+
+	start_date = getdate(from_date) if from_date else None
+	end_date = getdate(to_date) if to_date else None
+	if start_date and end_date and start_date > end_date:
+		frappe.throw(_("The report start date cannot be later than the end date."))
+	if start_date and end_date:
+		filters["labor_date"] = ("between", [start_date, end_date])
+	elif start_date:
+		filters["labor_date"] = (">=", start_date)
+	elif end_date:
+		filters["labor_date"] = ("<=", end_date)
+
+	rows, pagination = _review_page(
+		"Job Card Work Report",
+		filters=filters,
+		fields=_review_report_fields(),
+		order_by="labor_date desc, submitted_at desc, creation desc",
+		page=page,
+		page_length=page_length,
+	)
+	return {"rows": rows, "pagination": pagination}
 
 
 def _lock_worker_assignment(assignment: str):
@@ -776,7 +1081,7 @@ def start_work_session(
 			or existing.employee != request_employee
 			or existing.employee_user != frappe.session.user
 		):
-			frappe.throw(_("This start request id was already used for another assignment."))
+			frappe.throw(_("This start request id was already used with different report values."))
 		return frappe.get_doc("Job Card Work Report", existing.name)
 	employee, jc, task = _lock_worker_assignment(assignment)
 	existing = frappe.db.get_value(
@@ -788,7 +1093,7 @@ def start_work_session(
 	)
 	if existing:
 		if existing.assignment != assignment:
-			frappe.throw(_("This start request id was already used for another assignment."))
+			frappe.throw(_("This start request id was already used with different report values."))
 		return frappe.get_doc("Job Card Work Report", existing.name, for_update=True)
 	if frappe.db.get_value(
 		"Job Card Work Report",
@@ -814,9 +1119,28 @@ def start_work_session(
 	labor_date = getdate(started_at)
 	if _month_is_confirmed(task.company, employee, labor_date, for_update=True):
 		frappe.throw(_("This employee's monthly wage summary is already confirmed."))
-	rate = get_wage_rate(task.company, task.operation, labor_date, for_update=True)
-	if not rate:
+	rate_options = get_wage_rates(
+		task.company,
+		task.operation,
+		labor_date,
+		for_update=True,
+	)
+	if not rate_options:
 		frappe.throw(_("No enabled wage rate exists for this operation today."))
+	if all(option.wage_type == "Time" for option in rate_options) and _daily_used_minutes(
+		employee, labor_date, for_update=True
+	) >= daily_minutes_limit():
+		frappe.throw(_("The daily wage-minute limit is already reached."))
+	rate = rate_options[0]
+	piecework_rate = next(
+		(flt(option.rate) for option in rate_options if option.wage_type == "Piecework"),
+		0,
+	)
+	hourly_rate = next(
+		(flt(option.rate) for option in rate_options if option.wage_type == "Time"),
+		0,
+	)
+	time_manual_entry_snapshot = cint(hourly_rate > 0 and manual_time_entry_enabled())
 	doc = frappe.get_doc(
 		{
 			"doctype": "Job Card Work Report",
@@ -831,6 +1155,12 @@ def start_work_session(
 			"employee_user": frappe.session.user,
 			"labor_date": labor_date,
 			"wage_type": rate.wage_type,
+			"manual_time_entry": cint(
+				rate.wage_type == "Time" and time_manual_entry_snapshot
+			),
+			"piecework_rate_snapshot": piecework_rate,
+			"hourly_rate_snapshot": hourly_rate,
+			"time_manual_entry_snapshot": time_manual_entry_snapshot,
 			"status": "In Progress",
 			"actual_start_time": started_at,
 			"completed_qty": 0,
@@ -842,8 +1172,105 @@ def start_work_session(
 			"wage_amount": 0,
 		}
 	)
+	_append_time_segment(doc, started_at, request_key)
 	doc.flags.worker_reporting_action = True
 	doc.insert(ignore_permissions=True)
+	return doc
+
+
+def pause_work_session(
+	report: str,
+	request_id: str | None = None,
+	*,
+	paused_at=None,
+):
+	request_id = _require_request_id(request_id, _("pause"))
+	require_worker()
+	employee = employee_for_user()
+	request_key = _hash_key(employee, frappe.session.user, "pause", request_id)
+	initial = frappe.db.get_value(
+		"Job Card Work Report",
+		report,
+		["name", "assignment", "employee", "employee_user"],
+		as_dict=True,
+	)
+	if not initial:
+		frappe.throw(_("Work session does not exist."))
+	if initial.employee != employee or initial.employee_user != frappe.session.user:
+		frappe.throw(_("You can only pause your own active work session."), frappe.PermissionError)
+	if frappe.db.exists(
+		"Job Card Work Report Time Segment",
+		{"parent": report, "stop_request_key": request_key},
+	):
+		return frappe.get_doc("Job Card Work Report", report)
+
+	locked_employee, _job_card, task = _lock_worker_assignment(initial.assignment)
+	doc = frappe.get_doc("Job Card Work Report", report, for_update=True)
+	if doc.assignment != task.name or doc.employee != locked_employee:
+		frappe.throw(_("You can only pause your own active work session."), frappe.PermissionError)
+	if frappe.db.exists(
+		"Job Card Work Report Time Segment",
+		{"parent": report, "stop_request_key": request_key},
+	):
+		return doc
+	if doc.status != "In Progress":
+		frappe.throw(_("Only an active work session can be paused."))
+	if doc.timer_paused_at:
+		frappe.throw(_("This work timer is already paused."))
+	paused_at = get_datetime(paused_at or now_datetime())
+	_close_time_segment(doc, paused_at, request_key)
+	doc.timer_paused_at = paused_at
+	doc.flags.worker_reporting_action = True
+	doc.save(ignore_permissions=True)
+	return doc
+
+
+def resume_work_session(
+	report: str,
+	request_id: str | None = None,
+	*,
+	resumed_at=None,
+):
+	request_id = _require_request_id(request_id, _("resume"))
+	require_worker()
+	employee = employee_for_user()
+	request_key = _hash_key(employee, frappe.session.user, "resume", request_id)
+	initial = frappe.db.get_value(
+		"Job Card Work Report",
+		report,
+		["name", "assignment", "employee", "employee_user"],
+		as_dict=True,
+	)
+	if not initial:
+		frappe.throw(_("Work session does not exist."))
+	if initial.employee != employee or initial.employee_user != frappe.session.user:
+		frappe.throw(_("You can only resume your own active work session."), frappe.PermissionError)
+	if frappe.db.exists(
+		"Job Card Work Report Time Segment",
+		{"parent": report, "start_request_key": request_key},
+	):
+		return frappe.get_doc("Job Card Work Report", report)
+
+	locked_employee, _job_card, task = _lock_worker_assignment(initial.assignment)
+	doc = frappe.get_doc("Job Card Work Report", report, for_update=True)
+	if doc.assignment != task.name or doc.employee != locked_employee:
+		frappe.throw(_("You can only resume your own active work session."), frappe.PermissionError)
+	if frappe.db.exists(
+		"Job Card Work Report Time Segment",
+		{"parent": report, "start_request_key": request_key},
+	):
+		return doc
+	if doc.status != "In Progress":
+		frappe.throw(_("Only an active work session can be resumed."))
+	if not doc.timer_paused_at:
+		frappe.throw(_("This work timer is already running."))
+	resumed_at = get_datetime(resumed_at or now_datetime())
+	if resumed_at < get_datetime(doc.timer_paused_at):
+		frappe.throw(_("Resume time cannot be earlier than the pause time."))
+	_append_time_segment(doc, resumed_at, request_key)
+	doc.timer_paused_at = None
+	doc.flags.worker_reporting_action = True
+	doc.save(ignore_permissions=True)
 	return doc
 
 
@@ -851,6 +1278,8 @@ def finish_work_session(
 	report: str,
 	completed_qty,
 	request_id: str | None = None,
+	reported_minutes=None,
+	wage_type: str | None = None,
 	*,
 	ended_at=None,
 ):
@@ -859,6 +1288,8 @@ def finish_work_session(
 	request_employee = employee_for_user()
 	precision = job_card_qty_precision()
 	qty = flt(completed_qty, precision)
+	requested_minutes = flt(reported_minutes, 6)
+	requested_wage_type = str(wage_type or "").strip()
 	completion_key = _hash_key(request_employee, frappe.session.user, "finish", request_id)
 	initial = frappe.db.get_value(
 		"Job Card Work Report",
@@ -868,8 +1299,11 @@ def finish_work_session(
 			"assignment",
 			"employee",
 			"employee_user",
+			"wage_type",
+			"manual_time_entry",
 			"completion_request_key",
 			"completed_qty",
+			"reported_minutes",
 		],
 		as_dict=True,
 	)
@@ -881,6 +1315,12 @@ def finish_work_session(
 		if (
 			initial.completion_request_key != completion_key
 			or flt(initial.completed_qty, precision) != qty
+			or (requested_wage_type and initial.wage_type != requested_wage_type)
+			or (
+				initial.wage_type == "Time"
+				and cint(initial.manual_time_entry)
+				and flt(initial.reported_minutes, 6) != requested_minutes
+			)
 		):
 			frappe.throw(_("This finish request id was already used with different report values."))
 		return frappe.get_doc("Job Card Work Report", initial.name)
@@ -892,11 +1332,18 @@ def finish_work_session(
 		if (
 			doc.completion_request_key != completion_key
 			or flt(doc.completed_qty, precision) != qty
+			or (requested_wage_type and doc.wage_type != requested_wage_type)
+			or (
+				doc.wage_type == "Time"
+				and cint(doc.manual_time_entry)
+				and flt(doc.reported_minutes, 6) != requested_minutes
+			)
 		):
 			frappe.throw(_("This finish request id was already used with different report values."))
 		return doc
 	if doc.status != "In Progress":
 		frappe.throw(_("Only an active work session can be finished."))
+	selected_rate = _select_work_report_wage_option(doc, requested_wage_type)
 	if _month_is_confirmed(task.company, employee, doc.labor_date, for_update=True):
 		frappe.throw(_("This employee's monthly wage summary is already confirmed."))
 	if qty <= 0:
@@ -908,9 +1355,20 @@ def finish_work_session(
 	started_at = get_datetime(doc.actual_start_time)
 	if ended_at <= started_at:
 		frappe.throw(_("Actual end time must be later than actual start time."))
-	# Use the same calculation as ERPNext Job Card so the immutable report
-	# snapshot and the native child row remain exactly comparable.
-	actual_minutes = flt(time_diff_in_hours(ended_at, started_at) * 60, 6)
+	if flt(time_diff_in_hours(ended_at, started_at) * 60, 6) > MAX_WORK_SESSION_MINUTES:
+		frappe.throw(
+			_(
+				"A work session cannot span more than 24 hours. Cancel this active session and report again."
+			)
+		)
+	if doc.timer_paused_at:
+		if ended_at < get_datetime(doc.timer_paused_at):
+			frappe.throw(_("Finish time cannot be earlier than the pause time."))
+	else:
+		_close_time_segment(doc, ended_at, completion_key)
+	segments = _time_segments(doc)
+	actual_end_time = get_datetime(segments[-1].ended_at)
+	actual_minutes = _captured_timer_minutes(doc)
 	if actual_minutes <= 0:
 		frappe.throw(_("Actual production minutes must be greater than zero."))
 	if actual_minutes > MAX_WORK_SESSION_MINUTES:
@@ -919,8 +1377,16 @@ def finish_work_session(
 				"A single work session cannot exceed 24 hours. Cancel this active session and report again."
 			)
 		)
-	minutes = actual_minutes if doc.wage_type == "Time" else 0
+	doc.wage_type = selected_rate.wage_type
+	doc.rate = flt(selected_rate.rate)
+	doc.manual_time_entry = cint(
+		doc.wage_type == "Time" and _time_manual_entry_available(doc)
+	)
+	minutes = 0
 	if doc.wage_type == "Time":
+		minutes = requested_minutes if cint(doc.manual_time_entry) else actual_minutes
+		if minutes <= 0:
+			frappe.throw(_("Enter wage minutes greater than zero."))
 		used = _daily_used_minutes(employee, doc.labor_date, for_update=True)
 		if flt(used + minutes, 6) > flt(daily_minutes_limit(), 6):
 			frappe.throw(
@@ -931,10 +1397,11 @@ def finish_work_session(
 			)
 	audit = request_audit()
 	doc.completion_request_key = completion_key
-	doc.actual_end_time = ended_at
+	doc.actual_end_time = actual_end_time
 	doc.actual_minutes = actual_minutes
 	doc.completed_qty = qty
 	doc.reported_minutes = minutes
+	doc.timer_paused_at = None
 	doc.wage_amount = money(
 		qty * flt(doc.rate)
 		if doc.wage_type == "Piecework"
@@ -946,6 +1413,7 @@ def finish_work_session(
 	doc.submission_user_agent = audit.user_agent
 	doc.status = "Pending Approval"
 	doc.flags.worker_reporting_action = True
+	doc.flags.worker_reporting_wage_selection = True
 	doc.save(ignore_permissions=True)
 	return doc
 
@@ -1017,36 +1485,114 @@ def _report_filter_for_reviewer() -> dict:
 	return filters
 
 
-def get_review_dashboard():
+def _review_pagination(page=1, page_length=DEFAULT_REVIEW_PAGE_LENGTH, total_count=0):
+	page = max(cint(page) or 1, 1)
+	page_length = min(max(cint(page_length) or DEFAULT_REVIEW_PAGE_LENGTH, 1), MAX_REVIEW_PAGE_LENGTH)
+	total_count = cint(total_count)
+	total_pages = ceil(total_count / page_length) if total_count else 0
+	if total_pages:
+		page = min(page, total_pages)
+	return {
+		"page": page,
+		"page_length": page_length,
+		"total_count": total_count,
+		"total_pages": total_pages,
+		"has_next": bool(total_pages and page < total_pages),
+		"has_prev": bool(total_count and page > 1),
+	}
+
+
+def _review_page(doctype, *, filters, fields, order_by, page=1, page_length=DEFAULT_REVIEW_PAGE_LENGTH):
+	page_meta = _review_pagination(
+		page=page,
+		page_length=page_length,
+		total_count=frappe.db.count(doctype, filters=filters),
+	)
+	rows = frappe.get_all(
+		doctype,
+		filters=filters,
+		fields=fields,
+		order_by=order_by,
+		offset=(page_meta["page"] - 1) * page_meta["page_length"],
+		limit=page_meta["page_length"],
+	)
+	return rows, page_meta
+
+
+def _employee_identity(rows):
+	employees = sorted({row.employee for row in rows if row.get("employee")})
+	if not employees:
+		return {}
+	return {
+		row.name: row
+		for row in frappe.get_all(
+			"Employee",
+			filters={"name": ("in", employees)},
+			fields=["name", "employee_name", "user_id"],
+			limit=0,
+		)
+	}
+
+
+def _set_employee_names(rows, employee_identity=None):
+	employee_identity = employee_identity or _employee_identity(rows)
+	for row in rows:
+		identity = employee_identity.get(row.employee) if row.get("employee") else None
+		row.employee_name = identity.employee_name if identity else row.get("employee")
+	return rows
+
+
+def _review_report_fields():
+	return [
+		"name",
+		"assignment",
+		"job_card",
+		"work_order",
+		"company",
+		"operation",
+		"employee",
+		"employee_user",
+		"labor_date",
+		"wage_type",
+		"manual_time_entry",
+		"status",
+		"completed_qty",
+		"actual_start_time",
+		"actual_end_time",
+		"actual_minutes",
+		"reported_minutes",
+		"rate",
+		"wage_amount",
+		"submitted_by",
+		"submitted_at",
+		"reviewed_by",
+		"reviewed_at",
+		"rejection_reason",
+		"job_card_time_log",
+		"monthly_summary",
+		"modified",
+	]
+
+
+def get_review_dashboard(
+	pending_page=1,
+	assignment_page=1,
+	processed_page=1,
+	page_length=DEFAULT_REVIEW_PAGE_LENGTH,
+):
 	require_reviewer()
 	base_filters = _report_filter_for_reviewer()
 	pending_filters = {**base_filters, "status": "Pending Approval"}
-	reports = frappe.get_all(
+	reports, pending_pagination = _review_page(
 		"Job Card Work Report",
 		filters=pending_filters,
-		fields=[
-			"name",
-			"assignment",
-			"job_card",
-			"work_order",
-			"operation",
-			"employee",
-			"employee_user",
-			"labor_date",
-			"wage_type",
-			"completed_qty",
-			"actual_start_time",
-			"actual_end_time",
-			"actual_minutes",
-			"reported_minutes",
-			"rate",
-			"wage_amount",
-			"submitted_at",
-			"modified",
-		],
+		fields=_review_report_fields(),
 		order_by="submitted_at asc, creation asc",
-		limit=0,
+		page=pending_page,
+		page_length=page_length,
 	)
+	employee_identity = _employee_identity(reports)
+	admin_reviewer = is_admin_reviewer()
 	for report in reports:
 		jc = job_card_values(report.job_card)
 		all_pending = pending_report_qty(report.job_card)
@@ -1085,12 +1631,13 @@ def get_review_dashboard():
 				code="ASSIGNMENT_INACTIVE",
 				message=_("Worker assignment is no longer active."),
 			)
-		elif not is_admin_reviewer() and snapshot.supervisor != frappe.session.user:
+		elif not admin_reviewer and snapshot.supervisor != frappe.session.user:
 			review_block = frappe._dict(
 				code="REVIEW_SCOPE",
 				message=_("You can only review reports assigned to you."),
 			)
-		current_worker_user = frappe.db.get_value("Employee", report.employee, "user_id")
+		current_worker = employee_identity.get(report.employee)
+		current_worker_user = current_worker.user_id if current_worker else None
 		if not review_block and frappe.session.user in {report.employee_user, current_worker_user}:
 			review_block = frappe._dict(
 				code="SELF_REVIEW",
@@ -1098,7 +1645,12 @@ def get_review_dashboard():
 			)
 
 		block = review_block or job_card_block(jc)
-		if not block and flt(flt(jc.total_completed_qty, precision) + all_pending, precision) > flt(
+		if not block and flt(
+			flt(jc.total_completed_qty, precision)
+			+ flt(jc.process_loss_qty, precision)
+			+ all_pending,
+			precision,
+		) > flt(
 			jc.for_quantity, precision
 		):
 			block = frappe._dict(
@@ -1109,7 +1661,12 @@ def get_review_dashboard():
 		if (
 			not block
 			and material_capacity is not None
-			and flt(flt(jc.total_completed_qty, precision) + all_pending, precision)
+			and flt(
+				flt(jc.total_completed_qty, precision)
+				+ flt(jc.process_loss_qty, precision)
+				+ all_pending,
+				precision,
+			)
 			> flt(material_capacity, precision)
 		):
 			block = frappe._dict(
@@ -1137,15 +1694,16 @@ def get_review_dashboard():
 		report.reject_block_message = review_block.message if review_block else None
 		report.capacity_conflict = bool(block)
 
-	assignments = frappe.get_all(
+	assignments, assignment_pagination = _review_page(
 		"Job Card Worker Assignment",
 		filters={
 			"status": "Active",
-			**({"supervisor": frappe.session.user} if not is_admin_reviewer() else {}),
+			**({"supervisor": frappe.session.user} if not admin_reviewer else {}),
 		},
 		fields=["name", "job_card", "work_order", "operation", "employee", "supervisor", "notes", "assigned_at"],
 		order_by="assigned_at desc",
-		limit=0,
+		page=assignment_page,
+		page_length=page_length,
 	)
 	for assignment in assignments:
 		active_session = frappe.db.get_value(
@@ -1170,26 +1728,19 @@ def get_review_dashboard():
 		"status": ("in", ["Approved", "Rejected"]),
 		"reviewed_at": ("between", [f"{nowdate()} 00:00:00", f"{nowdate()} 23:59:59"]),
 	}
-	processed = frappe.get_all(
+	processed, processed_pagination = _review_page(
 		"Job Card Work Report",
 		filters=processed_filters,
-		fields=[
-			"name",
-			"job_card",
-			"operation",
-			"employee",
-			"status",
-			"completed_qty",
-			"actual_start_time",
-			"actual_end_time",
-			"actual_minutes",
-			"reported_minutes",
-			"reviewed_at",
-			"rejection_reason",
-		],
+		fields=_review_report_fields(),
 		order_by="reviewed_at desc",
-		limit=100,
+		page=processed_page,
+		page_length=page_length,
 	)
+	all_rows = [*reports, *assignments, *processed]
+	employee_identity.update(_employee_identity(all_rows))
+	_set_employee_names(reports, employee_identity)
+	_set_employee_names(assignments, employee_identity)
+	_set_employee_names(processed, employee_identity)
 	wage_scope = (
 		wage_manager_companies(throw_if_empty=False)
 		if user_roles().intersection(WAGE_ROLES)
@@ -1199,6 +1750,11 @@ def get_review_dashboard():
 		"reports": reports,
 		"assignments": assignments,
 		"processed_today": processed,
+		"pagination": {
+			"reports": pending_pagination,
+			"assignments": assignment_pagination,
+			"processed_today": processed_pagination,
+		},
 		"can_manage_wages": wage_scope is None or bool(wage_scope),
 		"companies": (
 			frappe.get_all("Company", pluck="name", order_by="name", limit=0)
@@ -1206,6 +1762,58 @@ def get_review_dashboard():
 			else sorted(wage_scope)
 		),
 	}
+
+
+def get_review_history(
+	page=1,
+	page_length=DEFAULT_REVIEW_PAGE_LENGTH,
+	status=None,
+	employee=None,
+	work_order=None,
+	job_card=None,
+	from_date=None,
+	to_date=None,
+):
+	"""Return reviewer-scoped decisions with bounded server-side pagination."""
+	require_reviewer()
+	allowed_statuses = {"Approved", "Rejected"}
+	if status and status not in allowed_statuses:
+		frappe.throw(_("Historical review status must be Approved or Rejected."))
+	filters = {
+		**_report_filter_for_reviewer(),
+		"status": status or ("in", sorted(allowed_statuses)),
+	}
+	if employee:
+		filters["employee"] = employee
+	if work_order:
+		filters["work_order"] = work_order
+	if job_card:
+		filters["job_card"] = job_card
+
+	start_date = getdate(from_date) if from_date else None
+	end_date = getdate(to_date) if to_date else None
+	if start_date and end_date and start_date > end_date:
+		frappe.throw(_("The review start date cannot be later than the end date."))
+	if start_date and end_date:
+		filters["reviewed_at"] = (
+			"between",
+			[f"{start_date} 00:00:00", f"{end_date} 23:59:59.999999"],
+		)
+	elif start_date:
+		filters["reviewed_at"] = (">=", f"{start_date} 00:00:00")
+	elif end_date:
+		filters["reviewed_at"] = ("<=", f"{end_date} 23:59:59.999999")
+
+	rows, pagination = _review_page(
+		"Job Card Work Report",
+		filters=filters,
+		fields=_review_report_fields(),
+		order_by="reviewed_at desc, name desc",
+		page=page,
+		page_length=page_length,
+	)
+	_set_employee_names(rows)
+	return {"rows": rows, "pagination": pagination}
 
 
 def _lock_report_for_review(
@@ -1281,37 +1889,67 @@ def _lock_report_for_review(
 
 
 def _assert_approved_report_integrity(jc, doc):
-	row = frappe.db.get_value(
+	rows = frappe.get_all(
 		"Job Card Time Log",
-		{"parent": doc.job_card, "custom_job_card_work_report": doc.name},
-		[
+		filters={"parent": doc.job_card, "custom_job_card_work_report_segment": doc.name},
+		fields=[
 			"name",
 			"employee",
 			"completed_qty",
 			"from_time",
 			"to_time",
 			"time_in_mins",
+			"custom_job_card_work_report",
 			"custom_reported_employee",
+			"idx",
 		],
-		as_dict=True,
-		for_update=True,
+		order_by="idx asc",
+		limit=0,
 	)
-	if (
-		not row
-		or row.name != doc.job_card_time_log
-		or row.employee != doc.employee
-		or row.custom_reported_employee != doc.employee
-		or flt(row.completed_qty, 6) != flt(doc.completed_qty, 6)
+	if not rows:
+		legacy = frappe.db.get_value(
+			"Job Card Time Log",
+			{"parent": doc.job_card, "custom_job_card_work_report": doc.name},
+			[
+				"name", "employee", "completed_qty", "from_time", "to_time",
+				"time_in_mins", "custom_job_card_work_report", "custom_reported_employee",
+			],
+			as_dict=True,
+			for_update=True,
+		)
+		rows = [legacy] if legacy else []
+	quantity_rows = [row for row in rows if flt(row.completed_qty)]
+	if not rows or len(quantity_rows) != 1 or any(
+		row.employee != doc.employee or row.custom_reported_employee != doc.employee for row in rows
 	):
 		frappe.throw(_("Approved work report is inconsistent with its Job Card quantity row."))
-	if doc.actual_start_time or doc.actual_end_time:
-		if (
-			get_datetime(row.from_time) != get_datetime(doc.actual_start_time)
-			or get_datetime(row.to_time) != get_datetime(doc.actual_end_time)
-			or flt(row.time_in_mins, 6) != flt(doc.actual_minutes, 6)
-		):
-			frappe.throw(_("Approved work report is inconsistent with its Job Card time row."))
-	elif row.from_time or row.to_time or flt(row.time_in_mins):
+	quantity_row = quantity_rows[0]
+	if (
+		quantity_row.name != doc.job_card_time_log
+		or flt(sum(flt(row.completed_qty) for row in rows), 6) != flt(doc.completed_qty, 6)
+		or quantity_row.custom_job_card_work_report != doc.name
+	):
+		frappe.throw(_("Approved work report is inconsistent with its Job Card quantity row."))
+	segments = _time_segments(doc)
+	if not segments and (doc.actual_start_time or doc.actual_end_time):
+		segments = [
+			frappe._dict(
+				started_at=doc.actual_start_time,
+				ended_at=doc.actual_end_time,
+				duration_minutes=doc.actual_minutes,
+			)
+		]
+	if segments:
+		if len(rows) != len(segments):
+			frappe.throw(_("Approved work report is inconsistent with its Job Card time segments."))
+		for row, segment in zip(rows, segments):
+			if (
+				get_datetime(row.from_time) != get_datetime(segment.started_at)
+				or get_datetime(row.to_time) != get_datetime(segment.ended_at)
+				or flt(row.time_in_mins, 6) != flt(segment.duration_minutes, 6)
+			):
+				frappe.throw(_("Approved work report is inconsistent with its Job Card time segments."))
+	elif any(row.from_time or row.to_time or flt(row.time_in_mins) for row in rows):
 		frappe.throw(_("Legacy untimed work report acquired Job Card time."))
 	_assert_report_facts_match_job_card(jc, for_update=True)
 
@@ -1327,13 +1965,20 @@ def approve_work_report(name: str):
 	_assert_report_facts_match_job_card(jc_values, for_update=True)
 	precision = job_card_qty_precision()
 	all_pending = pending_report_qty(doc.job_card, for_update=True)
-	if flt(flt(jc_values.total_completed_qty, precision) + all_pending, precision) > flt(
+	if flt(
+		flt(jc_values.total_completed_qty, precision)
+		+ flt(jc_values.process_loss_qty, precision)
+		+ all_pending,
+		precision,
+	) > flt(
 		jc_values.for_quantity, precision
 	):
 		frappe.throw(_("Pending reports no longer fit the Job Card quantity. Reject the incorrect report."))
 	material_capacity = work_order_material_capacity(jc_values, for_update=True)
 	if material_capacity is not None and flt(
-		flt(jc_values.total_completed_qty, precision) + all_pending,
+		flt(jc_values.total_completed_qty, precision)
+		+ flt(jc_values.process_loss_qty, precision)
+		+ all_pending,
 		precision,
 	) > flt(material_capacity, precision):
 		frappe.throw(
@@ -1343,18 +1988,39 @@ def approve_work_report(name: str):
 		)
 
 	job_card = frappe.get_doc("Job Card", doc.job_card, for_update=True)
-	job_card.append(
-		"time_logs",
-		{
-			"employee": doc.employee,
-			"completed_qty": flt(doc.completed_qty),
-			"from_time": doc.actual_start_time,
-			"to_time": doc.actual_end_time,
-			"custom_job_card_work_report": doc.name,
-			"custom_reported_employee": doc.employee,
-		},
+	segments = _time_segments(doc)
+	if not segments:
+		segments = [
+			frappe._dict(
+				started_at=doc.actual_start_time,
+				ended_at=doc.actual_end_time,
+				duration_minutes=doc.actual_minutes,
+			)
+		]
+	quantity_row = None
+	for index, segment in enumerate(segments):
+		is_quantity_row = index == len(segments) - 1
+		row = job_card.append(
+			"time_logs",
+			{
+				"employee": doc.employee,
+				"completed_qty": flt(doc.completed_qty) if is_quantity_row else 0,
+				"from_time": segment.started_at,
+				"to_time": segment.ended_at,
+				"custom_job_card_work_report": doc.name if is_quantity_row else None,
+				"custom_job_card_work_report_segment": doc.name,
+				"custom_reported_employee": doc.employee,
+			},
+		)
+		if is_quantity_row:
+			quantity_row = row
+	job_card.pending_qty = max(
+		flt(job_card.for_quantity, precision)
+		- flt(job_card.total_completed_qty, precision)
+		- flt(job_card.process_loss_qty, precision)
+		- flt(doc.completed_qty, precision),
+		0,
 	)
-	job_card.pending_qty = 0
 	job_card.flags.worker_reporting_approval = doc.name
 	job_card.save(ignore_permissions=True)
 	if flt(job_card.total_completed_qty, precision) != flt(
@@ -1362,7 +2028,10 @@ def approve_work_report(name: str):
 		precision,
 	):
 		frappe.throw(_("Job Card did not accept the approved quantity exactly; approval was rolled back."))
-	if flt(job_card.total_completed_qty, precision) == flt(job_card.for_quantity, precision):
+	if flt(
+		flt(job_card.total_completed_qty, precision) + flt(job_card.process_loss_qty, precision),
+		precision,
+	) == flt(job_card.for_quantity, precision):
 		# ERPNext's Job Card submit updates the parent Work Order through a fresh
 		# document, which does not inherit this service's ignore_permissions flag.
 		# Keep the real web session intact and expose only the exact parent Work
@@ -1376,12 +2045,7 @@ def approve_work_report(name: str):
 	doc.reviewed_at = now_datetime()
 	doc.review_ip = audit.ip
 	doc.review_user_agent = audit.user_agent
-	doc.job_card_time_log = frappe.db.get_value(
-		"Job Card Time Log",
-		{"parent": doc.job_card, "custom_job_card_work_report": doc.name},
-		"name",
-		for_update=True,
-	)
+	doc.job_card_time_log = quantity_row.name if quantity_row else None
 	if not doc.job_card_time_log:
 		frappe.throw(_("Approved Job Card quantity row could not be linked back to the report."))
 	doc.rejection_reason = None
@@ -1413,13 +2077,232 @@ def reject_work_report(name: str, reason: str):
 	return doc
 
 
-def search_draft_job_cards(txt: str = "", start: int = 0, page_len: int = 20):
+def get_work_order_assignment_context(work_order: str):
+	"""Return operation-level assignment facts for one production Work Order.
+
+	The production workbench uses this read-only snapshot to keep dispatch in the
+	current planning context. Assignment writes still go through ``assign_worker``
+	and therefore retain the same locks, role checks, and Job Card invariants.
+	"""
+	require_reviewer()
+	work_order_row = frappe.db.get_value(
+		"Work Order",
+		work_order,
+		[
+			"name",
+			"company",
+			"production_item",
+			"qty",
+			"produced_qty",
+			"status",
+			"docstatus",
+			"skip_transfer",
+			"material_transferred_for_manufacturing",
+		],
+		as_dict=True,
+	)
+	if not work_order_row:
+		frappe.throw(_("Work Order does not exist."))
+	_assert_supervisor_company(frappe.session.user, work_order_row.company)
+
+	job_card_rows = frappe.get_all(
+		"Job Card",
+		filters={"work_order": work_order},
+		fields=["name", "operation", "workstation", "sequence_id", "creation"],
+		order_by="sequence_id asc, creation asc",
+		limit=0,
+	)
+	all_assignments = frappe.get_all(
+		"Job Card Worker Assignment",
+		filters={"work_order": work_order},
+		fields=["name", "job_card", "employee", "supervisor", "status", "assigned_at"],
+		order_by="assigned_at asc, creation asc",
+		limit=0,
+	)
+	assignment_names = [row.name for row in all_assignments]
+	latest_reports = (
+		frappe.get_all(
+			"Job Card Work Report",
+			filters={
+				"assignment": ["in", assignment_names],
+			},
+			fields=["assignment", "status", "modified"],
+			order_by="modified desc",
+			limit=0,
+		)
+		if assignment_names
+		else []
+	)
+	report_status_by_assignment = {}
+	for report in latest_reports:
+		report_status_by_assignment.setdefault(report.assignment, report.status)
+
+	employee_names = {
+		row.name: row.employee_name
+		for row in frappe.get_all(
+			"Employee",
+			filters={"name": ["in", sorted({row.employee for row in all_assignments})]},
+			fields=["name", "employee_name"],
+			limit=0,
+		)
+	} if all_assignments else {}
+	admin_reviewer = is_admin_reviewer()
+
+	job_cards = []
+	for job_card_row in job_card_rows:
+		job_card = job_card_values(job_card_row.name)
+		block = job_card_block(job_card)
+		remaining_qty = reportable_qty(job_card) if job_card else 0
+		if not block and remaining_qty <= 0:
+			block = frappe._dict(
+				code="NO_REMAINING_QTY",
+				message=_("The Job Card has no remaining reportable quantity."),
+			)
+		if job_card and not block:
+			today = getdate(nowdate())
+			wage_rate = frappe.qb.DocType("Operation Wage Rate")
+			wage_rates = (
+				frappe.qb.from_(wage_rate)
+				.select(wage_rate.name)
+				.where(
+					(wage_rate.company == job_card.company)
+					& (wage_rate.operation == job_card.operation)
+					& (wage_rate.enabled == 1)
+					& (wage_rate.valid_from <= today)
+					& ((wage_rate.valid_to.isnull()) | (wage_rate.valid_to >= today))
+				)
+				.orderby(wage_rate.valid_from, order=Order.desc)
+				.orderby(wage_rate.modified, order=Order.desc)
+				.limit(2)
+			).run(as_dict=True)
+		else:
+			wage_rates = []
+		if not block and not wage_rates:
+			block = frappe._dict(
+				code="RATE_MISSING",
+				message=_("Configure an enabled wage rate for this operation before assigning workers."),
+			)
+		elif not block and len(wage_rates) > 1:
+			block = frappe._dict(
+				code="RATE_CONFLICT",
+				message=_("More than one wage rate is active for this operation and date."),
+			)
+
+		job_assignments = [row for row in all_assignments if row.job_card == job_card_row.name]
+		active_job_assignments = [row for row in job_assignments if row.status == "Active"]
+		visible_assignments = [
+			row
+			for row in job_assignments
+			if admin_reviewer or row.supervisor == frappe.session.user
+		]
+		assignment_supervisors = sorted(
+			{row.supervisor for row in active_job_assignments if row.supervisor}
+		)
+		visible_historical_supervisors = sorted(
+			{row.supervisor for row in visible_assignments if row.supervisor}
+		)
+		action_supervisor = (
+			assignment_supervisors[0]
+			if len(assignment_supervisors) == 1
+			else frappe.session.user
+		)
+		display_supervisor = (
+			assignment_supervisors[0]
+			if len(assignment_supervisors) == 1
+			and (admin_reviewer or assignment_supervisors[0] == frappe.session.user)
+			else visible_historical_supervisors[0]
+			if len(visible_historical_supervisors) == 1
+			else ""
+		)
+		if not block and len(assignment_supervisors) > 1:
+			block = frappe._dict(
+				code="SUPERVISOR_CONFLICT",
+				message=_("Existing assignments use more than one reviewing supervisor."),
+			)
+		other_supervisor = any(
+			row.supervisor != frappe.session.user for row in active_job_assignments
+		)
+		if not block and not admin_reviewer and other_supervisor:
+			block = frappe._dict(
+				code="OTHER_SUPERVISOR",
+				message=_("This Job Card is already managed by another production supervisor."),
+			)
+		material_capacity = work_order_material_capacity(job_card) if job_card else 0
+		available_reportable_qty = material_reportable_qty(job_card) if job_card else 0
+		if remaining_qty <= 0:
+			material_status = "COMPLETED"
+			material_status_label = _("Completed")
+		elif material_capacity is None or available_reportable_qty > 0:
+			material_status = "READY_TO_REPORT"
+			material_status_label = _("Ready to report")
+		else:
+			material_status = "MATERIAL_NOT_TRANSFERRED"
+			material_status_label = _("Waiting for material issue")
+
+		job_cards.append(
+			{
+				"name": job_card_row.name,
+				"operation": job_card_row.operation,
+				"workstation": job_card_row.workstation,
+				"sequence_id": job_card_row.sequence_id,
+				"for_quantity": flt(job_card.for_quantity) if job_card else 0,
+				"completed_qty": flt(job_card.total_completed_qty) if job_card else 0,
+				"remaining_qty": remaining_qty,
+				"available_reportable_qty": available_reportable_qty,
+				"material_status": material_status,
+				"material_status_label": material_status_label,
+				"can_assign": not block,
+				"block_code": block.code if block else None,
+				"block_message": block.message if block else None,
+				"assignment_supervisor": action_supervisor,
+				"display_supervisor": display_supervisor,
+				"can_choose_supervisor": admin_reviewer and not assignment_supervisors,
+				"assignments": [
+					{
+						"name": row.name,
+						"employee": row.employee,
+						"employee_name": employee_names.get(row.employee) or row.employee,
+						"supervisor": row.supervisor,
+						"assignment_status": row.status,
+						"report_status": report_status_by_assignment.get(row.name),
+					}
+					for row in visible_assignments
+				],
+			}
+		)
+
+	default_job_card = next((row for row in job_cards if row["can_assign"]), None)
+	return {
+		"work_order": dict(work_order_row),
+		"job_cards": job_cards,
+		"assignment_supervisor": (
+			default_job_card["assignment_supervisor"]
+			if default_job_card
+			else frappe.session.user
+		),
+		"can_choose_supervisor": admin_reviewer,
+		"can_assign": any(row["can_assign"] for row in job_cards),
+	}
+
+
+def search_draft_job_cards(
+	txt: str = "",
+	start: int = 0,
+	page_len: int = 20,
+	work_order: str | None = None,
+):
 	require_reviewer()
 	if frappe.db.get_single_value("Manufacturing Settings", "enforce_time_logs"):
 		return []
 	companies = _supervisor_companies(frappe.session.user)
+	if work_order:
+		work_order_company = frappe.db.get_value("Work Order", work_order, "company")
+		if not work_order_company:
+			return []
+		_assert_supervisor_company(frappe.session.user, work_order_company)
 	txt = f"%{str(txt or '').strip()}%"
 	company_condition = "" if companies is None else "and jc.company in %(companies)s"
+	work_order_condition = "and jc.work_order = %(work_order)s" if work_order else ""
 	supervisor_condition = (
 		""
 		if is_admin_reviewer()
@@ -1441,14 +2324,14 @@ def search_draft_job_cards(txt: str = "", start: int = 0, page_len: int = 20):
 		  and ifnull(jc.is_corrective_job_card, 0) = 0
 		  and ifnull(jc.track_semi_finished_goods, 0) = 0
 		  and ifnull(jc.is_subcontracted, 0) = 0
-		  and ifnull(jc.process_loss_qty, 0) = 0
 		  and ifnull(jc.company, '') != ''
 		  and ifnull(jc.operation, '') != ''
 		  and ifnull(jc.operation_id, '') != ''
 		  and ifnull(jc.for_quantity, 0) > 0
-		  and ifnull(jc.total_completed_qty, 0) < ifnull(jc.for_quantity, 0)
+		  and ifnull(jc.total_completed_qty, 0) + ifnull(jc.process_loss_qty, 0) < ifnull(jc.for_quantity, 0)
 		  {company_condition}
 		  {supervisor_condition}
+		  {work_order_condition}
 		  and (jc.name like %(txt)s or ifnull(jc.operation, '') like %(txt)s or ifnull(jc.work_order, '') like %(txt)s)
 		  and 1 = (
 			select count(*) from `tabOperation Wage Rate` wage_rate
@@ -1462,11 +2345,12 @@ def search_draft_job_cards(txt: str = "", start: int = 0, page_len: int = 20):
 			select 1 from `tabJob Card Operation` subop
 			where subop.parent = jc.name and subop.parentfield = 'sub_operations'
 		  )
-		  and not exists (
-			select 1 from `tabJob Card Time Log` time_log
-			where time_log.parent = jc.name
-			  and ifnull(time_log.custom_job_card_work_report, '') = ''
-		  )
+			  and not exists (
+				select 1 from `tabJob Card Time Log` time_log
+				where time_log.parent = jc.name
+				  and ifnull(time_log.custom_job_card_work_report, '') = ''
+				  and ifnull(time_log.custom_job_card_work_report_segment, '') = ''
+			  )
 		order by jc.modified desc
 		limit %(start)s, %(page_len)s
 		""",
@@ -1474,7 +2358,81 @@ def search_draft_job_cards(txt: str = "", start: int = 0, page_len: int = 20):
 			"txt": txt,
 			"companies": tuple(sorted(companies or [])),
 			"current_user": frappe.session.user,
+			"work_order": work_order,
 			"today": getdate(nowdate()),
+			"start": int(start),
+			"page_len": min(50, int(page_len)),
+		},
+	)
+
+
+def search_assignment_supervisors(
+	work_order: str,
+	txt: str = "",
+	start: int = 0,
+	page_len: int = 20,
+):
+	"""Return reviewers who can own assignments for the Work Order company."""
+	require_reviewer()
+	company = frappe.db.get_value("Work Order", work_order, "company")
+	if not company:
+		return []
+	_assert_supervisor_company(frappe.session.user, company)
+	search_text = f"%{str(txt or '').strip()}%"
+	if not is_admin_reviewer():
+		full_name = frappe.db.get_value("User", frappe.session.user, "full_name")
+		label = full_name or frappe.session.user
+		if str(txt or "").strip().lower() not in f"{frappe.session.user} {label}".lower():
+			return []
+		return [(frappe.session.user, label)]
+
+	return frappe.db.sql(
+		"""
+		select distinct user.name, coalesce(nullif(user.full_name, ''), user.name)
+		from `tabUser` user
+		where user.enabled = 1
+		  and (
+			user.name = 'Administrator'
+			or exists (
+				select 1 from `tabHas Role` reviewer_role
+				where reviewer_role.parent = user.name
+				  and reviewer_role.parenttype = 'User'
+				  and reviewer_role.role in (
+					'Process Simplification Owner', 'Production Supervisor',
+					'Process Simplification Production Manager', 'System Manager'
+				  )
+			)
+		  )
+		  and (
+			user.name = 'Administrator'
+			or exists (
+				select 1 from `tabHas Role` manager_role
+				where manager_role.parent = user.name
+				  and manager_role.parenttype = 'User'
+				  and manager_role.role = 'System Manager'
+			)
+			or exists (
+				select 1 from `tabEmployee` reviewer_employee
+				where reviewer_employee.user_id = user.name
+				  and reviewer_employee.status = 'Active'
+				  and reviewer_employee.company = %(company)s
+			)
+			or exists (
+				select 1 from `tabUser Permission` company_permission
+				where company_permission.user = user.name
+				  and company_permission.allow = 'Company'
+				  and company_permission.for_value = %(company)s
+				  and ifnull(company_permission.applicable_for, '') = ''
+			)
+		  )
+		  and (user.name like %(txt)s or ifnull(user.full_name, '') like %(txt)s)
+		order by case when user.name = 'Administrator' then 1 else 0 end,
+			coalesce(nullif(user.full_name, ''), user.name), user.name
+		limit %(start)s, %(page_len)s
+		""",
+		{
+			"company": company,
+			"txt": search_text,
 			"start": int(start),
 			"page_len": min(50, int(page_len)),
 		},
@@ -1512,7 +2470,10 @@ def search_workers(job_card: str, txt: str = "", start: int = 0, page_len: int =
 			select 1 from `tabHas Role` incompatible_role
 			where incompatible_role.parent = employee.user_id
 			  and incompatible_role.role in (
-				'Production Supervisor', 'Production Wage Manager', 'System Manager',
+				'Process Simplification Owner', 'Process Simplification Sales Operator',
+				'Process Simplification Warehouse Operator', 'Process Simplification Production Manager',
+				'Process Simplification Access Manager', 'Production Supervisor',
+				'Production Wage Manager', 'System Manager',
 				'Manufacturing User', 'Manufacturing Manager', 'Shop Floor User', 'Shop Floor Manager'
 			  )
 		  )

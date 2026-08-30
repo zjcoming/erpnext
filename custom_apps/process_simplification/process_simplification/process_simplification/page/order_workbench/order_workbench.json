@@ -12,6 +12,9 @@
  "page_name": "order-workbench",
  "roles": [
   {
+   "role": "Process Simplification Owner"
+  },
+  {
    "role": "Sales User"
   },
   {
@@ -19,6 +22,15 @@
   },
   {
    "role": "Stock User"
+  },
+  {
+   "role": "Process Simplification Sales Operator"
+  },
+  {
+   "role": "Process Simplification Warehouse Operator"
+  },
+  {
+   "role": "Process Simplification Production Manager"
   },
   {
    "role": "System Manager"

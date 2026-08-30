@@ -66,6 +66,49 @@ def normalize_qty(value: Any, precision: int | None = None) -> float:
 	return flt(value or 0, precision)
 
 
+def resolve_item_display_name(item_code, current_item_name=None, document_item_name=None):
+	"""Prefer the current Item name while retaining old document text as a fallback."""
+	code = str(item_code or "").strip()
+	candidates = [current_item_name, document_item_name]
+	for candidate in candidates:
+		name = str(candidate or "").strip()
+		if name and name != code:
+			return name
+	return next((str(candidate or "").strip() for candidate in candidates if candidate), code)
+
+
+def get_current_item_names(item_codes) -> dict[str, str]:
+	item_codes = sorted({str(item_code).strip() for item_code in item_codes or [] if item_code})
+	if not item_codes:
+		return {}
+	return {
+		row.name: row.item_name
+		for row in frappe.get_all(
+			"Item",
+			filters={"name": ["in", item_codes]},
+			fields=["name", "item_name"],
+		)
+	}
+
+
+def apply_current_item_names(rows, *, item_code_field="item_code", item_name_field="item_name"):
+	"""Refresh item labels in API rows without changing transactional documents."""
+	rows = list(rows or [])
+	current_names = get_current_item_names(
+		[row.get(item_code_field) for row in rows if row.get(item_code_field)]
+	)
+	for row in rows:
+		item_code = row.get(item_code_field)
+		if not item_code:
+			continue
+		row[item_name_field] = resolve_item_display_name(
+			item_code,
+			current_names.get(item_code),
+			row.get(item_name_field),
+		)
+	return rows
+
+
 def remaining_qty(total: float, *deductions: float) -> float:
 	return max(normalize_qty(total) - sum(normalize_qty(value) for value in deductions), 0)
 

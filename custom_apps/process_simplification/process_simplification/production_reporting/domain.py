@@ -5,8 +5,9 @@ from decimal import Decimal, ROUND_HALF_UP
 import frappe
 from frappe import _
 from frappe.query_builder import Order
-from frappe.utils import flt, getdate
+from frappe.utils import cint, flt, getdate
 
+from process_simplification.management_access import APP_NON_WORKER_ROLES
 from process_simplification.production_reporting.constants import (
 	ADMIN_REVIEW_ROLES,
 	REVIEW_ROLES,
@@ -52,6 +53,7 @@ def assert_worker_user_isolated(user: str, *, for_update: bool = False):
 			"Shop Floor Manager",
 			*REVIEW_ROLES,
 			WAGE_MANAGER_ROLE,
+			*APP_NON_WORKER_ROLES,
 		}
 	)
 	if incompatible:
@@ -81,16 +83,16 @@ def wage_manager_companies(
 	"""Return the explicit Company scope for a wage manager.
 
 	System Manager and Administrator intentionally receive an unrestricted scope.
-	A wage-only account must have at least one top-level Company User Permission;
+	A non-system wage-management account must have at least one top-level Company User Permission;
 	absence of a scope is fail-closed because reports contain sensitive wage data.
 	"""
 	user = user or frappe.session.user
 	roles = user_roles(user, for_update=for_update)
 	if SYSTEM_MANAGER_ROLE in roles:
 		return None
-	if WAGE_MANAGER_ROLE not in roles:
+	if not roles.intersection(WAGE_ROLES):
 		if throw_if_empty:
-			frappe.throw(_("Only a production wage manager can perform this action."), frappe.PermissionError)
+			frappe.throw(_("Only a production wage-management role can perform this action."), frappe.PermissionError)
 		return set()
 
 	permission = frappe.qb.DocType("User Permission")
@@ -273,11 +275,6 @@ def job_card_block(
 				"Disable that setting before using worker-entered wage minutes."
 			),
 		)
-	if flt(job_card.process_loss_qty):
-		return frappe._dict(
-			code="PROCESS_LOSS",
-			message=_("Process loss is not supported by simplified worker reporting."),
-		)
 	if job_card.work_order:
 		work_order_status = frappe.db.get_value(
 			"Work Order",
@@ -362,6 +359,7 @@ def reportable_qty(job_card: frappe._dict, *, for_update: bool = False) -> float
 			0.0,
 			flt(job_card.for_quantity, precision)
 			- flt(job_card.total_completed_qty, precision)
+			- flt(job_card.process_loss_qty, precision)
 			- pending_report_qty(job_card.name, for_update=for_update),
 		),
 		precision,
@@ -393,14 +391,62 @@ def work_order_material_capacity(
 		return 0.0
 	if work_order.skip_transfer:
 		return None
-	required_item = frappe.db.get_value(
-		"Work Order Item",
-		{"parent": job_card.work_order, "required_qty": [">", 0]},
-		"name",
-		for_update=for_update,
+	item = frappe.qb.DocType("Work Order Item")
+	query = (
+		frappe.qb.from_(item)
+		.select(
+			item.name,
+			item.item_code,
+			item.required_qty,
+			item.transferred_qty,
+			item.returned_qty,
+			item.include_item_in_manufacturing,
+		)
+		.where((item.parent == job_card.work_order) & (item.required_qty > 0))
 	)
-	if not required_item:
+	if for_update:
+		query = query.for_update()
+	rows = query.run(as_dict=True)
+	required_by_item = {}
+	transferred_by_item = {}
+	returned_by_item = {}
+	for row in rows:
+		if not row.include_item_in_manufacturing:
+			continue
+		required_by_item[row.item_code] = required_by_item.get(row.item_code, 0.0) + flt(
+			row.required_qty
+		)
+		# Native Work Order rows store the item aggregate on every matching row.
+		transferred_by_item[row.item_code] = max(
+			transferred_by_item.get(row.item_code, 0.0), flt(row.transferred_qty)
+		)
+		returned_by_item[row.item_code] = max(
+			returned_by_item.get(row.item_code, 0.0), flt(row.returned_qty)
+		)
+	if not required_by_item:
 		return None
+	if any(transferred_by_item.values()) or any(returned_by_item.values()):
+		precision = frappe.get_precision("Work Order Item", "required_qty") or 6
+		coverage = []
+		for item_code, required_qty in required_by_item.items():
+			net_transferred = max(
+				flt(transferred_by_item.get(item_code)) - flt(returned_by_item.get(item_code)),
+				0,
+			)
+			coverage.append(
+				1.0
+				if flt(net_transferred, precision) == flt(required_qty, precision)
+				else net_transferred / required_qty
+			)
+		net_capacity = min(coverage, default=0.0) * flt(work_order.qty)
+		return max(
+			0.0,
+			min(
+				flt(net_capacity),
+				flt(work_order.material_transferred_for_manufacturing),
+				flt(work_order.qty),
+			),
+		)
 	return max(
 		0.0,
 		min(
@@ -417,9 +463,10 @@ def material_reportable_qty(job_card: frappe._dict, *, for_update: bool = False)
 	material_capacity = work_order_material_capacity(job_card, for_update=for_update)
 	if material_capacity is None:
 		return job_card_remaining
-	used = flt(job_card.total_completed_qty, precision) + pending_report_qty(
-		job_card.name,
-		for_update=for_update,
+	used = (
+		flt(job_card.total_completed_qty, precision)
+		+ flt(job_card.process_loss_qty, precision)
+		+ pending_report_qty(job_card.name, for_update=for_update)
 	)
 	return flt(
 		max(0.0, min(job_card_remaining, flt(material_capacity, precision) - used)),
@@ -427,19 +474,82 @@ def material_reportable_qty(job_card: frappe._dict, *, for_update: bool = False)
 	)
 
 
-def get_wage_rate(
+WAGE_TYPES = ("Piecework", "Time")
+
+
+def _upgrade_legacy_wage_rate_fields(doc) -> None:
+	"""Map the original single-method fields into the new dual-method rule."""
+	if flt(doc.get("piecework_rate")) > 0 or flt(doc.get("hourly_rate")) > 0:
+		return
+	legacy_type = str(doc.get("wage_type") or "").strip()
+	legacy_rate = flt(doc.get("rate"))
+	if legacy_type not in WAGE_TYPES or legacy_rate <= 0:
+		return
+	doc.enable_piecework = cint(legacy_type == "Piecework")
+	doc.piecework_rate = legacy_rate if legacy_type == "Piecework" else 0
+	doc.enable_time = cint(legacy_type == "Time")
+	doc.hourly_rate = legacy_rate if legacy_type == "Time" else 0
+
+
+def wage_rate_options(rule) -> list[frappe._dict]:
+	"""Return enabled report choices in deterministic default order."""
+	options = []
+	if cint(rule.get("enable_piecework")) and flt(rule.get("piecework_rate")) > 0:
+		options.append(
+			frappe._dict(
+				name=rule.name,
+				wage_type="Piecework",
+				rate=flt(rule.piecework_rate),
+				revision=int(rule.revision or 0),
+				valid_from=rule.valid_from,
+				valid_to=rule.valid_to,
+			)
+		)
+	if cint(rule.get("enable_time")) and flt(rule.get("hourly_rate")) > 0:
+		options.append(
+			frappe._dict(
+				name=rule.name,
+				wage_type="Time",
+				rate=flt(rule.hourly_rate),
+				revision=int(rule.revision or 0),
+				valid_from=rule.valid_from,
+				valid_to=rule.valid_to,
+			)
+		)
+
+	# Keep old rows readable during a rolling deployment or before their first
+	# post-migrate backfill. New and edited rows always use the fields above.
+	if not options and rule.get("wage_type") in WAGE_TYPES and flt(rule.get("rate")) > 0:
+		options.append(
+			frappe._dict(
+				name=rule.name,
+				wage_type=rule.wage_type,
+				rate=flt(rule.rate),
+				revision=int(rule.revision or 0),
+				valid_from=rule.valid_from,
+				valid_to=rule.valid_to,
+			)
+		)
+	return options
+
+
+def get_wage_rates(
 	company: str,
 	operation: str,
 	labor_date,
 	*,
 	for_update: bool = False,
-) -> frappe._dict | None:
+) -> list[frappe._dict]:
 	labor_date = getdate(labor_date)
 	rate = frappe.qb.DocType("Operation Wage Rate")
 	query = (
 		frappe.qb.from_(rate)
 		.select(
 			rate.name,
+			rate.enable_piecework,
+			rate.piecework_rate,
+			rate.enable_time,
+			rate.hourly_rate,
 			rate.wage_type,
 			rate.rate,
 			rate.revision,
@@ -462,15 +572,55 @@ def get_wage_rate(
 	rows = query.run(as_dict=True)
 	if len(rows) > 1:
 		frappe.throw(_("More than one wage rate is active for this operation and date."))
-	return rows[0] if rows else None
+	return wage_rate_options(rows[0]) if rows else []
+
+
+def get_wage_rate(
+	company: str,
+	operation: str,
+	labor_date,
+	*,
+	wage_type: str | None = None,
+	for_update: bool = False,
+) -> frappe._dict | None:
+	options = get_wage_rates(
+		company,
+		operation,
+		labor_date,
+		for_update=for_update,
+	)
+	if not options:
+		return None
+	requested_type = str(wage_type or "").strip()
+	if requested_type:
+		if requested_type not in WAGE_TYPES:
+			frappe.throw(_("Wage type must be Piecework or Time."))
+		for option in options:
+			if option.wage_type == requested_type:
+				return option
+		frappe.throw(_("The selected wage type is not enabled for this operation today."))
+	# Piecework is deliberately first in wage_rate_options, so dual-method
+	# operations default to piecework while time-only operations still work.
+	return options[0]
 
 
 def validate_wage_rate(doc):
 	require_wage_manager(doc.company)
-	if doc.wage_type not in {"Piecework", "Time"}:
-		frappe.throw(_("Wage type must be Piecework or Time."))
-	if flt(doc.rate) <= 0:
-		frappe.throw(_("Wage rate must be greater than zero."))
+	_upgrade_legacy_wage_rate_fields(doc)
+	if not cint(doc.enable_piecework) and not cint(doc.enable_time):
+		frappe.throw(_("Enable at least one wage type: Piecework or Time."))
+	if cint(doc.enable_piecework) and flt(doc.piecework_rate) <= 0:
+		frappe.throw(_("Piecework rate must be greater than zero when Piecework is enabled."))
+	if cint(doc.enable_time) and flt(doc.hourly_rate) <= 0:
+		frappe.throw(_("Hourly rate must be greater than zero when Time is enabled."))
+	# Preserve the original fields as a compatibility view of the default method.
+	# Dual-method rules intentionally default to piecework.
+	if cint(doc.enable_piecework):
+		doc.wage_type = "Piecework"
+		doc.rate = flt(doc.piecework_rate)
+	else:
+		doc.wage_type = "Time"
+		doc.rate = flt(doc.hourly_rate)
 	if doc.valid_to and getdate(doc.valid_to) < getdate(doc.valid_from):
 		frappe.throw(_("Valid To cannot be earlier than Valid From."))
 
@@ -490,8 +640,22 @@ def validate_wage_rate(doc):
 	if not old:
 		doc.revision = 1
 	else:
-		tracked = ("company", "operation", "wage_type", "rate", "valid_from", "valid_to", "enabled")
-		doc.revision = int(old.revision or 0) + 1 if old and any(old.get(f) != doc.get(f) for f in tracked) else int(old.revision or 1)
+		tracked = (
+			"company",
+			"operation",
+			"enable_piecework",
+			"piecework_rate",
+			"enable_time",
+			"hourly_rate",
+			"valid_from",
+			"valid_to",
+			"enabled",
+		)
+		doc.revision = (
+			int(old.revision or 0) + 1
+			if any(old.get(fieldname) != doc.get(fieldname) for fieldname in tracked)
+			else int(old.revision or 1)
+		)
 
 	if not doc.enabled:
 		return

@@ -66,6 +66,25 @@ def report_query(user: str | None = None) -> str:
 	return f"({' or '.join(clauses)})" if clauses else "1 = 0"
 
 
+def _production_reference_query(table: str, assignment_field: str, user: str | None = None) -> str:
+	user = user or frappe.session.user
+	if _is_admin_reviewer(user) or SUPERVISOR_ROLE not in _roles(user):
+		return ""
+	return (
+		"exists (select 1 from `tabJob Card Worker Assignment` reporting_assignment "
+		f"where reporting_assignment.{assignment_field} = `tab{table}`.name "
+		f"and reporting_assignment.supervisor = {frappe.db.escape(user)})"
+	)
+
+
+def job_card_query(user: str | None = None) -> str:
+	return _production_reference_query("Job Card", "job_card", user)
+
+
+def work_order_query(user: str | None = None) -> str:
+	return _production_reference_query("Work Order", "work_order", user)
+
+
 def summary_query(user: str | None = None) -> str:
 	user = user or frappe.session.user
 	if not _is_wage_manager(user):
@@ -113,6 +132,35 @@ def report_permission(doc, ptype: str | None = None, user: str | None = None, de
 		return True
 	supervisor = frappe.db.get_value("Job Card Worker Assignment", doc.assignment, "supervisor")
 	return supervisor == user
+
+
+def _production_reference_permission(
+	doc,
+	assignment_field: str,
+	ptype: str | None = None,
+	user: str | None = None,
+) -> bool:
+	user = user or frappe.session.user
+	if not _is_read_permission(ptype) or _is_admin_reviewer(user):
+		return True
+	if SUPERVISOR_ROLE not in _roles(user):
+		return True
+	if not doc or not getattr(doc, "name", None):
+		return True
+	return bool(
+		frappe.db.exists(
+			"Job Card Worker Assignment",
+			{assignment_field: doc.name, "supervisor": user},
+		)
+	)
+
+
+def job_card_permission(doc, ptype: str | None = None, user: str | None = None, debug=False) -> bool:
+	return _production_reference_permission(doc, "job_card", ptype, user)
+
+
+def work_order_permission(doc, ptype: str | None = None, user: str | None = None, debug=False) -> bool:
+	return _production_reference_permission(doc, "work_order", ptype, user)
 
 
 def summary_permission(doc, ptype: str | None = None, user: str | None = None, debug=False) -> bool:

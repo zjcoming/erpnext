@@ -12,10 +12,19 @@
  "page_name": "shortage-purchase-planning",
  "roles": [
   {
+   "role": "Process Simplification Owner"
+  },
+  {
    "role": "Manufacturing User"
   },
   {
    "role": "Purchase User"
+  },
+  {
+   "role": "Process Simplification Warehouse Operator"
+  },
+  {
+   "role": "Process Simplification Production Manager"
   },
   {
    "role": "System Manager"

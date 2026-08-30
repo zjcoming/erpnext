@@ -21,6 +21,38 @@
   {
    "child": 0,
    "collapsible": 1,
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "\u603b\u89c8\u4e0e\u62a5\u8868",
+   "link_type": "DocType",
+   "show_arrow": 0,
+   "type": "Section Break"
+  },
+  {
+   "child": 1,
+   "collapsible": 1,
+   "icon": "dashboard",
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "\u7ecf\u8425\u603b\u89c8",
+   "link_to": "executive-dashboard",
+   "link_type": "Page",
+   "show_arrow": 0,
+   "type": "Link"
+  },
+  {
+   "child": 0,
+   "collapsible": 1,
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "\u9500\u552e\u4e0e\u8ba2\u5355",
+   "link_type": "DocType",
+   "show_arrow": 0,
+   "type": "Section Break"
+  },
+  {
+   "child": 1,
+   "collapsible": 1,
    "icon": "add",
    "indent": 0,
    "keep_closed": 0,
@@ -31,7 +63,7 @@
    "type": "Link"
   },
   {
-   "child": 0,
+   "child": 1,
    "collapsible": 1,
    "icon": "list",
    "indent": 0,
@@ -45,6 +77,16 @@
   {
    "child": 0,
    "collapsible": 1,
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "\u751f\u4ea7",
+   "link_type": "DocType",
+   "show_arrow": 0,
+   "type": "Section Break"
+  },
+  {
+   "child": 1,
+   "collapsible": 1,
    "icon": "factory",
    "indent": 0,
    "keep_closed": 0,
@@ -55,7 +97,19 @@
    "type": "Link"
   },
   {
-   "child": 0,
+   "child": 1,
+   "collapsible": 1,
+   "icon": "play",
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "\u6b63\u5728\u505a",
+   "link_to": "active-production-work",
+   "link_type": "Page",
+   "show_arrow": 0,
+   "type": "Link"
+  },
+  {
+   "child": 1,
    "collapsible": 1,
    "icon": "edit",
    "indent": 0,
@@ -67,9 +121,21 @@
    "type": "Link"
   },
   {
-   "child": 0,
+   "child": 1,
    "collapsible": 1,
-   "icon": "task-complete",
+   "icon": "history",
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "\u62a5\u5de5\u5386\u53f2",
+   "link_to": "production-report-history",
+   "link_type": "Page",
+   "show_arrow": 0,
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "collapsible": 1,
+   "icon": "file-check",
    "indent": 0,
    "keep_closed": 0,
    "label": "\u62a5\u5de5\u5ba1\u6838",
@@ -79,7 +145,51 @@
    "type": "Link"
   },
   {
+   "child": 1,
+   "collapsible": 1,
+   "icon": "alert-triangle",
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "\u5f02\u5e38\u5ba1\u6838",
+   "link_to": "production-exception-review",
+   "link_type": "Page",
+   "show_arrow": 0,
+   "type": "Link"
+  },
+  {
    "child": 0,
+   "collapsible": 1,
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "\u91c7\u8d2d",
+   "link_type": "DocType",
+   "show_arrow": 0,
+   "type": "Section Break"
+  },
+  {
+   "child": 1,
+   "collapsible": 1,
+   "icon": "stock",
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "\u7f3a\u6599\u91c7\u8d2d",
+   "link_to": "shortage-purchase-planning",
+   "link_type": "Page",
+   "show_arrow": 0,
+   "type": "Link"
+  },
+  {
+   "child": 0,
+   "collapsible": 1,
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "\u5de5\u8d44\u7ba1\u7406",
+   "link_type": "DocType",
+   "show_arrow": 0,
+   "type": "Section Break"
+  },
+  {
+   "child": 1,
    "collapsible": 1,
    "icon": "money-coins-1",
    "indent": 0,
@@ -91,7 +201,7 @@
    "type": "Link"
   },
   {
-   "child": 0,
+   "child": 1,
    "collapsible": 1,
    "icon": "accounting",
    "indent": 0,
@@ -105,11 +215,33 @@
   {
    "child": 0,
    "collapsible": 1,
-   "icon": "stock",
    "indent": 0,
    "keep_closed": 0,
-   "label": "\u7f3a\u6599\u91c7\u8d2d",
-   "link_to": "shortage-purchase-planning",
+   "label": "\u7cfb\u7edf\u7ba1\u7406",
+   "link_type": "DocType",
+   "show_arrow": 0,
+   "type": "Section Break"
+  },
+  {
+   "child": 1,
+   "collapsible": 1,
+   "icon": "setting-gear",
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "\u7b80\u5316\u6d41\u7a0b\u603b\u8bbe\u7f6e",
+   "link_to": "Process Simplification Settings",
+   "link_type": "DocType",
+   "show_arrow": 0,
+   "type": "Link"
+  },
+  {
+   "child": 1,
+   "collapsible": 1,
+   "icon": "users",
+   "indent": 0,
+   "keep_closed": 0,
+   "label": "\u6743\u9650\u7ba1\u7406",
+   "link_to": "process-access-management",
    "link_type": "Page",
    "show_arrow": 0,
    "type": "Link"

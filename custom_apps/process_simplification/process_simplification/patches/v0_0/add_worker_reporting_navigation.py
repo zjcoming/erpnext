@@ -10,16 +10,34 @@ APP_NAME = "process_simplification"
 
 ITEMS = (
 	{
+		"label": "正在做",
+		"link_to": "active-production-work",
+		"link_type": "Page",
+		"icon": "play",
+	},
+	{
 		"label": "我的报工",
 		"link_to": "my-production-reporting",
 		"link_type": "Page",
 		"icon": "edit",
 	},
 	{
+		"label": "报工历史",
+		"link_to": "production-report-history",
+		"link_type": "Page",
+		"icon": "history",
+	},
+	{
 		"label": "报工审核",
 		"link_to": "production-report-review",
 		"link_type": "Page",
-		"icon": "task-complete",
+		"icon": "file-check",
+	},
+	{
+		"label": "异常审核",
+		"link_to": "production-exception-review",
+		"link_type": "Page",
+		"icon": "alert-triangle",
 	},
 	{
 		"label": "计价规则",
@@ -32,6 +50,12 @@ ITEMS = (
 		"link_to": "Monthly Worker Wage Summary",
 		"link_type": "DocType",
 		"icon": "accounting",
+	},
+	{
+		"label": "简化流程总设置",
+		"link_to": "Process Simplification Settings",
+		"link_type": "DocType",
+		"icon": "setting-gear",
 	},
 )
 

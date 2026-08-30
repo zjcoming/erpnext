@@ -139,6 +139,13 @@ test("filters production demand by search, status, shortage, and unplanned state
 		productionWorkbench.filterProductionDemands(fixture, { unplannedOnly: true }).map((row) => row.demand_key),
 		["OVERDUE"]
 	);
+	const namedMaterial = demand("NAMED-MATERIAL");
+	namedMaterial.work_orders[0].production_item_name = "插针骨架半成品";
+	namedMaterial.work_orders[0].required_items = [{ item_code: "204001004", item_name: "PA6德尔隆" }];
+	assert.deepEqual(
+		productionWorkbench.filterProductionDemands([namedMaterial], { search: "PA6德尔隆" }).map((row) => row.demand_key),
+		["NAMED-MATERIAL"]
+	);
 });
 
 test("visible production counters recalculate from filtered demands", () => {
@@ -151,6 +158,33 @@ test("visible production counters recalculate from filtered demands", () => {
 		in_production_demands: 1,
 		awaiting_order_reservation_demands: 0,
 	});
+});
+
+test("production chain shows readable item names before labeled trace codes", () => {
+	const namedDemand = demand("ITEM-IDENTITY", {
+		item_code: "901000790",
+		item_name: "传感器成品",
+	});
+	namedDemand.work_orders[0] = {
+		...namedDemand.work_orders[0],
+		production_item: "301008201014",
+		production_item_name: "插针骨架半成品",
+		required_items: [
+			{
+				item_code: "204001004",
+				item_name: "PA6德尔隆",
+				stock_uom: "Gram",
+				required_qty: 5,
+				status: "ready_now",
+				supply_type: "purchased",
+			},
+		],
+	};
+	const html = productionWorkbench.productionDemandHtml(namedDemand, helpers);
+
+	assert.ok(html.indexOf("传感器成品") < html.indexOf("产品编码：901000790"));
+	assert.ok(html.indexOf("插针骨架半成品") < html.indexOf("物料编码：301008201014"));
+	assert.ok(html.indexOf("PA6德尔隆") < html.indexOf("物料编码：204001004"));
 });
 
 test("production demand HTML escapes server values and exposes complete labelled details", () => {
@@ -171,7 +205,7 @@ test("production demand HTML escapes server values and exposes complete labelled
 		"工单覆盖",
 		"未安排",
 		"已完工",
-		"待回补",
+		"当前可回补",
 	]) {
 		assert.match(html, new RegExp(`data-label="${label}"`));
 	}
@@ -191,6 +225,104 @@ test("production demand HTML escapes server values and exposes complete labelled
 	assert.match(html, /需新采购/);
 	assert.doesNotMatch(html, />new_purchase_required</);
 	assert.match(html, /\/app\/work-order\/WO-001/);
+});
+
+test("Work Order assignment actions follow executable and pre-dispatch readiness", () => {
+	const readyDemand = demand("ASSIGN");
+	readyDemand.work_orders[0].readiness_status = "ready_now";
+	const html = productionWorkbench.productionDemandHtml(
+		readyDemand,
+		{ ...helpers, canManageAssignments: true }
+	);
+	assert.match(html, /class="btn btn-xs btn-primary production-assignment-action"/);
+	assert.match(html, /data-work-order="WO-001"/);
+	assert.match(html, />派工<\/button>/);
+	const preAssignDemand = demand("PRE-ASSIGN");
+	preAssignDemand.work_orders[0].readiness_status = "waiting_subassembly";
+	assert.match(
+		productionWorkbench.productionDemandHtml(preAssignDemand, {
+			...helpers,
+			canManageAssignments: true,
+		}),
+		/class="btn btn-xs btn-default production-assignment-action"[^>]*>预派工<\/button>/
+	);
+	assert.doesNotMatch(
+		productionWorkbench.productionDemandHtml(demand("NO-ASSIGN"), helpers),
+		/production-assignment-action/
+	);
+});
+
+test("terminal, blocked, missing-task, unknown, and legacy Work Orders expose no assignment action", () => {
+	const hiddenCases = [
+		{ readiness_status: "completed", status: "Completed" },
+		{ readiness_status: "blocked", status: "Not Started" },
+		{ readiness_status: "production_task_missing", status: "Not Started" },
+		{ readiness_status: "unknown", status: "Not Started" },
+		{ readiness_status: "ready_now", status: "Stopped" },
+		{ readiness_status: "ready_now", status: "Closed" },
+		{ readiness_status: "ready_now", status: "Cancelled", docstatus: 2 },
+	];
+	for (const workOrder of hiddenCases) {
+		assert.equal(
+			productionWorkbench.workOrderAssignmentActionMeta(
+				{ name: "WO-HIDDEN", ...workOrder },
+				true,
+				helpers.translate
+			),
+			null
+		);
+	}
+	assert.equal(
+		productionWorkbench.workOrderAssignmentActionMeta(
+			{ name: "WO-LEGACY", readiness_status: "waiting_subassembly", status: "Not Started" },
+			false,
+			helpers.translate
+		),
+		null
+	);
+
+	const completedDemand = demand("COMPLETED-ACTION");
+	completedDemand.work_orders[0] = {
+		...completedDemand.work_orders[0],
+		readiness_status: "completed",
+		status: "Completed",
+	};
+	const html = productionWorkbench.productionDemandHtml(completedDemand, {
+		...helpers,
+		canManageAssignments: true,
+	});
+	assert.match(html, /已完成/);
+	assert.doesNotMatch(html, /production-assignment-action/);
+});
+
+test("terminal Work Orders with visible history expose a read-only assignment record action", () => {
+	assert.deepEqual(
+		productionWorkbench.workOrderAssignmentActionMeta(
+			{
+				name: "WO-COMPLETED",
+				status: "Completed",
+				readiness_status: "completed",
+				worker_assignment_history_count: 2,
+			},
+			true,
+			helpers.translate
+		),
+		{ label: "查看派工记录", primary: false, mode: "history" }
+	);
+
+	const completedDemand = demand("COMPLETED-HISTORY");
+	completedDemand.work_orders[0] = {
+		...completedDemand.work_orders[0],
+		status: "Completed",
+		readiness_status: "completed",
+		worker_assignment_history_count: 1,
+	};
+	const html = productionWorkbench.productionDemandHtml(completedDemand, {
+		...helpers,
+		canManageAssignments: true,
+	});
+	assert.match(html, /data-assignment-mode="history"/);
+	assert.match(html, />查看派工记录<\/button>/);
 });
 
 test("pagination HTML exposes compact production page controls", () => {
@@ -408,7 +540,7 @@ test("planned demand HTML shows Production Plan priority and Work Order readines
 	assert.ok(html.includes("/app/work-order/WO-SA"));
 	assert.match(html, /底层采购物料汇总/);
 	const purchaseSummary = html.match(/<section class="production-purchase-summary">([\s\S]*?)<\/section>/)?.[1] || "";
-	assert.match(purchaseSummary, />RM</);
+	assert.match(purchaseSummary, /物料编码：RM/);
 	assert.doesNotMatch(purchaseSummary, /<td data-label="物料"><strong>SA<\/strong>/);
 });
 

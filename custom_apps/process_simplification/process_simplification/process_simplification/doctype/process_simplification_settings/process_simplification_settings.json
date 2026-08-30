@@ -1,0 +1,27 @@
+{
+ "actions": [],
+ "creation": "2026-08-30 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": ["worker_reporting_section", "allow_manual_time_entry"],
+ "fields": [
+  {"fieldname": "worker_reporting_section", "fieldtype": "Section Break", "label": "工人报工"},
+  {"default": "1", "description": "开启后，计时工资由工人在结束报工时填写计薪分钟；关闭后，计薪分钟取暂停后累计的计时器实际分钟。实际计时段始终保留供审核和 Job Card 使用。", "fieldname": "allow_manual_time_entry", "fieldtype": "Check", "label": "计时工资允许手工填写工时"}
+ ],
+ "index_web_pages_for_search": 0,
+ "issingle": 1,
+ "modified": "2026-08-30 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Process Simplification",
+ "name": "Process Simplification Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {"create": 1, "read": 1, "role": "Process Simplification Owner", "write": 1},
+  {"create": 1, "read": 1, "role": "Production Wage Manager", "write": 1},
+  {"create": 1, "read": 1, "role": "System Manager", "write": 1}
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

@@ -1,0 +1,26 @@
+{
+ "actions": [],
+ "creation": "2026-08-30 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "field_order": ["started_at", "ended_at", "duration_minutes", "start_request_key", "stop_request_key"],
+ "fields": [
+  {"fieldname": "started_at", "fieldtype": "Datetime", "label": "开始时间", "read_only": 1, "reqd": 1},
+  {"fieldname": "ended_at", "fieldtype": "Datetime", "label": "结束时间", "read_only": 1},
+  {"fieldname": "duration_minutes", "fieldtype": "Float", "label": "有效分钟", "non_negative": 1, "read_only": 1},
+  {"fieldname": "start_request_key", "fieldtype": "Data", "hidden": 1, "label": "开始幂等键", "no_copy": 1, "read_only": 1},
+  {"fieldname": "stop_request_key", "fieldtype": "Data", "hidden": 1, "label": "停止幂等键", "no_copy": 1, "read_only": 1}
+ ],
+ "index_web_pages_for_search": 0,
+ "istable": 1,
+ "modified": "2026-08-30 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Process Simplification",
+ "name": "Job Card Work Report Time Segment",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

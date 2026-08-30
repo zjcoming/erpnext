@@ -17,9 +17,19 @@
    "hidden": 0,
    "is_query_report": 0,
    "label": "核心流程",
-   "link_count": 8,
+   "link_count": 14,
    "onboard": 0,
    "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "经营总览",
+   "link_count": 0,
+   "link_to": "executive-dashboard",
+   "link_type": "Page",
+   "onboard": 1,
+   "type": "Link"
   },
   {
    "hidden": 0,
@@ -54,6 +64,16 @@
   {
    "hidden": 0,
    "is_query_report": 0,
+   "label": "正在做",
+   "link_count": 0,
+   "link_to": "active-production-work",
+   "link_type": "Page",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
    "label": "我的报工",
    "link_count": 0,
    "link_to": "my-production-reporting",
@@ -64,9 +84,29 @@
   {
    "hidden": 0,
    "is_query_report": 0,
+   "label": "报工历史",
+   "link_count": 0,
+   "link_to": "production-report-history",
+   "link_type": "Page",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
    "label": "报工审核",
    "link_count": 0,
    "link_to": "production-report-review",
+   "link_type": "Page",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "异常审核",
+   "link_count": 0,
+   "link_to": "production-exception-review",
    "link_type": "Page",
    "onboard": 1,
    "type": "Link"
@@ -88,6 +128,26 @@
    "link_count": 0,
    "link_to": "Monthly Worker Wage Summary",
    "link_type": "DocType",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "简化流程总设置",
+   "link_count": 0,
+   "link_to": "Process Simplification Settings",
+   "link_type": "DocType",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "权限管理",
+   "link_count": 0,
+   "link_to": "process-access-management",
+   "link_type": "Page",
    "onboard": 1,
    "type": "Link"
   },
@@ -200,6 +260,21 @@
   },
   {
    "role": "Production Wage Manager"
+  },
+  {
+   "role": "Process Simplification Owner"
+  },
+  {
+   "role": "Process Simplification Sales Operator"
+  },
+  {
+   "role": "Process Simplification Warehouse Operator"
+  },
+  {
+   "role": "Process Simplification Production Manager"
+  },
+  {
+   "role": "Process Simplification Access Manager"
   },
   {
    "role": "System Manager"

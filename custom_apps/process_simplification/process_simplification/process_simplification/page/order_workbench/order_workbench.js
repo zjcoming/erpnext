@@ -2,6 +2,10 @@ function isDueWithin7Days(order) {
 	return ["today", "within_7_days"].includes(order.delivery_timing);
 }
 
+const orderWorkbenchItemIdentity = typeof module !== "undefined" && module.exports
+	? require("../../../public/js/item_identity.js")
+	: window.process_simplification.item_identity;
+
 function filterFulfillmentOrders(orders, filters = {}) {
 	const search = String(filters.search || "").trim().toLowerCase();
 	return (orders || []).filter((order) => {
@@ -163,7 +167,12 @@ function orderOverviewHtml(order, helpers) {
 				: `<div class="text-muted fulfillment-production-plans">${esc(t("未关联生产计划"))}</div>`;
 			return `
 				<tr class="${row.unsupported ? "text-muted" : ""}">
-					<td data-label="${esc(t("产品"))}"><a href="/app/item/${encodeURIComponent(row.item_code || "")}">${esc(row.item_code || "")}</a><br><small>${esc(row.item_name || "")}</small>${productionPlans}</td>
+					<td data-label="${esc(t("产品"))}">${orderWorkbenchItemIdentity.itemIdentityHtml(
+						row.item_code,
+						row.item_name,
+						{ translate: t, escapeHtml: esc },
+						{ linkToItem: true, codeLabel: t("产品编码") }
+					)}${productionPlans}</td>
 					<td data-label="${esc(t("交期"))}">${esc(date(row.delivery_date)) || esc(t("未设置"))}</td>
 					<td class="fulfillment-number" data-label="${esc(t("待交"))}">${number(row.pending_qty)}</td>
 					<td class="fulfillment-number" data-label="${esc(t("有效预留"))}">${number(row.reserved_qty)}</td>

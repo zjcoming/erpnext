@@ -9,6 +9,40 @@ from process_simplification.api.workbench import _remaining_reserved_qty, get_ac
 
 
 class TestSimplifiedFlow(UnitTestCase):
+	def test_item_display_name_prefers_current_master_name_over_old_order_snapshot(self):
+		from process_simplification.api.workbench import resolve_item_display_name
+
+		self.assertEqual(
+			resolve_item_display_name("TEST-MB-14", "MacBook 14电脑", "TEST-MB-14"),
+			"MacBook 14电脑",
+		)
+
+	def test_item_display_name_keeps_meaningful_document_name_as_fallback(self):
+		from process_simplification.api.workbench import resolve_item_display_name
+
+		self.assertEqual(
+			resolve_item_display_name("FG-001", "FG-001", "旧订单产品名称"),
+			"旧订单产品名称",
+		)
+
+	@patch(
+		"process_simplification.api.utils.get_current_item_names",
+		return_value={"206101008": "ARX-9线 蓝", "206101009": "ARX-9线 绿"},
+	)
+	def test_shared_item_name_refresh_repairs_stale_bom_and_document_names(self, get_names):
+		from process_simplification.api.utils import apply_current_item_names
+
+		rows = [
+			{"item_code": "206101008", "item_name": "206101008"},
+			{"item_code": "206101009", "item_name": "旧名称"},
+		]
+
+		self.assertEqual(
+			[row["item_name"] for row in apply_current_item_names(rows)],
+			["ARX-9线 蓝", "ARX-9线 绿"],
+		)
+		get_names.assert_called_once_with(["206101008", "206101009"])
+
 	def test_all_business_mutations_require_post(self):
 		from process_simplification.api.actions import (
 			create_delivery_note,
@@ -55,6 +89,19 @@ class TestSimplifiedFlow(UnitTestCase):
 
 		with self.assertRaises(frappe.PermissionError):
 			get_order_workbench("SO-PRIVATE")
+
+	@patch("process_simplification.api.workbench.get_work_orders")
+	@patch("process_simplification.api.workbench.get_order_workbench")
+	def test_work_order_details_require_a_readable_matching_sales_order_item(
+		self, get_order_workbench, get_work_orders
+	):
+		from process_simplification.api.workbench import get_work_order_details
+
+		get_order_workbench.return_value = {"rows": [{"sales_order_item": "SOI-ALLOWED"}]}
+		with self.assertRaises(frappe.PermissionError):
+			get_work_order_details("SO-PRIVATE", "SOI-FOREIGN")
+
+		get_work_orders.assert_not_called()
 
 	def test_order_workbench_rows_are_linked_to_production_plan_summaries(self):
 		from process_simplification.api.workbench import attach_production_plan_summaries
@@ -106,6 +153,46 @@ class TestSimplifiedFlow(UnitTestCase):
 		self.assertEqual(result.production_required_qty, 50)
 		self.assertEqual(result.unplanned_production_qty, 10)
 		self.assertEqual(result.overplanned_qty, 0)
+
+	@patch("process_simplification.api.workbench.get_available_qty_to_reserve", return_value=0)
+	@patch("process_simplification.api.workbench.frappe.get_all")
+	def test_historical_completed_output_is_not_actionable_after_stock_is_consumed(
+		self, get_all, get_available_qty
+	):
+		from process_simplification.api.workbench import get_current_completed_unreserved_qty
+
+		get_all.return_value = [frappe._dict(t_warehouse="Finished Goods - C")]
+		result = get_current_completed_unreserved_qty(
+			item_code="FG-1",
+			manufacture_entries=[frappe._dict(name="STE-1")],
+			completed_qty=511,
+			completed_reserved_qty=0,
+			pending_unreserved_qty=511,
+		)
+
+		self.assertEqual(result, 0)
+
+	@patch("process_simplification.api.workbench.get_available_qty_to_reserve", return_value=80)
+	@patch("process_simplification.api.workbench.frappe.get_all")
+	def test_completed_output_is_capped_by_current_demand_and_counts_warehouse_once(
+		self, get_all, get_available_qty
+	):
+		from process_simplification.api.workbench import get_current_completed_unreserved_qty
+
+		get_all.return_value = [
+			frappe._dict(t_warehouse="Finished Goods - C"),
+			frappe._dict(t_warehouse="Finished Goods - C"),
+		]
+		result = get_current_completed_unreserved_qty(
+			item_code="FG-1",
+			manufacture_entries=[frappe._dict(name="STE-1"), frappe._dict(name="STE-2")],
+			completed_qty=100,
+			completed_reserved_qty=10,
+			pending_unreserved_qty=50,
+		)
+
+		self.assertEqual(result, 50)
+		get_available_qty.assert_called_once_with("FG-1", "Finished Goods - C")
 
 	def test_overplanned_work_order_is_reported_without_negative_unplanned_qty(self):
 		from process_simplification.api import workbench

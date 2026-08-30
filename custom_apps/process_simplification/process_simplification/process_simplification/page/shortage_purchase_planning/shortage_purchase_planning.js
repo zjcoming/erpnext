@@ -1,3 +1,7 @@
+const shortageItemIdentity = typeof module !== "undefined" && module.exports
+	? require("../../../public/js/item_identity.js")
+	: window.process_simplification.item_identity;
+
 function shortageSourceHtml(source, helpers) {
 	const esc = helpers.escapeHtml;
 	const fmt = helpers.formatQty;
@@ -24,7 +28,12 @@ function shortageRowsHtml(rows, helpers) {
 		return `
 			<tr data-index="${index}">
 				<td><input type="checkbox" class="shortage-select" checked></td>
-				<td>${esc(row.item_code)}<br><small>${esc(row.item_name || "")}</small></td>
+				<td>${shortageItemIdentity.itemIdentityHtml(
+					row.item_code,
+					row.item_name,
+					{ translate: helpers.translate || ((message) => message), escapeHtml: esc },
+					{ linkToItem: true }
+				)}</td>
 				<td>${esc(row.warehouse || "")}</td>
 				<td class="text-right">${fmt(row.required_qty)}</td>
 				<td class="text-right">${fmt(row.available_qty)}</td>

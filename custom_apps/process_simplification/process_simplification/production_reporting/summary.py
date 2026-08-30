@@ -24,6 +24,30 @@ def _summary_key(company: str, employee: str, month_start) -> str:
 	return hashlib.sha256(f"{company}|{employee}|{getdate(month_start)}".encode()).hexdigest()
 
 
+def _wage_month_label(month_start) -> str:
+	month_start = getdate(month_start)
+	return f"{month_start.year}年{month_start.month:02d}月"
+
+
+def _release_cancelled_summary_key(key: str):
+	cancelled_name = frappe.db.get_value(
+		"Monthly Worker Wage Summary",
+		{"summary_key": key, "docstatus": 2},
+		"name",
+		for_update=True,
+	)
+	if cancelled_name:
+		# Canceled documents remain as audit history, but must not reserve the
+		# active employee-month identity used by a replacement draft.
+		frappe.db.set_value(
+			"Monthly Worker Wage Summary",
+			cancelled_name,
+			"summary_key",
+			None,
+			update_modified=False,
+		)
+
+
 def _report_fields():
 	return [
 		"name",
@@ -146,7 +170,9 @@ def validate_summary_document(doc):
 	month_end = get_last_day(month_start)
 	doc.month_start = month_start
 	doc.month_end = month_end
+	doc.wage_month = _wage_month_label(month_start)
 	doc.summary_key = _summary_key(doc.company, doc.employee, month_start)
+	doc.employee_name = frappe.db.get_value("Employee", doc.employee, "employee_name")
 	seen = set()
 	source_users = set()
 	piecework_amount = 0.0
@@ -205,6 +231,8 @@ def build_monthly_summaries(company: str, month_start, employee: str | None = No
 			as_dict=True,
 			for_update=True,
 		)
+		if not existing:
+			_release_cancelled_summary_key(key)
 		if existing and existing.docstatus == 1:
 			result.append(existing.name)
 			continue

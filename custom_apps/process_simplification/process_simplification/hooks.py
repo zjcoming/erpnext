@@ -7,7 +7,12 @@ app_license = "GPL-3.0"
 
 required_apps = ["erpnext"]
 
-app_include_css = "/assets/process_simplification/css/process_simplification.css?v=8"
+app_include_css = "/assets/process_simplification/css/process_simplification.css?v=13"
+app_include_js = [
+	"/assets/process_simplification/js/item_identity.js?v=2",
+	"/assets/process_simplification/js/worker_assignment.js?v=4",
+	"/assets/process_simplification/js/worker_reporting.js?v=2",
+]
 
 after_install = "process_simplification.install.after_install"
 after_migrate = "process_simplification.install.after_migrate"
@@ -28,21 +33,28 @@ doc_events = {
 	},
 	"Stock Entry": {
 		"before_submit": "process_simplification.production_reporting.stock_entry.before_submit",
+		"on_trash": "process_simplification.production_reporting.stock_entry.on_trash",
 	},
 }
 
 permission_query_conditions = {
+	"Job Card": "process_simplification.production_reporting.permissions.job_card_query",
+	"Work Order": "process_simplification.production_reporting.permissions.work_order_query",
 	"Job Card Worker Assignment": "process_simplification.production_reporting.permissions.assignment_query",
 	"Job Card Work Report": "process_simplification.production_reporting.permissions.report_query",
 	"Operation Wage Rate": "process_simplification.production_reporting.permissions.wage_rate_query",
 	"Monthly Worker Wage Summary": "process_simplification.production_reporting.permissions.summary_query",
+	"Production Exception Request": "process_simplification.production_exceptions.permissions.request_query",
 }
 
 has_permission = {
+	"Job Card": "process_simplification.production_reporting.permissions.job_card_permission",
+	"Work Order": "process_simplification.production_reporting.permissions.work_order_permission",
 	"Job Card Worker Assignment": "process_simplification.production_reporting.permissions.assignment_permission",
 	"Job Card Work Report": "process_simplification.production_reporting.permissions.report_permission",
 	"Operation Wage Rate": "process_simplification.production_reporting.permissions.wage_rate_permission",
 	"Monthly Worker Wage Summary": "process_simplification.production_reporting.permissions.summary_permission",
+	"Production Exception Request": "process_simplification.production_exceptions.permissions.request_permission",
 }
 
 scheduler_events = {

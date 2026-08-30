@@ -1,3 +1,7 @@
+const productionWorkbenchItemIdentity = typeof module !== "undefined" && module.exports
+	? require("../../../public/js/item_identity.js")
+	: window.process_simplification.item_identity;
+
 function isProductionDueWithin7Days(demand) {
 	return ["today", "within_7_days"].includes(demand.delivery_timing);
 }
@@ -30,6 +34,41 @@ function workOrderReadinessMeta(status, translate = (message) => message) {
 	return statuses[status] || { label: translate("待判断"), indicator: "gray" };
 }
 
+function workOrderAssignmentActionMeta(
+	workOrder = {},
+	hasProductionPlan = true,
+	translate = (message) => message
+) {
+	const terminalStatuses = new Set(["Completed", "Stopped", "Closed", "Cancelled"]);
+	const isTerminal = terminalStatuses.has(workOrder.status) || Number(workOrder.docstatus) === 2;
+	if (
+		!hasProductionPlan ||
+		!workOrder.name
+	) {
+		return null;
+	}
+	if (isTerminal) {
+		return Number(workOrder.worker_assignment_history_count || 0) > 0
+			? { label: translate("查看派工记录"), primary: false, mode: "history" }
+			: null;
+	}
+
+	if (["ready_now", "materials_transferred", "in_progress"].includes(workOrder.readiness_status)) {
+		return { label: translate("派工"), primary: true, mode: "assign" };
+	}
+	if (
+		[
+			"waiting_subassembly",
+			"awaiting_purchase_receipt",
+			"purchase_request_pending",
+			"purchase_shortage",
+		].includes(workOrder.readiness_status)
+	) {
+		return { label: translate("预派工"), primary: false, mode: "assign" };
+	}
+	return null;
+}
+
 function productionStatusMeta(status) {
 	const statusCopy = {
 		ready_to_start: { indicator: "green" },
@@ -58,7 +97,12 @@ function filterProductionDemands(demands, filters = {}) {
 			demand.customer_name,
 			demand.item_code,
 			demand.item_name,
-			...(demand.work_orders || []).map((row) => row.name),
+			...(demand.work_orders || []).flatMap((row) => [
+				row.name,
+				row.production_item,
+				row.production_item_name,
+				...(row.required_items || []).flatMap((item) => [item.item_code, item.item_name]),
+			]),
 		]
 			.join(" ")
 			.toLowerCase();
@@ -151,10 +195,14 @@ function aggregatePurchasedMaterials(materials) {
 		group.is_shared ||= Boolean(source.is_shared);
 		if (source.work_order && !group._source_work_order_names.has(source.work_order)) {
 			group._source_work_order_names.add(source.work_order);
-			group.source_work_orders.push({
+			const sourceWorkOrder = {
 				name: source.work_order,
 				production_item: source.production_item || "",
-			});
+			};
+			if (source.production_item_name) {
+				sourceWorkOrder.production_item_name = source.production_item_name;
+			}
+			group.source_work_orders.push(sourceWorkOrder);
 		}
 		for (const sourceDocument of source.supply_documents || []) {
 			const documentKey = `${sourceDocument.doctype || ""}\u0000${sourceDocument.detail_name || sourceDocument.name || ""}`;
@@ -266,7 +314,12 @@ function workOrderDirectMaterialsHtml(workOrder, helpers, hasProductionPlan) {
 					: `<span class="text-danger">${esc(t("缺少下级工单"))}</span>`
 				: esc(t("采购件"));
 			return `<div class="production-work-order-material-row">
-				<div class="production-work-order-material-name"><strong>${esc(item.item_code || "")}</strong><span>${esc(item.item_name || "")}</span></div>
+				<div class="production-work-order-material-name">${productionWorkbenchItemIdentity.itemIdentityHtml(
+					item.item_code,
+					item.item_name,
+					{ translate: t, escapeHtml: esc },
+					{ linkToItem: true }
+				)}</div>
 				<div data-label="${esc(t("需求"))}">${number(item.original_required_qty ?? item.required_qty)} ${esc(item.stock_uom || "")}</div>
 				<div data-label="${esc(t("已发料"))}">${number(item.transferred_qty)}</div>
 				<div data-label="${esc(t("待备料"))}">${number(item.required_qty)}</div>
@@ -290,12 +343,21 @@ function workOrderCardHtml(workOrder, sequence, helpers, hasProductionPlan) {
 		? `<a href="/app/bom/${encodeURIComponent(workOrder.bom_no)}"><strong>${esc(workOrder.bom_no)}</strong></a>`
 		: esc(t("未设置"));
 	const outputTarget = workOrder.parent_work_order
-		? `${esc(t("供给上级工单"))}: <a href="/app/work-order/${encodeURIComponent(workOrder.parent_work_order)}"><strong>${esc(workOrder.parent_work_order)}</strong></a>${workOrder.parent_item_code ? ` · ${esc(workOrder.parent_item_code)}` : ""}`
+		? `${esc(t("供给上级工单"))}: <a href="/app/work-order/${encodeURIComponent(workOrder.parent_work_order)}"><strong>${esc(workOrder.parent_work_order)}</strong></a>${workOrder.parent_item_code ? ` · ${esc(productionWorkbenchItemIdentity.itemIdentityText(workOrder.parent_item_code, workOrder.parent_item_name, t))}` : ""}`
 		: esc(t("最终成品工单"));
+	const assignmentMeta = workOrderAssignmentActionMeta(workOrder, hasProductionPlan, t);
+	const assignmentAction = helpers.canManageAssignments && assignmentMeta
+		? `<button type="button" class="btn btn-xs ${assignmentMeta.primary ? "btn-primary" : "btn-default"} production-assignment-action" data-work-order="${esc(workOrder.name || "")}" data-assignment-mode="${esc(assignmentMeta.mode || "assign")}">${esc(assignmentMeta.label)}</button>`
+		: "";
 	return `<article class="production-work-order-card">
 		<div class="production-work-order-summary">
-			<div class="production-work-order-heading"><span class="production-work-order-sequence">${esc(t("第"))} ${sequence} ${esc(t("步"))}</span><a href="/app/work-order/${encodeURIComponent(workOrder.name || "")}"><strong>${esc(workOrder.name || "")}</strong></a><span class="indicator-pill ${esc(readiness.indicator)}">${esc(readiness.label)}</span></div>
-			<div data-label="${esc(t("生产物料"))}">${esc(workOrder.production_item || "")}</div>
+			<div class="production-work-order-heading"><span class="production-work-order-sequence">${esc(t("第"))} ${sequence} ${esc(t("步"))}</span><a href="/app/work-order/${encodeURIComponent(workOrder.name || "")}"><strong>${esc(workOrder.name || "")}</strong></a><span class="indicator-pill ${esc(readiness.indicator)}">${esc(readiness.label)}</span>${assignmentAction}</div>
+			<div data-label="${esc(t("生产物料"))}">${productionWorkbenchItemIdentity.itemIdentityHtml(
+				workOrder.production_item,
+				workOrder.production_item_name,
+				{ translate: t, escapeHtml: esc },
+				{ linkToItem: true }
+			)}</div>
 			<div data-label="${esc(t("计划数量"))}">${number(workOrder.qty)}</div>
 			<div data-label="${esc(t("已生产"))}">${number(workOrder.produced_qty)}</div>
 			<div data-label="${esc(t("剩余"))}">${number(Math.max(Number(workOrder.qty || 0) - Number(workOrder.produced_qty || 0), 0))}</div>
@@ -344,11 +406,16 @@ function purchaseMaterialSummaryHtml(materials, helpers) {
 						: "";
 					const sources = row.source_work_orders.length
 						? row.source_work_orders
-							.map((source) => `<a href="/app/work-order/${encodeURIComponent(source.name)}"><strong>${esc(source.name)}</strong>${source.production_item ? `<small>${esc(source.production_item)}</small>` : ""}</a>`)
+							.map((source) => `<a href="/app/work-order/${encodeURIComponent(source.name)}"><strong>${esc(source.name)}</strong>${source.production_item ? `<small>${esc(productionWorkbenchItemIdentity.itemIdentityText(source.production_item, source.production_item_name, t))}</small>` : ""}</a>`)
 							.join("")
 						: `<span class="text-muted">${esc(t("未设置工单"))}</span>`;
 					return `<tr>
-						<td data-label="${esc(t("物料"))}"><strong>${esc(row.item_code || "")}</strong><br><small>${esc(row.item_name || "")} · ${esc(row.warehouse || t("未设置仓库"))}${row.is_shared ? ` · <span class="production-shared-material">${esc(t("多工单共用"))}</span>` : ""} · ${esc(t("采购件"))}</small></td>
+						<td data-label="${esc(t("物料"))}">${productionWorkbenchItemIdentity.itemIdentityHtml(
+							row.item_code,
+							row.item_name,
+							{ translate: t, escapeHtml: esc },
+							{ linkToItem: true }
+						)}<small>${esc(row.warehouse || t("未设置仓库"))}${row.is_shared ? ` · <span class="production-shared-material">${esc(t("多工单共用"))}</span>` : ""} · ${esc(t("采购件"))}</small></td>
 						<td data-label="${esc(t("需求数量"))}">${number(row.required_qty)} ${esc(row.stock_uom || "")}</td>
 						<td data-label="${esc(t("来源工单"))}"><div class="production-material-sources">${sources}</div></td>
 						<td data-label="${esc(t("仓库库存"))}">${number(row.actual_qty)}</td>
@@ -379,7 +446,7 @@ function productionDemandHtml(demand, helpers) {
 		[t("工单覆盖"), demand.active_work_order_qty],
 		[t("未安排"), demand.unplanned_production_qty],
 		[t("已完工"), demand.completed_qty],
-		[t("待回补"), demand.completed_unreserved_qty],
+		[t("当前可回补"), demand.completed_unreserved_qty],
 	];
 	const actions = (demand.next_actions || [])
 		.map(
@@ -418,7 +485,12 @@ function productionDemandHtml(demand, helpers) {
 		<details class="production-demand production-risk-${esc(demand.risk_level || "gray")}" data-demand-key="${esc(demand.demand_key)}">
 			<summary>
 				<div class="production-demand-source"><strong>${esc(demand.sales_order || "")}</strong><span>${esc(demand.customer_name || demand.customer || "")}</span></div>
-				<div class="production-demand-product"><strong>${esc(demand.item_code || "")}</strong><span>${esc(demand.item_name || "")}</span></div>
+				<div class="production-demand-product">${productionWorkbenchItemIdentity.itemIdentityHtml(
+					demand.item_code,
+					demand.item_name,
+					{ translate: t, escapeHtml: esc },
+					{ linkToItem: true, codeLabel: t("产品编码") }
+				)}</div>
 				<div class="production-demand-fact"><span>${esc(t("交期"))}</span><strong>${esc(date(demand.delivery_date)) || esc(t("未设置"))}</strong></div>
 				<div class="production-demand-fact"><span>${esc(t("成品覆盖 / 待交"))}</span><strong>${number(demand.finished_stock_coverage_qty)} / ${number(demand.pending_qty)}</strong></div>
 				<div class="production-demand-fact"><span>${esc(t("已安排 / 需生产"))}</span><strong>${number(demand.active_work_order_qty)} / ${number(demand.production_required_qty)}</strong></div>
@@ -456,6 +528,7 @@ const productionWorkbenchApi = {
 	filterProductionDemands,
 	productionMaterialStatusMeta,
 	workOrderReadinessMeta,
+	workOrderAssignmentActionMeta,
 	productionStatusMeta,
 	productionSummary,
 	aggregatePurchasedMaterials,
@@ -506,6 +579,9 @@ if (typeof frappe !== "undefined") {
 			escapeHtml: frappe.utils.escape_html,
 			formatNumber: (value) => format_number(flt(value), null, 2),
 			formatDate: (value) => (value ? frappe.datetime.str_to_user(value) : ""),
+			canManageAssignments: Boolean(
+				window.process_simplification?.can_manage_worker_assignments?.()
+			),
 		});
 
 		function visibleDemands() {
@@ -533,7 +609,7 @@ if (typeof frappe !== "undefined") {
 			}
 			const rows = state.data.other_work_orders || [];
 			const html = rows.length
-				? rows.map((row) => `<div class="production-other-card"><a href="/app/work-order/${encodeURIComponent(row.name || "")}"><strong>${frappe.utils.escape_html(row.name || "")}</strong></a><span>${frappe.utils.escape_html(row.production_item || "")}</span><span>${frappe.utils.escape_html(row.status || "")}</span><strong>${format_number(flt(row.produced_qty), null, 2)} / ${format_number(flt(row.qty), null, 2)}</strong></div>`).join("")
+				? rows.map((row) => `<div class="production-other-card"><a href="/app/work-order/${encodeURIComponent(row.name || "")}"><strong>${frappe.utils.escape_html(row.name || "")}</strong></a>${productionWorkbenchItemIdentity.itemIdentityHtml(row.production_item, row.production_item_name, { translate: __, escapeHtml: frappe.utils.escape_html }, { linkToItem: true })}<span>${frappe.utils.escape_html(row.status || "")}</span><strong>${format_number(flt(row.produced_qty), null, 2)} / ${format_number(flt(row.qty), null, 2)}</strong></div>`).join("")
 				: `<div class="text-muted production-empty-section">${frappe.utils.escape_html(__("没有无订单来源的活动生产任务。"))}</div>`;
 			$root.find(".production-other-section").html(`<h4>${frappe.utils.escape_html(__("其他生产"))}</h4>${html}`);
 		}
@@ -604,7 +680,7 @@ if (typeof frappe !== "undefined") {
 			if (!methods[action]) return;
 			const demand = (state.data.demands || []).find((row) => row.sales_order_item === salesOrderItem);
 			const message = action === "create_work_order"
-				? `${__("确认按当前未安排数量创建生产计划并生成层级工单？")}<br>${frappe.utils.escape_html(demand?.item_code || "")} · ${format_number(flt(demand?.unplanned_production_qty), null, 2)}`
+				? `${__("确认按当前未安排数量创建生产计划并生成层级工单？")}<br>${frappe.utils.escape_html(productionWorkbenchItemIdentity.itemIdentityText(demand?.item_code, demand?.item_name, __, __("产品编码")))} · ${format_number(flt(demand?.unplanned_production_qty), null, 2)}`
 				: __("确认将当前可用完工成品回补到来源订单？");
 			frappe.confirm(message, () => {
 				frappe.call({ method: methods[action], type: "POST", args: { sales_order: salesOrder, sales_order_item: salesOrderItem }, freeze: true }).then((r) => {
@@ -642,6 +718,15 @@ if (typeof frappe !== "undefined") {
 		$root.on("click", ".production-action", (event) => {
 			const $button = $(event.currentTarget);
 			runAction($button.data("action"), $button.data("sales-order"), $button.data("row"));
+		});
+		$root.on("click", ".production-assignment-action", (event) => {
+			event.preventDefault();
+			event.stopPropagation();
+			return window.process_simplification.open_worker_assignment_dialog({
+				work_order: $(event.currentTarget).data("work-order"),
+				mode: $(event.currentTarget).data("assignment-mode") || "assign",
+				on_success: loadOverview,
+			});
 		});
 		page.add_inner_button(__("刷新"), () => runProductionWorkbenchToolbarLoad(loadOverview));
 	};
