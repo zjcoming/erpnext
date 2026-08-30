@@ -6,7 +6,11 @@ import frappe
 from frappe import _
 from frappe.utils import escape_html, flt
 
-from process_simplification.management_access import OWNER_ROLE, WAREHOUSE_OPERATOR_ROLE
+from process_simplification.management_access import (
+	OWNER_ROLE,
+	PRODUCTION_MANAGER_ROLE,
+	WAREHOUSE_OPERATOR_ROLE,
+)
 from process_simplification.production_exceptions.constants import (
 	AWAITING_STOCK_ENTRY,
 	MATERIAL_RETURN,
@@ -17,14 +21,21 @@ from process_simplification.production_exceptions.constants import (
 
 WAREHOUSE_RESPONSIBILITY = "库存处理"
 PROCUREMENT_RESPONSIBILITY = "缺料采购"
-RESPONSIBILITIES = {WAREHOUSE_RESPONSIBILITY, PROCUREMENT_RESPONSIBILITY}
+PRODUCTION_DISPATCH_RESPONSIBILITY = "生产派工"
+RESPONSIBILITIES = {
+	WAREHOUSE_RESPONSIBILITY,
+	PROCUREMENT_RESPONSIBILITY,
+	PRODUCTION_DISPATCH_RESPONSIBILITY,
+}
 RESPONSIBILITY_ROLES = {
 	WAREHOUSE_RESPONSIBILITY: {WAREHOUSE_OPERATOR_ROLE, OWNER_ROLE},
 	PROCUREMENT_RESPONSIBILITY: {WAREHOUSE_OPERATOR_ROLE, OWNER_ROLE},
+	PRODUCTION_DISPATCH_RESPONSIBILITY: {PRODUCTION_MANAGER_ROLE, OWNER_ROLE},
 }
 RESPONSIBILITY_ROLE_PRIORITY = {
 	WAREHOUSE_RESPONSIBILITY: (WAREHOUSE_OPERATOR_ROLE, OWNER_ROLE),
 	PROCUREMENT_RESPONSIBILITY: (WAREHOUSE_OPERATOR_ROLE, OWNER_ROLE),
+	PRODUCTION_DISPATCH_RESPONSIBILITY: (PRODUCTION_MANAGER_ROLE, OWNER_ROLE),
 }
 
 APP_NAME = "process_simplification"
@@ -33,6 +44,7 @@ REPORT_REVIEW_ROUTE = "/app/production-report-review"
 REPORT_HISTORY_ROUTE = "/app/production-report-history"
 EXCEPTION_REVIEW_ROUTE = "/app/production-exception-review"
 SHORTAGE_ROUTE = "/app/shortage-purchase-planning"
+PRODUCTION_WORKBENCH_ROUTE = "/app/production-workbench"
 
 EXCEPTION_TYPE_LABELS = {
 	MATERIAL_RETURN: "余料退库",
@@ -237,6 +249,22 @@ def _exception_label(doc) -> str:
 	return EXCEPTION_TYPE_LABELS.get(doc.get("request_type"), doc.get("request_type") or "生产异常")
 
 
+def _next_job_card(doc):
+	if not doc.get("work_order") or not doc.get("name"):
+		return None
+	job_cards = frappe.get_all(
+		"Job Card",
+		filters={"work_order": doc.work_order},
+		fields=["name", "operation", "sequence_id", "creation", "docstatus", "status"],
+		order_by="sequence_id asc, creation asc",
+		limit=0,
+	)
+	for index, row in enumerate(job_cards):
+		if row.name == doc.name:
+			return job_cards[index + 1] if index + 1 < len(job_cards) else None
+	return None
+
+
 @_notification_event
 def notify_worker_assignment(doc):
 	return notify_users(
@@ -287,6 +315,49 @@ def notify_work_report_decision(doc):
 		document_type="Job Card Work Report",
 		document_name=doc.name,
 		link=REPORT_HISTORY_ROUTE,
+	)
+
+
+@_notification_event
+def notify_operation_completed(doc):
+	"""Notify production dispatch whenever a managed Job Card is submitted."""
+	company = doc.get("company") or frappe.db.get_value(
+		"Work Order",
+		doc.get("work_order"),
+		"company",
+	)
+	if not company:
+		return []
+
+	completed_operation = escape_html(doc.get("operation") or doc.get("name") or "工序")
+	work_order = escape_html(doc.get("work_order") or "")
+	next_job_card = _next_job_card(doc)
+	if next_job_card:
+		next_operation = escape_html(next_job_card.operation or next_job_card.name)
+		subject = "上一工序已完成，待派工：{0}".format(next_operation)
+		description = (
+			"生产工单 {0} 的工序 {1} 已完成。下一工序为 {2}（{3}），"
+			"请进入生产计划中心查看并派工。"
+		).format(
+			work_order,
+			completed_operation,
+			next_operation,
+			escape_html(next_job_card.name),
+		)
+	else:
+		subject = "工序已完成：{0}".format(completed_operation)
+		description = "生产工单 {0} 的工序 {1} 已完成，当前没有后续工序。".format(
+			work_order,
+			completed_operation,
+		)
+
+	return notify_users(
+		responsibility_recipients(company, PRODUCTION_DISPATCH_RESPONSIBILITY),
+		subject=subject,
+		description=description,
+		document_type="Job Card",
+		document_name=doc.name,
+		link=PRODUCTION_WORKBENCH_ROUTE,
 	)
 
 

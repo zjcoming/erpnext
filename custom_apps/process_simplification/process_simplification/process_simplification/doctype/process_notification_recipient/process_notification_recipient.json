@@ -7,7 +7,7 @@
  "field_order": ["company", "responsibility", "user"],
  "fields": [
   {"fieldname": "company", "fieldtype": "Link", "in_list_view": 1, "label": "公司", "options": "Company", "reqd": 1},
-  {"fieldname": "responsibility", "fieldtype": "Select", "in_list_view": 1, "label": "通知责任", "options": "库存处理\n缺料采购", "reqd": 1},
+  {"fieldname": "responsibility", "fieldtype": "Select", "in_list_view": 1, "label": "通知责任", "options": "库存处理\n缺料采购\n生产派工", "reqd": 1},
   {"fieldname": "user", "fieldtype": "Link", "in_list_view": 1, "label": "责任人账号", "options": "User", "reqd": 1}
  ],
  "index_web_pages_for_search": 0,

@@ -311,6 +311,9 @@ def on_submit(doc, method=None):
 		"Completed",
 		update_modified=False,
 	)
+	from process_simplification.notifications import notify_operation_completed
+
+	notify_operation_completed(doc)
 
 
 def before_cancel(doc, method=None):

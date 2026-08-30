@@ -8,13 +8,16 @@ from frappe.utils import random_string
 
 from process_simplification.management_access import (
 	OWNER_ROLE,
+	PRODUCTION_MANAGER_ROLE,
 	WAGE_MANAGER_ROLE,
 	WAREHOUSE_OPERATOR_ROLE,
 )
 from process_simplification.notifications import (
 	PROCUREMENT_RESPONSIBILITY,
+	PRODUCTION_DISPATCH_RESPONSIBILITY,
 	WAREHOUSE_RESPONSIBILITY,
 	notify_exception_approved,
+	notify_operation_completed,
 	notify_quick_order_shortage,
 	notify_users,
 	notify_work_report_decision,
@@ -156,8 +159,10 @@ class TestProcessNotifications(IntegrationTestCase):
 		worker = self._make_user("Production Worker")
 		supervisor = self._make_user("Production Supervisor")
 		warehouse = self._make_user(WAREHOUSE_OPERATOR_ROLE)
+		production_manager = self._make_user(PRODUCTION_MANAGER_ROLE)
 		self._configure(WAREHOUSE_RESPONSIBILITY, warehouse)
 		self._configure(PROCUREMENT_RESPONSIBILITY, warehouse)
+		self._configure(PRODUCTION_DISPATCH_RESPONSIBILITY, production_manager)
 
 		assignment = frappe._dict(
 			name="JCWA-NOTIFY-1",
@@ -183,6 +188,19 @@ class TestProcessNotifications(IntegrationTestCase):
 		notify_work_report_submitted(report)
 		report.status = "Approved"
 		notify_work_report_decision(report)
+
+		completed_job_card = frappe._dict(
+			name="JC-NOTIFY-1",
+			company=self.company,
+			work_order="WO-NOTIFY-1",
+			operation="切割",
+		)
+		with patch(
+			"process_simplification.notifications._next_job_card",
+			return_value=frappe._dict(name="JC-NOTIFY-2", operation="焊接"),
+		):
+			notify_operation_completed(completed_job_card)
+			notify_operation_completed(completed_job_card)
 
 		exception = frappe._dict(
 			name="PER-NOTIFY-1",
@@ -231,6 +249,37 @@ class TestProcessNotifications(IntegrationTestCase):
 		)
 		self.assertIn("待库存处理：余料退库", warehouse_subjects)
 		self.assertIn("销售订单有缺料待采购：SAL-ORD-NOTIFY-1", warehouse_subjects)
+		self.assertTrue(
+			frappe.db.exists(
+				"Notification Log",
+				{
+					"for_user": production_manager,
+					"document_type": "Job Card",
+					"document_name": completed_job_card.name,
+					"subject": "上一工序已完成，待派工：焊接",
+					"link": "/app/production-workbench",
+				},
+			)
+		)
+		self.assertEqual(
+			frappe.db.count(
+				"Notification Log",
+				{
+					"for_user": production_manager,
+					"document_name": completed_job_card.name,
+				},
+			),
+			1,
+		)
+		self.assertFalse(
+			frappe.db.exists(
+				"Notification Log",
+				{
+					"for_user": supervisor,
+					"document_name": completed_job_card.name,
+				},
+			)
+		)
 
 
 class TestProcessNotificationRouting(UnitTestCase):
@@ -293,6 +342,52 @@ class TestProcessNotificationRouting(UnitTestCase):
 				responsibility_recipients("Company A", PROCUREMENT_RESPONSIBILITY),
 				["owner@example.com"],
 			)
+
+	def test_dispatch_fallback_prefers_production_manager(self):
+		with (
+			patch("process_simplification.notifications._configured_recipients", return_value=[]),
+			patch(
+				"process_simplification.notifications.frappe.get_all",
+				return_value=["production@example.com", "owner@example.com"],
+			),
+			patch(
+				"process_simplification.notifications.frappe.get_roles",
+				side_effect=lambda user: [
+					PRODUCTION_MANAGER_ROLE if user == "production@example.com" else OWNER_ROLE
+				],
+			),
+			patch(
+				"process_simplification.notifications._user_matches_company",
+				return_value=True,
+			),
+		):
+			self.assertEqual(
+				responsibility_recipients("Company A", PRODUCTION_DISPATCH_RESPONSIBILITY),
+				["production@example.com"],
+			)
+
+	def test_managed_job_card_submit_triggers_dispatch_notification(self):
+		from process_simplification.production_reporting import job_card as job_card_hooks
+
+		doc = frappe._dict(name="JC-DISPATCH-TRIGGER")
+		with (
+			patch.object(job_card_hooks, "_tables_ready", return_value=True),
+			patch.object(job_card_hooks, "_is_managed", return_value=True),
+			patch.object(job_card_hooks.frappe.db, "set_value") as set_value,
+			patch(
+				"process_simplification.notifications.notify_operation_completed"
+			) as notify_completed,
+		):
+			job_card_hooks.on_submit(doc)
+
+		set_value.assert_called_once_with(
+			"Job Card Worker Assignment",
+			{"job_card": doc.name, "status": "Active"},
+			"status",
+			"Completed",
+			update_modified=False,
+		)
+		notify_completed.assert_called_once_with(doc)
 
 	def test_production_notification_failure_is_non_blocking_and_logged(self):
 		doc = frappe._dict(
