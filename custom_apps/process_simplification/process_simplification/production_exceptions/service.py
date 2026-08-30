@@ -536,6 +536,9 @@ def submit_exception(
 	)
 	doc.flags.production_exception_action = True
 	doc.insert(ignore_permissions=True)
+	from process_simplification.notifications import notify_exception_submitted
+
+	notify_exception_submitted(doc)
 	return doc
 
 
@@ -728,7 +731,11 @@ def approve_exception(name: str):
 	if doc.status not in {PENDING_APPROVAL, APPROVED}:
 		frappe.throw(_("Only a pending or approved exception can be applied."))
 	if doc.request_type == PROCESS_LOSS:
-		return _apply_process_loss(job_card, doc)
+		doc = _apply_process_loss(job_card, doc)
+		from process_simplification.notifications import notify_exception_approved
+
+		notify_exception_approved(doc)
+		return doc
 
 	_set_review_audit(doc)
 	doc.status = APPROVED
@@ -736,7 +743,11 @@ def approve_exception(name: str):
 	stock_entry = _make_material_stock_entry(doc)
 	doc.stock_entry = stock_entry.name
 	doc.status = COMPLETED if stock_entry.docstatus == 1 else AWAITING_STOCK_ENTRY
-	return _save_request(doc)
+	doc = _save_request(doc)
+	from process_simplification.notifications import notify_exception_approved
+
+	notify_exception_approved(doc)
+	return doc
 
 
 def reject_exception(name: str, reason: str):
@@ -751,7 +762,11 @@ def reject_exception(name: str, reason: str):
 	_set_review_audit(doc)
 	doc.status = REJECTED
 	doc.rejection_reason = reason[:1000]
-	return _save_request(doc)
+	doc = _save_request(doc)
+	from process_simplification.notifications import notify_exception_rejected
+
+	notify_exception_rejected(doc)
+	return doc
 
 
 def _request_name_for_stock_entry(stock_entry) -> str | None:
@@ -853,6 +868,9 @@ def complete_linked_stock_entry(stock_entry):
 	doc.processed_by = frappe.session.user
 	doc.processed_at = now_datetime()
 	_save_request(doc)
+	from process_simplification.notifications import notify_stock_entry_completed
+
+	notify_stock_entry_completed(doc)
 
 
 def reopen_cancelled_stock_entry(stock_entry):
@@ -867,3 +885,6 @@ def reopen_cancelled_stock_entry(stock_entry):
 	doc.processed_by = None
 	doc.processed_at = None
 	_save_request(doc)
+	from process_simplification.notifications import notify_stock_entry_cancelled
+
+	notify_stock_entry_cancelled(doc)

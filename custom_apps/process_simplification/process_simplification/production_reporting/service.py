@@ -609,6 +609,9 @@ def assign_worker(job_card: str, employee: str, supervisor: str | None = None, n
 		1,
 		update_modified=False,
 	)
+	from process_simplification.notifications import notify_worker_assignment
+
+	notify_worker_assignment(doc)
 	return doc
 
 
@@ -1415,6 +1418,9 @@ def finish_work_session(
 	doc.flags.worker_reporting_action = True
 	doc.flags.worker_reporting_wage_selection = True
 	doc.save(ignore_permissions=True)
+	from process_simplification.notifications import notify_work_report_submitted
+
+	notify_work_report_submitted(doc, task.supervisor)
 	return doc
 
 
@@ -2051,6 +2057,9 @@ def approve_work_report(name: str):
 	doc.rejection_reason = None
 	doc.flags.worker_reporting_action = True
 	doc.save(ignore_permissions=True)
+	from process_simplification.notifications import notify_work_report_decision
+
+	notify_work_report_decision(doc)
 	return doc
 
 
@@ -2074,6 +2083,9 @@ def reject_work_report(name: str, reason: str):
 	doc.review_user_agent = audit.user_agent
 	doc.flags.worker_reporting_action = True
 	doc.save(ignore_permissions=True)
+	from process_simplification.notifications import notify_work_report_decision
+
+	notify_work_report_decision(doc)
 	return doc
 
 

@@ -1,0 +1,24 @@
+{
+ "actions": [],
+ "creation": "2026-08-30 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": ["company", "responsibility", "user"],
+ "fields": [
+  {"fieldname": "company", "fieldtype": "Link", "in_list_view": 1, "label": "公司", "options": "Company", "reqd": 1},
+  {"fieldname": "responsibility", "fieldtype": "Select", "in_list_view": 1, "label": "通知责任", "options": "库存处理\n缺料采购", "reqd": 1},
+  {"fieldname": "user", "fieldtype": "Link", "in_list_view": 1, "label": "责任人账号", "options": "User", "reqd": 1}
+ ],
+ "index_web_pages_for_search": 0,
+ "istable": 1,
+ "modified": "2026-08-30 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Process Simplification",
+ "name": "Process Notification Recipient",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

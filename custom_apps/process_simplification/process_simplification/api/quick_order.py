@@ -882,6 +882,15 @@ def submit_quick_sales_order(payload=None, review_token: str | None = None, idem
 			record.sales_order = so.name
 			record.completed_at = now_datetime()
 			record.save(ignore_permissions=True)
+			shortages = current.get("shortages") or []
+			if shortages:
+				from process_simplification.notifications import notify_quick_order_shortage
+
+				notify_quick_order_shortage(
+					so.name,
+					current.get("company") or so.company,
+					shortages,
+				)
 			# Keep the lock until both the order and durable key are visible to a retry.
 			# Frappe's request-level auto-commit runs only after this method returns.
 			frappe.db.commit()

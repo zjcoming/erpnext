@@ -828,6 +828,8 @@ class TestQuickOrderV2(UnitTestCase):
 		evaluate.return_value = {
 			"can_submit": True,
 			"review_fingerprint": "review-1",
+			"company": "_Test Company",
+			"shortages": [{"item_code": "_Test Item"}],
 			"_sales_order": order,
 		}
 		record = MagicMock(name="idempotency_record")
@@ -840,6 +842,9 @@ class TestQuickOrderV2(UnitTestCase):
 			patch("process_simplification.api.quick_order.frappe.cache.lock", return_value=lock),
 			patch("process_simplification.api.quick_order.frappe.db.exists", return_value=False),
 			patch("process_simplification.api.quick_order.frappe.db.savepoint"),
+			patch(
+				"process_simplification.notifications.notify_quick_order_shortage"
+			) as notify_shortage,
 		):
 			result = submit_quick_sales_order(data, "review-token", "request-1")
 
@@ -847,6 +852,11 @@ class TestQuickOrderV2(UnitTestCase):
 		order.insert.assert_called_once_with()
 		order.submit.assert_called_once_with()
 		self.assertEqual(record.status, "Completed")
+		notify_shortage.assert_called_once_with(
+			"SO-0001",
+			"_Test Company",
+			[{"item_code": "_Test Item"}],
+		)
 		db_commit.assert_called_once_with()
 
 	@patch("process_simplification.api.quick_order.frappe.db.commit")
