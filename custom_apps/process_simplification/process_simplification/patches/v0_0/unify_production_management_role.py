@@ -1,0 +1,5 @@
+from process_simplification.management_access import migrate_legacy_production_supervisor_roles
+
+
+def execute():
+	migrate_legacy_production_supervisor_roles()

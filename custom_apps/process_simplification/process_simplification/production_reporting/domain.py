@@ -7,7 +7,7 @@ from frappe import _
 from frappe.query_builder import Order
 from frappe.utils import cint, flt, getdate
 
-from process_simplification.management_access import APP_NON_WORKER_ROLES
+from process_simplification.management_access import APP_NON_WORKER_ROLES, user_company_scope
 from process_simplification.production_reporting.constants import (
 	ADMIN_REVIEW_ROLES,
 	REVIEW_ROLES,
@@ -72,6 +72,26 @@ def require_worker():
 def require_reviewer(*, for_update: bool = False):
 	if not user_roles(for_update=for_update).intersection(REVIEW_ROLES):
 		frappe.throw(_("You are not permitted to review production reports."), frappe.PermissionError)
+
+
+def reviewer_companies(
+	user: str | None = None,
+	*,
+	throw_if_empty: bool = True,
+) -> set[str] | None:
+	"""Return the company boundary for a production reviewer."""
+	user = user or frappe.session.user
+	if not user_roles(user).intersection(REVIEW_ROLES):
+		if throw_if_empty:
+			frappe.throw(_("You are not permitted to review production reports."), frappe.PermissionError)
+		return set()
+	companies = user_company_scope(user)
+	if companies is not None and not companies and throw_if_empty:
+		frappe.throw(
+			_("Production managers require an active Employee company or an explicit Company User Permission."),
+			frappe.PermissionError,
+		)
+	return companies
 
 
 def wage_manager_companies(

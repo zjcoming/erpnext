@@ -725,6 +725,21 @@ def attach_production_plan_summaries(orders, readiness_by_sales_order_item):
 	return result
 
 
+def filter_readable_sales_orders(orders):
+	"""Apply document-level User Permission checks after the list query.
+
+	Frappe's parent list query can return a Sales Order whose child-row Warehouse
+	link is outside the current user's Warehouse scope.  The subsequent document
+	check then aborts the whole workbench.  Skip those documents here so a scoped
+	warehouse user sees only the orders they may actually read.
+	"""
+	return [
+		order
+		for order in orders or []
+		if frappe.has_permission("Sales Order", "read", doc=order.get("name"))
+	]
+
+
 @frappe.whitelist()
 def get_fulfillment_overview(page=1, page_size=DEFAULT_WORKBENCH_PAGE_SIZE, filters=None):
 	"""Return readable unfinished Sales Orders recalculated through the item workbench."""
@@ -751,6 +766,7 @@ def get_fulfillment_overview(page=1, page_size=DEFAULT_WORKBENCH_PAGE_SIZE, filt
 			break
 		limit_start += page_length
 
+	orders = filter_readable_sales_orders(orders)
 	order_by_name = {order.name: order for order in orders}
 	all_rows = []
 	for order in orders:

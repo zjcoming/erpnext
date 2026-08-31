@@ -20,7 +20,7 @@ function workerAssignmentMaterialStatusMeta(status, translate = (message) => mes
 }
 
 function canManageWorkerAssignments(user, roles = []) {
-	return user === "Administrator" || ["System Manager", "Production Supervisor"].some((role) => roles.includes(role));
+	return user === "Administrator" || ["System Manager", "Process Simplification Production Manager"].some((role) => roles.includes(role));
 }
 
 function defaultAssignmentJobCard(context = {}) {

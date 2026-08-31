@@ -2,6 +2,13 @@ from __future__ import annotations
 
 import frappe
 
+from process_simplification.management_access import (
+	LEGACY_APP_MANAGED_ROLES,
+	PRODUCTION_MANAGER_ROLE,
+	WAGE_MANAGER_ROLE,
+	WORKER_ROLE,
+)
+
 
 SIDEBAR_NAME = "Process Simplification"
 LEGACY_SIDEBAR_NAMES = ("process-simplification", "流程简化")
@@ -201,8 +208,11 @@ def _repair_workspace():
 		)
 		_move_before(workspace.links, row, "shortage-purchase-planning")
 	_recalculate_link_counts(workspace.links)
+	for row in list(workspace.roles):
+		if row.role in LEGACY_APP_MANAGED_ROLES:
+			workspace.roles.remove(row)
 	existing_roles = {row.role for row in workspace.roles}
-	for role in ("Production Worker", "Production Supervisor", "Production Wage Manager"):
+	for role in (WORKER_ROLE, PRODUCTION_MANAGER_ROLE, WAGE_MANAGER_ROLE):
 		if role not in existing_roles:
 			workspace.append("roles", {"role": role})
 	workspace.save(ignore_permissions=True)

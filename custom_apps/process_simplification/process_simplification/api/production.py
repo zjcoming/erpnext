@@ -18,7 +18,10 @@ from process_simplification.api.workbench import (
 	order_item_priority_key,
 	paginate_workbench_rows,
 )
-from process_simplification.management_access import OWNER_ROLE, PRODUCTION_MANAGER_ROLE
+from process_simplification.management_access import (
+	CAPABILITY_PRODUCTION_REVIEW,
+	user_has_capability,
+)
 
 
 STATUS_LABELS = {
@@ -673,10 +676,7 @@ def production_customers(demands):
 
 def attach_visible_worker_assignment_counts(demands):
 	"""Attach permission-filtered assignment history counts to visible Work Orders."""
-	roles = set(frappe.get_roles(frappe.session.user))
-	if frappe.session.user != "Administrator" and not roles.intersection(
-		{"System Manager", "Production Supervisor", PRODUCTION_MANAGER_ROLE, OWNER_ROLE}
-	):
+	if not user_has_capability(CAPABILITY_PRODUCTION_REVIEW):
 		return demands
 	work_order_names = sorted(
 		{

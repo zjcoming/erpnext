@@ -4,10 +4,9 @@ import frappe
 
 from process_simplification.production_reporting.constants import (
 	ADMIN_REVIEW_ROLES,
-	SUPERVISOR_ROLE,
 	WAGE_ROLES,
 )
-from process_simplification.production_reporting.domain import wage_manager_companies
+from process_simplification.production_reporting.domain import reviewer_companies, wage_manager_companies
 
 
 def _roles(user: str | None = None) -> set[str]:
@@ -33,6 +32,18 @@ def _company_condition(table: str, companies: set[str]) -> str:
 	return f"`tab{table}`.`company` in ({values})"
 
 
+def _review_scope(user: str) -> set[str] | None:
+	return reviewer_companies(user, throw_if_empty=False)
+
+
+def _company_allowed(doc, companies: set[str] | None) -> bool:
+	if companies is None:
+		return True
+	if not doc or not getattr(doc, "company", None):
+		return bool(companies)
+	return doc.company in companies
+
+
 def _is_read_permission(permission_type: str | None) -> bool:
 	return (permission_type or "read") in {"read", "select", "report", "export", "print", "email"}
 
@@ -40,41 +51,35 @@ def _is_read_permission(permission_type: str | None) -> bool:
 def assignment_query(user: str | None = None) -> str:
 	user = user or frappe.session.user
 	if _is_admin_reviewer(user):
-		return ""
-	if SUPERVISOR_ROLE in _roles(user):
-		return f"`tabJob Card Worker Assignment`.`supervisor` = {frappe.db.escape(user)}"
+		companies = _review_scope(user)
+		return "" if companies is None else _company_condition("Job Card Worker Assignment", companies)
 	return "1 = 0"
 
 
 def report_query(user: str | None = None) -> str:
 	user = user or frappe.session.user
-	if _is_admin_reviewer(user):
-		return ""
 	clauses = []
+	if _is_admin_reviewer(user):
+		companies = _review_scope(user)
+		if companies is None:
+			return ""
+		if companies:
+			clauses.append(_company_condition("Job Card Work Report", companies))
 	if _is_wage_manager(user):
 		companies = _wage_scope(user)
 		if companies is None:
 			return ""
 		if companies:
 			clauses.append(_company_condition("Job Card Work Report", companies))
-	if SUPERVISOR_ROLE in _roles(user):
-		clauses.append(
-			"exists (select 1 from `tabJob Card Worker Assignment` assignment "
-			"where assignment.name = `tabJob Card Work Report`.assignment "
-			f"and assignment.supervisor = {frappe.db.escape(user)})"
-		)
 	return f"({' or '.join(clauses)})" if clauses else "1 = 0"
 
 
 def _production_reference_query(table: str, assignment_field: str, user: str | None = None) -> str:
 	user = user or frappe.session.user
-	if _is_admin_reviewer(user) or SUPERVISOR_ROLE not in _roles(user):
+	if not _is_admin_reviewer(user):
 		return ""
-	return (
-		"exists (select 1 from `tabJob Card Worker Assignment` reporting_assignment "
-		f"where reporting_assignment.{assignment_field} = `tab{table}`.name "
-		f"and reporting_assignment.supervisor = {frappe.db.escape(user)})"
-	)
+	companies = _review_scope(user)
+	return "" if companies is None else _company_condition(table, companies)
 
 
 def job_card_query(user: str | None = None) -> str:
@@ -105,11 +110,7 @@ def assignment_permission(doc, ptype: str | None = None, user: str | None = None
 	if not _is_read_permission(ptype):
 		return False
 	user = user or frappe.session.user
-	if not doc or not getattr(doc, "supervisor", None):
-		return _is_admin_reviewer(user) or SUPERVISOR_ROLE in _roles(user)
-	return _is_admin_reviewer(user) or (
-		SUPERVISOR_ROLE in _roles(user) and doc.supervisor == user
-	)
+	return _is_admin_reviewer(user) and _company_allowed(doc, _review_scope(user))
 
 
 def report_permission(doc, ptype: str | None = None, user: str | None = None, debug=False) -> bool:
@@ -117,7 +118,8 @@ def report_permission(doc, ptype: str | None = None, user: str | None = None, de
 		return False
 	user = user or frappe.session.user
 	if _is_admin_reviewer(user):
-		return True
+		if _company_allowed(doc, _review_scope(user)):
+			return True
 	if _is_wage_manager(user):
 		companies = _wage_scope(user)
 		if companies is None:
@@ -126,12 +128,7 @@ def report_permission(doc, ptype: str | None = None, user: str | None = None, de
 			return bool(companies)
 		if doc.company in companies:
 			return True
-	if SUPERVISOR_ROLE not in _roles(user):
-		return False
-	if not doc or not getattr(doc, "assignment", None):
-		return True
-	supervisor = frappe.db.get_value("Job Card Worker Assignment", doc.assignment, "supervisor")
-	return supervisor == user
+	return False
 
 
 def _production_reference_permission(
@@ -141,18 +138,9 @@ def _production_reference_permission(
 	user: str | None = None,
 ) -> bool:
 	user = user or frappe.session.user
-	if not _is_read_permission(ptype) or _is_admin_reviewer(user):
+	if not _is_read_permission(ptype) or not _is_admin_reviewer(user):
 		return True
-	if SUPERVISOR_ROLE not in _roles(user):
-		return True
-	if not doc or not getattr(doc, "name", None):
-		return True
-	return bool(
-		frappe.db.exists(
-			"Job Card Worker Assignment",
-			{assignment_field: doc.name, "supervisor": user},
-		)
-	)
+	return _company_allowed(doc, _review_scope(user))
 
 
 def job_card_permission(doc, ptype: str | None = None, user: str | None = None, debug=False) -> bool:

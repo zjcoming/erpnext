@@ -157,7 +157,6 @@ class TestProcessNotifications(IntegrationTestCase):
 
 	def test_workflow_helpers_notify_exact_people_and_routes(self):
 		worker = self._make_user("Production Worker")
-		supervisor = self._make_user("Production Supervisor")
 		warehouse = self._make_user(WAREHOUSE_OPERATOR_ROLE)
 		production_manager = self._make_user(PRODUCTION_MANAGER_ROLE)
 		self._configure(WAREHOUSE_RESPONSIBILITY, warehouse)
@@ -180,7 +179,7 @@ class TestProcessNotifications(IntegrationTestCase):
 			employee="EMP-NOTIFY-1",
 			employee_name="张三",
 			employee_user=worker,
-			supervisor=supervisor,
+			supervisor=production_manager,
 			operation="切割",
 			completed_qty=8,
 			status="Pending Approval",
@@ -234,7 +233,7 @@ class TestProcessNotifications(IntegrationTestCase):
 			frappe.db.exists(
 				"Notification Log",
 				{
-					"for_user": supervisor,
+					"for_user": production_manager,
 					"document_name": report.name,
 					"link": "/app/production-report-review",
 				},
@@ -270,15 +269,6 @@ class TestProcessNotifications(IntegrationTestCase):
 				},
 			),
 			1,
-		)
-		self.assertFalse(
-			frappe.db.exists(
-				"Notification Log",
-				{
-					"for_user": supervisor,
-					"document_name": completed_job_card.name,
-				},
-			)
 		)
 
 

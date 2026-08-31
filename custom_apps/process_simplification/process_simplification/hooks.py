@@ -7,10 +7,10 @@ app_license = "GPL-3.0"
 
 required_apps = ["erpnext"]
 
-app_include_css = "/assets/process_simplification/css/process_simplification.css?v=13"
+app_include_css = "/assets/process_simplification/css/process_simplification.css?v=14"
 app_include_js = [
 	"/assets/process_simplification/js/item_identity.js?v=2",
-	"/assets/process_simplification/js/worker_assignment.js?v=4",
+	"/assets/process_simplification/js/worker_assignment.js?v=5",
 	"/assets/process_simplification/js/worker_reporting.js?v=2",
 ]
 

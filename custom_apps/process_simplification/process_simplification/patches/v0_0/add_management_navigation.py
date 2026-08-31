@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import frappe
 
-from process_simplification.management_access import APP_MANAGED_ROLES, ensure_management_roles
+from process_simplification.management_access import (
+	APP_MANAGED_ROLES,
+	LEGACY_APP_MANAGED_ROLES,
+	ensure_management_roles,
+)
 
 
 SIDEBAR_NAME = "Process Simplification"
@@ -92,6 +96,9 @@ def _repair_workspace():
 		)
 		_move_before(workspace.links, row, values["before"])
 	_recalculate_link_counts(workspace.links)
+	for row in list(workspace.roles):
+		if row.role in LEGACY_APP_MANAGED_ROLES:
+			workspace.roles.remove(row)
 	existing_roles = {row.role for row in workspace.roles}
 	for role in APP_MANAGED_ROLES:
 		if role not in existing_roles:

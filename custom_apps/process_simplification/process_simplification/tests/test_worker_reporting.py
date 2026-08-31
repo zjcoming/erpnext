@@ -263,7 +263,7 @@ class TestWorkerReporting(IntegrationTestCase):
 			).insert(ignore_permissions=True)
 
 	def _make_supervisor(self):
-		email = self._make_user("Production Supervisor")
+		email = self._make_user("Process Simplification Production Manager")
 		self._make_employee(email)
 		return email
 
@@ -830,7 +830,11 @@ class TestWorkerReporting(IntegrationTestCase):
 		)
 		worker_permissions = [row for row in report_meta.permissions if row.role == "Production Worker"]
 		self.assertEqual(worker_permissions, [])
-		for role in ("Production Supervisor", "Production Wage Manager", "System Manager"):
+		for role in (
+			"Process Simplification Production Manager",
+			"Production Wage Manager",
+			"System Manager",
+		):
 			permission = next(row for row in report_meta.permissions if row.role == role)
 			self.assertEqual(permission.read, 1)
 			self.assertFalse(permission.create)
@@ -1450,7 +1454,9 @@ class TestWorkerReporting(IntegrationTestCase):
 
 	def test_worker_role_drift_after_assignment_blocks_new_reports(self):
 		_, assignment = self._setup_flow(qty=100)
-		frappe.get_doc("User", self.worker_user).add_roles("Production Supervisor")
+		frappe.get_doc("User", self.worker_user).add_roles(
+			"Process Simplification Production Manager"
+		)
 		with self.assertRaises(frappe.ValidationError):
 			self._submit(assignment, 1)
 
@@ -1509,7 +1515,7 @@ class TestWorkerReporting(IntegrationTestCase):
 			with self.assertRaises(frappe.ValidationError):
 				pending.delete(ignore_permissions=True)
 
-	def test_permission_hooks_deny_standard_write_and_delete(self):
+	def test_production_manager_reads_company_job_cards_but_cannot_write(self):
 		job_card, assignment = self._setup_flow(qty=100)
 		unassigned_job_card = self._make_job_card(qty=1)
 		report = self._submit(assignment, 10)
@@ -1528,7 +1534,45 @@ class TestWorkerReporting(IntegrationTestCase):
 				frappe.has_permission("Work Order", "read", doc=frappe.get_doc("Work Order", job_card.work_order))
 			)
 			self.assertFalse(frappe.has_permission("Job Card", "write", doc=job_card))
-			self.assertFalse(frappe.has_permission("Job Card", "read", doc=unassigned_job_card))
+			self.assertTrue(frappe.has_permission("Job Card", "read", doc=unassigned_job_card))
+
+	def test_production_manager_custom_records_are_company_scoped(self):
+		from process_simplification.production_exceptions import permissions as exception_permissions
+		from process_simplification.production_exceptions.constants import APPROVED, MATERIAL_RETURN
+		from process_simplification.production_reporting import permissions as report_permissions
+
+		other_company = next(
+			(
+				company
+				for company in frappe.get_all("Company", pluck="name", limit=0)
+				if company != self.TEST_COMPANY
+			),
+			None,
+		)
+		self.assertTrue(other_company)
+		own_company_doc = frappe._dict(
+			company=self.TEST_COMPANY,
+			request_type=MATERIAL_RETURN,
+			status=APPROVED,
+		)
+		other_company_doc = frappe._dict(
+			company=other_company,
+			request_type=MATERIAL_RETURN,
+			status=APPROVED,
+		)
+		with self.set_user(self.supervisor):
+			self.assertTrue(report_permissions.assignment_permission(own_company_doc, "read"))
+			self.assertFalse(report_permissions.assignment_permission(other_company_doc, "read"))
+			self.assertTrue(report_permissions.report_permission(own_company_doc, "read"))
+			self.assertFalse(report_permissions.report_permission(other_company_doc, "read"))
+			self.assertTrue(report_permissions.job_card_permission(own_company_doc, "read"))
+			self.assertFalse(report_permissions.job_card_permission(other_company_doc, "read"))
+			self.assertTrue(exception_permissions.request_permission(own_company_doc, "read"))
+			self.assertFalse(exception_permissions.request_permission(other_company_doc, "read"))
+			self.assertIn(
+				frappe.db.escape(self.TEST_COMPANY),
+				report_permissions.assignment_query(),
+			)
 
 	def test_final_approval_rolls_back_if_report_state_cannot_be_saved(self):
 		job_card, assignment = self._setup_flow(qty=10)
@@ -1797,7 +1841,9 @@ class TestWorkerReporting(IntegrationTestCase):
 	def test_worker_cannot_be_a_reviewer_or_review_their_own_report(self):
 		job_card, assignment = self._setup_flow(qty=10)
 		report = self._submit(assignment, 10)
-		frappe.get_doc("User", self.worker_user).add_roles("Production Supervisor")
+		frappe.get_doc("User", self.worker_user).add_roles(
+			"Process Simplification Production Manager"
+		)
 		with self.set_user(self.worker_user):
 			with self.assertRaises(frappe.PermissionError):
 				service.approve_work_report(report.name)
@@ -1856,10 +1902,10 @@ class TestWorkerReporting(IntegrationTestCase):
 		self.assertTrue(row["can_assign"])
 		self.assertEqual(context["assignment_supervisor"], self.supervisor)
 		self.assertEqual(row["assignment_supervisor"], self.supervisor)
-		self.assertFalse(row["can_choose_supervisor"])
+		self.assertTrue(row["can_choose_supervisor"])
 		self.assertEqual({result[0] for result in scoped_results}, {job_card.name})
-		self.assertEqual([result[0] for result in supervisor_reviewers], [self.supervisor])
-		self.assertTrue(supervisor_reviewers[0][1])
+		self.assertIn(self.supervisor, {result[0] for result in supervisor_reviewers})
+		self.assertTrue(dict(supervisor_reviewers)[self.supervisor])
 
 		with self.set_user("Administrator"):
 			admin_context = service.get_work_order_assignment_context(job_card.work_order)

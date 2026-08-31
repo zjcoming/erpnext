@@ -426,7 +426,8 @@ test("contextual assignment chooses the first eligible operation and keeps role 
 		"JC-READY"
 	);
 	assert.equal(workerAssignment.canManageWorkerAssignments("Administrator", []), true);
-	assert.equal(workerAssignment.canManageWorkerAssignments("supervisor@example.com", ["Production Supervisor"]), true);
+	assert.equal(workerAssignment.canManageWorkerAssignments("manager@example.com", ["Process Simplification Production Manager"]), true);
+	assert.equal(workerAssignment.canManageWorkerAssignments("legacy@example.com", ["Production Supervisor"]), false);
 	assert.equal(workerAssignment.canManageWorkerAssignments("worker@example.com", ["Production Worker"]), false);
 });
 
@@ -609,7 +610,6 @@ test("reporting and wage navigation use isolated roles", () => {
 	assert.deepEqual(historyMetadata.roles.map((row) => row.role), ["Production Worker"]);
 	assert.deepEqual(new Set(reviewMetadata.roles.map((row) => row.role)), new Set([
 		"Process Simplification Owner",
-		"Production Supervisor",
 		"Process Simplification Production Manager",
 		"System Manager",
 	]));

@@ -5,6 +5,20 @@ from frappe.tests import UnitTestCase
 
 
 class TestProductionWorkbench(UnitTestCase):
+	def test_fulfillment_filters_sales_orders_blocked_by_document_user_permissions(self):
+		from process_simplification.api import workbench
+
+		orders = [frappe._dict(name="SO-VISIBLE"), frappe._dict(name="SO-BLOCKED")]
+		with patch.object(
+			workbench.frappe,
+			"has_permission",
+			side_effect=lambda _doctype, _ptype, doc=None: doc == "SO-VISIBLE",
+		) as has_permission:
+			visible = workbench.filter_readable_sales_orders(orders)
+
+		self.assertEqual([row.name for row in visible], ["SO-VISIBLE"])
+		self.assertEqual(has_permission.call_count, 2)
+
 	def test_material_names_are_searchable_inside_the_production_chain(self):
 		production = self._module()
 		demand = frappe._dict(
@@ -44,7 +58,11 @@ class TestProductionWorkbench(UnitTestCase):
 		]
 		with (
 			patch.object(production.frappe, "session", frappe._dict(user="supervisor@example.com")),
-			patch.object(production.frappe, "get_roles", return_value=["Production Supervisor"]),
+			patch.object(
+				production.frappe,
+				"get_roles",
+				return_value=["Process Simplification Production Manager"],
+			),
 			patch.object(
 				production.frappe,
 				"get_list",

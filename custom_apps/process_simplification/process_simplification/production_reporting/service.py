@@ -19,11 +19,11 @@ from frappe.utils import (
 	time_diff_in_hours,
 )
 
+from process_simplification.management_access import WORKER_INCOMPATIBLE_ROLES
 from process_simplification.production_reporting.constants import (
 	ASSIGNMENT_STATUSES,
 	REPORT_STATUSES,
 	REVIEW_ROLES,
-	SUPERVISOR_ROLE,
 	SYSTEM_MANAGER_ROLE,
 	WAGE_ROLES,
 )
@@ -49,6 +49,7 @@ from process_simplification.production_reporting.domain import (
 	require_reviewer,
 	require_wage_manager,
 	require_worker,
+	reviewer_companies,
 	user_roles,
 	wage_manager_companies,
 	work_order_material_capacity,
@@ -253,43 +254,14 @@ def _assert_reviewer_scope(supervisor: str, *, for_update: bool = False):
 
 
 def _supervisor_companies(supervisor: str) -> set[str] | None:
-	if SYSTEM_MANAGER_ROLE in user_roles(supervisor):
-		return None
-	companies = set(
-		frappe.db.sql(
-			"""
-			select for_value
-			from `tabUser Permission`
-			where user = %s
-				and allow = 'Company'
-				and ifnull(applicable_for, '') = ''
-			""",
-			supervisor,
-			pluck=True,
-		)
-	)
-	companies.update(
-		frappe.get_all(
-			"Employee",
-			filters={"user_id": supervisor, "status": "Active"},
-			pluck="company",
-			limit=0,
-		)
-	)
-	if not companies:
-		frappe.throw(
-			_("Production supervisor {0} must be linked to an active Employee or a Company User Permission.").format(
-				supervisor
-			)
-		)
-	return companies
+	return reviewer_companies(supervisor)
 
 
 def _assert_supervisor_company(supervisor: str, company: str):
 	companies = _supervisor_companies(supervisor)
 	if companies is not None and company not in companies:
 		frappe.throw(
-			_("Production supervisor {0} is not permitted for company {1}.").format(supervisor, company),
+			_("Production manager {0} is not permitted for company {1}.").format(supervisor, company),
 			frappe.PermissionError,
 		)
 
@@ -637,6 +609,7 @@ def unassign_worker(assignment: str):
 		or doc.work_order != jc.work_order
 	):
 		frappe.throw(_("Worker assignment identity changed while it was being locked; retry the action."))
+	_assert_supervisor_company(frappe.session.user, jc.company)
 	_assert_reviewer_scope(doc.supervisor, for_update=True)
 	if doc.status != "Active":
 		frappe.throw(_("Only an active assignment can be removed."))
@@ -1479,16 +1452,8 @@ def cancel_work_session(report: str):
 
 
 def _report_filter_for_reviewer() -> dict:
-	filters = {}
-	if not is_admin_reviewer():
-		assignments = frappe.get_all(
-			"Job Card Worker Assignment",
-			filters={"supervisor": frappe.session.user},
-			pluck="name",
-			limit=0,
-		)
-		filters["assignment"] = ("in", assignments or [""])
-	return filters
+	companies = reviewer_companies()
+	return {} if companies is None else {"company": ("in", sorted(companies))}
 
 
 def _review_pagination(page=1, page_length=DEFAULT_REVIEW_PAGE_LENGTH, total_count=0):
@@ -1700,12 +1665,13 @@ def get_review_dashboard(
 		report.reject_block_message = review_block.message if review_block else None
 		report.capacity_conflict = bool(block)
 
+	assignment_filters = {"status": "Active"}
+	reviewer_scope = reviewer_companies()
+	if reviewer_scope is not None:
+		assignment_filters["company"] = ("in", sorted(reviewer_scope))
 	assignments, assignment_pagination = _review_page(
 		"Job Card Worker Assignment",
-		filters={
-			"status": "Active",
-			**({"supervisor": frappe.session.user} if not admin_reviewer else {}),
-		},
+		filters=assignment_filters,
 		fields=["name", "job_card", "work_order", "operation", "employee", "supervisor", "notes", "assigned_at"],
 		order_by="assigned_at desc",
 		page=assignment_page,
@@ -1869,6 +1835,7 @@ def _lock_report_for_review(
 	doc = frappe.get_doc("Job Card Work Report", name, for_update=True)
 	if not assignment or assignment.job_card != doc.job_card or assignment.employee != doc.employee:
 		frappe.throw(_("Work report no longer matches its worker assignment."))
+	_assert_supervisor_company(frappe.session.user, assignment.company)
 	if not is_admin_reviewer(for_update=True) and assignment.supervisor != frappe.session.user:
 		frappe.throw(_("You can only review reports assigned to you."), frappe.PermissionError)
 	if doc.status not in allowed_statuses:
@@ -2409,10 +2376,7 @@ def search_assignment_supervisors(
 				select 1 from `tabHas Role` reviewer_role
 				where reviewer_role.parent = user.name
 				  and reviewer_role.parenttype = 'User'
-				  and reviewer_role.role in (
-					'Process Simplification Owner', 'Production Supervisor',
-					'Process Simplification Production Manager', 'System Manager'
-				  )
+				  and reviewer_role.role in %(review_roles)s
 			)
 		  )
 		  and (
@@ -2445,6 +2409,7 @@ def search_assignment_supervisors(
 		{
 			"company": company,
 			"txt": search_text,
+			"review_roles": tuple(sorted(REVIEW_ROLES)),
 			"start": int(start),
 			"page_len": min(50, int(page_len)),
 		},
@@ -2464,6 +2429,7 @@ def search_workers(job_card: str, txt: str = "", start: int = 0, page_len: int =
 		"txt": f"%{str(txt or '').strip()}%",
 		"start": int(start),
 		"page_len": min(50, int(page_len)),
+		"incompatible_roles": tuple(sorted(WORKER_INCOMPATIBLE_ROLES)),
 	}
 	return frappe.db.sql(
 		"""
@@ -2481,13 +2447,7 @@ def search_workers(job_card: str, txt: str = "", start: int = 0, page_len: int =
 		  and not exists (
 			select 1 from `tabHas Role` incompatible_role
 			where incompatible_role.parent = employee.user_id
-			  and incompatible_role.role in (
-				'Process Simplification Owner', 'Process Simplification Sales Operator',
-				'Process Simplification Warehouse Operator', 'Process Simplification Production Manager',
-				'Process Simplification Access Manager', 'Production Supervisor',
-				'Production Wage Manager', 'System Manager',
-				'Manufacturing User', 'Manufacturing Manager', 'Shop Floor User', 'Shop Floor Manager'
-			  )
+			  and incompatible_role.role in %(incompatible_roles)s
 		  )
 		  and not exists (
 			select 1 from `tabJob Card Worker Assignment` existing_assignment

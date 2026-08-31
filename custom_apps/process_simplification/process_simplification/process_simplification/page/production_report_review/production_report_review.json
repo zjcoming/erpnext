@@ -12,7 +12,6 @@
  "page_name": "production-report-review",
  "roles": [
   {"role": "Process Simplification Owner"},
-  {"role": "Production Supervisor"},
   {"role": "Process Simplification Production Manager"},
   {"role": "System Manager"}
  ],

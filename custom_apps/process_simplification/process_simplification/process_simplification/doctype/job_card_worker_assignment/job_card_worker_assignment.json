@@ -47,7 +47,7 @@
  "owner": "Administrator",
  "permissions": [
   {"role": "Process Simplification Owner", "read": 1},
-  {"role": "Production Supervisor", "read": 1},
+  {"role": "Process Simplification Production Manager", "read": 1},
   {"role": "System Manager", "read": 1}
  ],
  "search_fields": "job_card,employee,supervisor",

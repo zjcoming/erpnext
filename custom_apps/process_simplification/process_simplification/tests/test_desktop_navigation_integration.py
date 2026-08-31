@@ -201,10 +201,15 @@ class TestDesktopNavigationIntegration(IntegrationTestCase):
 		self.assertEqual(core_card.link_count, 14)
 		workspace_roles = {row.role for row in workspace.roles}
 		self.assertTrue(
-			{"Production Worker", "Production Supervisor", "Production Wage Manager"}.issubset(
+			{
+				"Production Worker",
+				"Process Simplification Production Manager",
+				"Production Wage Manager",
+			}.issubset(
 				workspace_roles
 			)
 		)
+		self.assertNotIn("Production Supervisor", workspace_roles)
 		app_icon = frappe.db.get_value(
 			"Desktop Icon",
 			{"app": "process_simplification", "icon_type": "App", "hidden": 0},

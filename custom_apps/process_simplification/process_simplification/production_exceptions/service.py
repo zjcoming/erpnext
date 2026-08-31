@@ -7,7 +7,7 @@ from frappe import _
 from frappe.query_builder.functions import Sum
 from frappe.utils import flt, now_datetime
 
-from process_simplification.management_access import WAREHOUSE_OPERATOR_ROLE
+from process_simplification.management_access import WAREHOUSE_OPERATOR_ROLE, user_company_scope
 from process_simplification.production_exceptions.constants import (
 	APPLIED,
 	APPROVED,
@@ -27,7 +27,6 @@ from process_simplification.production_exceptions.constants import (
 from process_simplification.production_reporting.constants import (
 	ADMIN_REVIEW_ROLES,
 	REVIEW_ROLES,
-	SUPERVISOR_ROLE,
 )
 from process_simplification.production_reporting.domain import (
 	assert_supported_job_card,
@@ -544,13 +543,19 @@ def submit_exception(
 
 def _can_review_request(doc, *, for_update=False) -> bool:
 	roles = user_roles(for_update=for_update)
-	if roles.intersection(ADMIN_REVIEW_ROLES):
-		return True
-	return SUPERVISOR_ROLE in roles and doc.supervisor == frappe.session.user
+	companies = user_company_scope()
+	return bool(
+		roles.intersection(ADMIN_REVIEW_ROLES)
+		and (companies is None or doc.company in companies)
+	)
 
 
-def _can_view_stock_requests() -> bool:
-	return bool(user_roles().intersection(STOCK_VIEW_ROLES))
+def _can_view_stock_requests(doc=None) -> bool:
+	companies = user_company_scope()
+	return bool(
+		user_roles().intersection(STOCK_VIEW_ROLES)
+		and (doc is None or companies is None or doc.company in companies)
+	)
 
 
 def require_exception_viewer():
@@ -561,17 +566,18 @@ def require_exception_viewer():
 
 def get_review_dashboard(limit=200):
 	require_exception_viewer()
+	companies = user_company_scope()
 	rows = frappe.get_all(
 		"Production Exception Request",
+		filters={} if companies is None else {"company": ("in", sorted(companies))},
 		fields=_request_fields(),
 		order_by="requested_at desc, creation desc",
 		limit=min(max(int(limit or 200), 1), 500),
 	)
-	can_view_stock = _can_view_stock_requests()
 	visible = []
 	for row in rows:
 		can_review = _can_review_request(row)
-		stock_visible = can_view_stock and row.request_type in MATERIAL_REQUEST_TYPES and row.status in {
+		stock_visible = _can_view_stock_requests(row) and row.request_type in MATERIAL_REQUEST_TYPES and row.status in {
 			APPROVED,
 			AWAITING_STOCK_ENTRY,
 			COMPLETED,

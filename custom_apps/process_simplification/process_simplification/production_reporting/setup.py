@@ -6,14 +6,13 @@ from frappe.utils import cint
 
 from process_simplification.production_reporting.constants import (
 	REVIEW_ROLES,
-	SUPERVISOR_ROLE,
 	WAGE_MANAGER_ROLE,
 	WORKER_ROLE,
 )
 
 
 def ensure_worker_reporting_roles():
-	for role_name in (WORKER_ROLE, SUPERVISOR_ROLE, WAGE_MANAGER_ROLE):
+	for role_name in (WORKER_ROLE, WAGE_MANAGER_ROLE):
 		if not frappe.db.exists("Role", role_name):
 			frappe.get_doc(
 				{
