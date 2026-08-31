@@ -60,6 +60,10 @@ function quickOrderPreviewArgs(items, defaults, deliveryDate) {
 	};
 }
 
+function asNativePromise(request) {
+	return Promise.resolve(request);
+}
+
 function materialRiskHtml(view, helpers) {
 	const translate = helpers.translate;
 	const escape = (value) => helpers.escapeHtml(String(value ?? ""));
@@ -848,8 +852,8 @@ frappe.pages["quick-sales-order"].on_page_load = function (wrapper) {
 		if (!state.idempotencyKey) state.idempotencyKey = newIdempotencyKey();
 		setStatus("submitting");
 		dialog.get_primary_btn().prop("disabled", true).text(__("正在安全提交…"));
-		frappe
-			.call({
+		asNativePromise(
+			frappe.call({
 				method: "process_simplification.api.quick_order.submit_quick_sales_order",
 				type: "POST",
 				args: {
@@ -860,6 +864,7 @@ frappe.pages["quick-sales-order"].on_page_load = function (wrapper) {
 				freeze: true,
 				freeze_message: __("正在创建销售订单…"),
 			})
+		)
 			.then((response) => {
 				const submitted = response.message || {};
 				if (submitted.status === "reconfirmation_required") {
@@ -947,5 +952,6 @@ if (typeof module !== "undefined" && module.exports) {
 		confirmationHtml,
 		clearRowStaleLabels,
 		quickOrderPreviewArgs,
+		asNativePromise,
 	};
 }

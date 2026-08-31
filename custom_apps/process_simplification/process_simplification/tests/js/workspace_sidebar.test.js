@@ -5,6 +5,7 @@ const path = require("node:path");
 
 const pageDirectory = path.resolve(__dirname, "../../process_simplification/page");
 const appDirectory = path.resolve(__dirname, "../..");
+const stylesheetPath = path.resolve(__dirname, "../../public/css/process_simplification.css");
 
 for (const pageName of [
 	"quick-sales-order",
@@ -66,6 +67,15 @@ test("management links and role-scoped pages are exported", () => {
 	assert.deepEqual(
 		accessMetadata.roles.map((row) => row.role),
 		["Process Simplification Access Manager", "System Manager"]
+	);
+});
+
+test("collapsed production demand cards do not paint interactive details over later cards", () => {
+	const stylesheet = fs.readFileSync(stylesheetPath, "utf8");
+
+	assert.match(
+		stylesheet,
+		/\.production-demand:not\(\[open\]\)\s*>\s*\.production-demand-details\s*\{[^}]*display:\s*none;/s
 	);
 });
 

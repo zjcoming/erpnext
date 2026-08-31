@@ -5,6 +5,18 @@ from frappe import _
 from frappe.utils import flt, get_datetime
 
 
+class SimplifiedFlowJobCardMixin:
+	"""Scope ERPNext's automatic Job Card insert to one guided Work Order."""
+
+	def insert(self, *args, **kwargs):
+		if (
+			getattr(frappe.flags, "simplified_flow_job_card_work_order", None)
+			== self.get("work_order")
+		):
+			kwargs["ignore_permissions"] = True
+		return super().insert(*args, **kwargs)
+
+
 def _tables_ready() -> bool:
 	return frappe.db.table_exists("Job Card Worker Assignment") and frappe.db.table_exists(
 		"Job Card Work Report"

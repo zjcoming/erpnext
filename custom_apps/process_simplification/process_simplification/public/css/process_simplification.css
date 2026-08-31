@@ -2184,6 +2184,10 @@
 	border-top: 1px solid var(--border-color);
 }
 
+.production-demand:not([open]) > .production-demand-details {
+	display: none;
+}
+
 .production-demand-details section h5 {
 	margin: 0 0 10px;
 }

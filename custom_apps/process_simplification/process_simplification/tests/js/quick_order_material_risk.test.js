@@ -11,6 +11,7 @@ const {
 	confirmationHtml,
 	clearRowStaleLabels,
 	quickOrderPreviewArgs,
+	asNativePromise,
 } = require("../../process_simplification/page/quick_sales_order/quick_sales_order.js");
 
 const escapeHtml = (value) =>
@@ -46,6 +47,18 @@ test("lightweight preview sends company and delivery priority to the server", ()
 			delivery_date: "2099-01-10",
 		}
 	);
+});
+
+test("normalizes Frappe thenables so submit cleanup can use finally", async () => {
+	const request = {
+		then(resolve) {
+			resolve({ message: { sales_order: "SAL-ORD-TEST" } });
+		},
+	};
+	const normalized = asNativePromise(request);
+
+	assert.equal(typeof normalized.finally, "function");
+	assert.deepEqual(await normalized, { message: { sales_order: "SAL-ORD-TEST" } });
 });
 
 function coverage(overrides = {}) {

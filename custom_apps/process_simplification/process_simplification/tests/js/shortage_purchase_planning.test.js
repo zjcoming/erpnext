@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 
 const {
 	shortageRowsHtml,
+	canCreateMaterialRequest,
 } = require("../../process_simplification/page/shortage_purchase_planning/shortage_purchase_planning.js");
 
 const escapeHtml = (value) =>
@@ -65,4 +66,10 @@ test("shortage rows show a readable material name before the labeled code", () =
 
 	assert.ok(html.indexOf("PA6德尔隆") < html.indexOf("物料编码：204001004"));
 	assert.match(html, /href="\/app\/item\/204001004"/);
+});
+
+test("material request action follows the current role's create permission", () => {
+	assert.equal(canCreateMaterialRequest({ can_create: (doctype) => doctype === "Material Request" }), true);
+	assert.equal(canCreateMaterialRequest({ can_create: () => false }), false);
+	assert.equal(canCreateMaterialRequest(null), false);
 });

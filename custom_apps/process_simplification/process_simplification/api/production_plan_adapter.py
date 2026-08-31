@@ -28,6 +28,7 @@ from frappe.utils import now_datetime
 
 
 _AUTO_SUBMIT_SAVEPOINT = "production_task_auto_submit"
+_AUTO_JOB_CARD_WORK_ORDER_FLAG = "simplified_flow_job_card_work_order"
 
 
 @contextmanager
@@ -40,6 +41,26 @@ def _muted_messages():
 		yield
 	finally:
 		frappe.msgprint = original
+
+
+@contextmanager
+def _allow_generated_job_cards_for(work_order: str):
+	"""Permit only Job Cards generated while submitting this exact Work Order.
+
+	Production managers intentionally have read-only native Job Card access. The
+	simplified action still has to let ERPNext create the operation Job Cards that
+	are a mandatory side effect of Work Order submission, without granting users
+	a generic Job Card create permission.
+	"""
+	previous = getattr(frappe.flags, _AUTO_JOB_CARD_WORK_ORDER_FLAG, None)
+	setattr(frappe.flags, _AUTO_JOB_CARD_WORK_ORDER_FLAG, work_order)
+	try:
+		yield
+	finally:
+		if previous is None:
+			frappe.flags.pop(_AUTO_JOB_CARD_WORK_ORDER_FLAG, None)
+		else:
+			setattr(frappe.flags, _AUTO_JOB_CARD_WORK_ORDER_FLAG, previous)
 
 
 def _work_orders_for_plan(production_plan: str):
@@ -57,7 +78,8 @@ def _work_orders_for_plan(production_plan: str):
 
 def _submit_work_orders(work_orders: list[str]) -> None:
 	for name in work_orders:
-		frappe.get_doc("Work Order", name).submit()
+		with _allow_generated_job_cards_for(name):
+			frappe.get_doc("Work Order", name).submit()
 
 
 def _apply_guided_source_warehouse(work_orders: list[str], source_warehouse: str | None) -> None:

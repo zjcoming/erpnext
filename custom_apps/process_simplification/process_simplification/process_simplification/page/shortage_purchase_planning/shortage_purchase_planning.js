@@ -47,9 +47,14 @@ function shortageRowsHtml(rows, helpers) {
 	}).join("");
 }
 
+function canCreateMaterialRequest(model) {
+	return Boolean(model && typeof model.can_create === "function" && model.can_create("Material Request"));
+}
+
 const shortagePurchasePlanningApi = {
 	shortageSourceHtml,
 	shortageRowsHtml,
+	canCreateMaterialRequest,
 };
 
 if (typeof module !== "undefined" && module.exports) {
@@ -221,7 +226,9 @@ frappe.pages["shortage-purchase-planning"].on_page_load = function (wrapper) {
 	page.add_inner_button(__("读取订单"), load_from_sales_order);
 	page.add_inner_button(__("检查缺料"), check_shortage);
 	page.add_inner_button(__("汇总全部缺料"), check_all_shortages);
-	page.set_primary_action(__("生成采购申请"), create_material_request);
+	if (canCreateMaterialRequest(frappe.model)) {
+		page.set_primary_action(__("生成采购申请"), create_material_request);
+	}
 	render_selected();
 };
 

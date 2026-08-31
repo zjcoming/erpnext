@@ -52,6 +52,29 @@ function psExecutiveFormatCurrency(value, currency) {
 	}
 }
 
+function psExecutiveShouldReloadCompany(settingCompany, loadedCompany, selectedCompany) {
+	return !settingCompany && String(selectedCompany || "") !== String(loadedCompany || "");
+}
+
+function psExecutiveDestroyCharts(charts) {
+	for (const chart of charts || []) {
+		// ResizeObserver can already have a redraw queued while the Desk page is
+		// unloading. Neutralize that callback before disconnecting the observer so
+		// it cannot touch SVG nodes after the browser has removed them.
+		if (chart && typeof chart.draw === "function") chart.draw = () => {};
+		chart?.destroy?.();
+	}
+	return [];
+}
+
+function psExecutiveChartOptions(options) {
+	// Frappe Charts temporarily swaps the SVG during entry animation. A queued
+	// ResizeObserver redraw can then remove the already-swapped node and throw a
+	// NotFoundError. These dashboard charts are informational, so render them
+	// without animation and keep resize handling stable.
+	return { ...options, animate: false, disableEntryAnimation: true };
+}
+
 class ProcessSimplificationExecutiveDashboard {
 	constructor(wrapper) {
 		this.wrapper = wrapper;
@@ -63,6 +86,7 @@ class ProcessSimplificationExecutiveDashboard {
 		this.company = null;
 		this.charts = [];
 		this.setting_company = false;
+		window.addEventListener("beforeunload", () => this.destroy_charts(), { once: true });
 		this.make_filters();
 		this.make_body();
 		this.load();
@@ -76,7 +100,13 @@ class ProcessSimplificationExecutiveDashboard {
 			fieldtype: "Select",
 			options: [],
 			change: () => {
-				if (!this.setting_company) this.load();
+				if (
+					psExecutiveShouldReloadCompany(
+						this.setting_company,
+						this.company,
+						this.company_field.get_value()
+					)
+				) this.load();
 			},
 		});
 		this.from_date_field = this.page.add_field({
@@ -155,8 +185,8 @@ class ProcessSimplificationExecutiveDashboard {
 			});
 			this.data = response.message || {};
 			await this.set_company_options(this.data.companies || [], this.data.company);
-			this.render();
 			this.root.find("[data-content]").removeClass("hide");
+			this.render();
 		} catch (error) {
 			frappe.msgprint({
 				title: __("经营总览加载失败"),
@@ -171,6 +201,7 @@ class ProcessSimplificationExecutiveDashboard {
 
 	async set_company_options(companies, selected) {
 		const options = companies.map((row) => row.name);
+		this.company = selected || null;
 		this.setting_company = true;
 		try {
 			this.company_field.df.options = options;
@@ -294,11 +325,10 @@ class ProcessSimplificationExecutiveDashboard {
 	}
 
 	render_charts() {
-		for (const chart of this.charts) chart?.destroy?.();
-		this.charts = [];
+		this.destroy_charts();
 		const trend = this.data.order_trend || [];
 		const orderElement = this.root.find("[data-order-chart]").empty()[0];
-		this.charts.push(new frappe.Chart(orderElement, {
+		this.charts.push(new frappe.Chart(orderElement, psExecutiveChartOptions({
 			data: {
 				labels: trend.map((row) => row.month),
 				datasets: [{ name: __("订单额"), values: trend.map((row) => Number(row.order_amount || 0)) }],
@@ -309,21 +339,25 @@ class ProcessSimplificationExecutiveDashboard {
 			axisOptions: { xAxisMode: "tick", yAxisMode: "tick", xIsSeries: true },
 			barOptions: { spaceRatio: 0.45 },
 			tooltipOptions: { formatTooltipY: (value) => this.format_currency(value) },
-		}));
+		})));
 
 		const inventoryData = psExecutiveInventoryChartData(this.data.inventory.categories);
 		const inventoryElement = this.root.find("[data-inventory-chart]").empty()[0];
 		if (inventoryData.values.length) {
-			this.charts.push(new frappe.Chart(inventoryElement, {
+			this.charts.push(new frappe.Chart(inventoryElement, psExecutiveChartOptions({
 				data: { labels: inventoryData.labels, datasets: [{ values: inventoryData.values }] },
 				type: "donut",
 				height: 270,
 				colors: inventoryData.colors,
 				tooltipOptions: { formatTooltipY: (value) => this.format_currency(value) },
-			}));
+			})));
 		} else {
 			$(inventoryElement).html(`<div class="ps-exec-empty">${__("当前没有库存价值数据")}</div>`);
 		}
+	}
+
+	destroy_charts() {
+		this.charts = psExecutiveDestroyCharts(this.charts);
 	}
 }
 
@@ -339,5 +373,8 @@ if (typeof module !== "undefined" && module.exports) {
 		psExecutiveInventoryChartData,
 		psExecutiveEscape,
 		psExecutiveFormatCurrency,
+		psExecutiveShouldReloadCompany,
+		psExecutiveDestroyCharts,
+		psExecutiveChartOptions,
 	};
 }

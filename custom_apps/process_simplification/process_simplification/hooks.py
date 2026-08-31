@@ -7,7 +7,7 @@ app_license = "GPL-3.0"
 
 required_apps = ["erpnext"]
 
-app_include_css = "/assets/process_simplification/css/process_simplification.css?v=14"
+app_include_css = "/assets/process_simplification/css/process_simplification.css?v=15"
 app_include_js = [
 	"/assets/process_simplification/js/item_identity.js?v=2",
 	"/assets/process_simplification/js/worker_assignment.js?v=5",
@@ -19,6 +19,7 @@ after_migrate = "process_simplification.install.after_migrate"
 
 extend_doctype_class = {
 	"Work Order": "process_simplification.production_reporting.work_order.WorkerReportingWorkOrderMixin",
+	"Job Card": "process_simplification.production_reporting.job_card.SimplifiedFlowJobCardMixin",
 	"Stock Entry": "process_simplification.production_reporting.stock_entry.SubassemblyReservationStockEntryMixin",
 }
 
