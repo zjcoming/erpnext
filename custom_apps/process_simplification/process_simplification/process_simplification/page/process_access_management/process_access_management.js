@@ -29,7 +29,7 @@ class ProcessSimplificationAccessManagement {
 		this.root = $(
 			`<div class="ps-access-management">
 				<section class="ps-access-hero">
-					<div><span>JOB ACCESS</span><h2>${__("一个入口管理岗位与数据范围")}</h2></div>
+					<div><span>${__("岗位与范围")}</span><h2>${__("一个入口管理岗位与数据范围")}</h2></div>
 					<p>${__("这里分配固定岗位模板和公司、仓库范围。实际角色由 ERPNext Role Profile 自动同步，不再直接维护两套角色。")}</p>
 				</section>
 				<div class="ps-access-placeholder" data-placeholder>${__("请先选择一个系统用户")}</div>

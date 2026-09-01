@@ -4,8 +4,54 @@ from frappe.tests import IntegrationTestCase
 
 SIDEBAR_NAME = "Process Simplification"
 
+EXPECTED_WORKSPACE_CARDS = {
+	"经营总览": ("executive-dashboard",),
+	"销售与订单": ("quick-sales-order", "order-workbench"),
+	"生产执行": (
+		"production-workbench",
+		"active-production-work",
+		"my-production-reporting",
+		"production-report-history",
+		"production-report-review",
+		"production-exception-review",
+	),
+	"采购与工资": (
+		"shortage-purchase-planning",
+		"Operation Wage Rate",
+		"Monthly Worker Wage Summary",
+	),
+	"系统管理": ("Process Simplification Settings", "process-access-management"),
+	"标准单据": (
+		"Sales Order",
+		"Stock Reservation Entry",
+		"Work Order",
+		"Material Request",
+		"Delivery Note",
+		"Stock Entry",
+	),
+}
+
 
 class TestDesktopNavigationIntegration(IntegrationTestCase):
+	def _assert_workspace_cards(self, workspace):
+		actual = {}
+		current_card = None
+		card_rows = {}
+		for row in workspace.links:
+			if row.type == "Card Break":
+				current_card = row.label
+				actual[current_card] = []
+				card_rows[current_card] = row
+			elif current_card and row.type == "Link":
+				actual[current_card].append(row.link_to)
+
+		self.assertEqual(
+			{label: tuple(actual.get(label, ())) for label in EXPECTED_WORKSPACE_CARDS},
+			EXPECTED_WORKSPACE_CARDS,
+		)
+		for label, routes in EXPECTED_WORKSPACE_CARDS.items():
+			self.assertEqual(card_rows[label].link_count, len(routes))
+
 	def test_apps_screen_route_targets_the_slugged_workspace(self):
 		from process_simplification import hooks
 
@@ -179,8 +225,8 @@ class TestDesktopNavigationIntegration(IntegrationTestCase):
 		workspace = frappe.get_doc("Workspace", "process-simplification")
 		for route, label in {
 			"active-production-work": "正在做",
-			"my-production-reporting": "我的报工",
-			"production-report-history": "报工历史",
+			"my-production-reporting": "我的任务",
+			"production-report-history": "我的记录",
 			"production-report-review": "报工审核",
 		}.items():
 			sidebar_rows = [row for row in sidebar.items if row.link_to == route]
@@ -197,8 +243,7 @@ class TestDesktopNavigationIntegration(IntegrationTestCase):
 				next(index for index, row in enumerate(sidebar.items) if row.link_to == route),
 				next(index for index, row in enumerate(sidebar.items) if row.link_to == "shortage-purchase-planning"),
 			)
-		core_card = next(row for row in workspace.links if row.type == "Card Break" and row.label == "核心流程")
-		self.assertEqual(core_card.link_count, 14)
+		self._assert_workspace_cards(workspace)
 		workspace_roles = {row.role for row in workspace.roles}
 		self.assertTrue(
 			{
@@ -269,10 +314,7 @@ class TestDesktopNavigationIntegration(IntegrationTestCase):
 		self.assertFalse(set(LEGACY_PAGE_ROUTES).intersection(row.link_to for row in workspace.links))
 		for route in LEGACY_PAGE_ROUTES:
 			self.assertFalse(frappe.db.exists("Page", route))
-		core_card = next(
-			row for row in workspace.links if row.type == "Card Break" and row.label == "核心流程"
-		)
-		self.assertEqual(core_card.link_count, 14)
+		self._assert_workspace_cards(workspace)
 
 	def test_management_navigation_is_idempotent_and_role_scoped(self):
 		from process_simplification.management_access import APP_MANAGED_ROLES
@@ -292,8 +334,7 @@ class TestDesktopNavigationIntegration(IntegrationTestCase):
 			self.assertEqual(next(row.label for row in sidebar.items if row.link_to == route), label)
 			self.assertEqual(next(row.label for row in workspace.links if row.link_to == route), label)
 
-		core_card = next(row for row in workspace.links if row.type == "Card Break" and row.label == "核心流程")
-		self.assertEqual(core_card.link_count, 14)
+		self._assert_workspace_cards(workspace)
 		self.assertTrue(set(APP_MANAGED_ROLES).issubset({row.role for row in workspace.roles}))
 
 	def test_sidebar_grouping_patch_is_idempotent(self):

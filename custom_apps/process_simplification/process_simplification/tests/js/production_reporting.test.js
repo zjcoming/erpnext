@@ -213,6 +213,41 @@ test("worker assignments separate active work and demote material waits", () => 
 	);
 });
 
+test("worker task navigation keeps active work first and cards hide audit facts behind details", () => {
+	const nav = workerPage.workerTaskNavigationHtml("my-production-reporting", {
+		translate: (message) => message,
+		escapeHtml: (value) => String(value),
+	});
+	assert.ok(nav.indexOf("active-production-work") < nav.indexOf("my-production-reporting"));
+	assert.match(nav, /data-route="my-production-reporting" aria-current="page">待开始/);
+
+	const card = workerPage.workerAssignmentCardHtml(
+		{
+			name: "ASSIGN-1",
+			operation: "装配",
+			production_item: "FG-001",
+			job_card: "JC-001",
+			work_order: "WO-001",
+			can_start: true,
+			reportable_qty: 5,
+			completed_qty: 2,
+			assigned_qty: 10,
+			job_card_completed_qty: 4,
+			for_quantity: 20,
+		},
+		{
+			translate: (message) => message,
+			escapeHtml: (value) => String(value ?? ""),
+			formatNumber: (value) => Number(value || 0).toFixed(2),
+			formatDateTime: (value) => value || "-",
+		}
+	);
+	assert.match(card, /class="worker-assignment-key-facts"/);
+	assert.match(card, /当前可报/);
+	assert.match(card, /<details class="worker-assignment-more">/);
+	assert.ok(card.indexOf("开始计时") < card.indexOf("生产任务单：JC-001"));
+});
+
 test("my reporting removes recent history while the history card exposes escaped audit facts", () => {
 	const myPageScript = fs.readFileSync(
 		path.join(

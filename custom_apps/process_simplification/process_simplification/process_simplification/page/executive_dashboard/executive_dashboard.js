@@ -132,7 +132,7 @@ class ProcessSimplificationExecutiveDashboard {
 			`<div class="ps-executive-dashboard">
 				<section class="ps-exec-hero">
 					<div>
-						<div class="ps-exec-eyebrow">BUSINESS OVERVIEW</div>
+						<div class="ps-exec-eyebrow">${__("经营数据")}</div>
 						<h2>${__("经营驾驶舱")}</h2>
 						<p>${__("订单、毛利、库存和交付风险集中在一个页面。金额仅向老板角色开放。")}</p>
 					</div>

@@ -210,6 +210,22 @@ function shouldOpenWaitingMaterialGroup(partitions = {}) {
 	return !partitions.active?.length && !partitions.ready?.length && !partitions.blocked?.length;
 }
 
+function workerTaskNavigationHtml(activeRoute, helpers = {}) {
+	const translate = helpers.translate || ((message) => message);
+	const escapeHtml = helpers.escapeHtml || ((value) => String(value ?? ""));
+	const items = [
+		["active-production-work", translate("正在做")],
+		["my-production-reporting", translate("待开始")],
+		["production-report-history", translate("我的记录")],
+	];
+	return `<nav class="worker-task-nav" aria-label="${escapeHtml(translate("我的任务"))}">${items
+		.map(
+			([route, label]) =>
+				`<button type="button" class="worker-task-nav-item ${route === activeRoute ? "is-active" : ""}" data-route="${escapeHtml(route)}" ${route === activeRoute ? 'aria-current="page"' : ""}>${escapeHtml(label)}</button>`
+		)
+		.join("")}</nav>`;
+}
+
 function workerAssignmentCardHtml(row, helpers = {}) {
 	const translate = helpers.translate || ((message) => message);
 	const escapeHtml = helpers.escapeHtml || ((value) => String(value ?? ""));
@@ -231,30 +247,50 @@ function workerAssignmentCardHtml(row, helpers = {}) {
 			: row.block_code === "MATERIAL_NOT_TRANSFERRED"
 				? "is-waiting-material"
 				: "is-blocked";
+	const stateLabel = row.active_report
+		? (row.timer_paused_at ? translate("已暂停") : translate("正在做"))
+		: row.can_start
+			? translate("可以开始")
+			: row.block_code === "MATERIAL_NOT_TRANSFERRED"
+				? translate("等待发料")
+				: translate("待处理");
+	const stateIndicator = row.active_report
+		? (row.timer_paused_at ? "orange" : "blue")
+		: row.can_start
+			? "green"
+			: row.block_code === "MATERIAL_NOT_TRANSFERRED"
+				? "gray"
+				: "orange";
 	return `<article class="worker-assignment-card ${stateClass}" data-assignment="${escapeHtml(row.name)}">
-		<div class="worker-assignment-heading"><strong>${escapeHtml(row.operation)}</strong><span>${escapeHtml(row.production_item || "")}</span></div>
-		<div class="worker-assignment-facts">
+		<div class="worker-assignment-heading"><div><strong>${escapeHtml(row.operation)}</strong><span>${escapeHtml(row.production_item_name || row.production_item || "")}</span></div><span class="indicator-pill ${stateIndicator}">${escapeHtml(stateLabel)}</span></div>
+		<div class="worker-assignment-key-facts">
+			<span><small>${translate("当前可报")}</small><strong>${formatNumber(row.reportable_qty)}</strong></span>
+			<span><small>${translate("本人完成 / 派工")}</small><strong>${formatNumber(row.completed_qty)} / ${formatNumber(currentAssigned)}</strong></span>
+			${row.active_report
+				? `<span><small>${translate("有效计时")}</small><strong>${formatNumber(row.active_minutes)} ${translate("分钟")}</strong></span>`
+				: `<span><small>${translate("工序进度")}</small><strong>${formatNumber(row.job_card_completed_qty)} / ${formatNumber(row.for_quantity)}</strong></span>`}
+		</div>
+		${blockMessage ? `<p class="worker-assignment-block-message">${escapeHtml(blockMessage)}</p>` : ""}
+		${row.notes ? `<p class="text-muted worker-assignment-note">${escapeHtml(row.notes)}</p>` : ""}
+		<div class="worker-assignment-actions">
+			<button class="btn btn-primary worker-report-action" data-assignment="${escapeHtml(row.name)}" ${button.disabled ? "disabled" : ""}>${escapeHtml(button.label)}</button>
+			${timerButton ? `<button class="btn btn-default worker-timer-action" data-assignment="${escapeHtml(row.name)}" data-action="${escapeHtml(timerButton.action)}">${escapeHtml(timerButton.label)}</button>` : ""}
+			<button class="btn btn-link worker-exception-action" data-assignment="${escapeHtml(row.name)}">${translate("申请退料/报废")}</button>
+		</div>
+		<details class="worker-assignment-more">
+			<summary>${translate("任务详情")}</summary>
+			<div class="worker-assignment-facts">
 			<span>${translate("生产任务单")}：${escapeHtml(row.job_card)}</span>
 			<span>${translate("生产工单")}：${escapeHtml(row.work_order)}</span>
 			<span>${translate("工作站")}：${escapeHtml(row.workstation || "-")}</span>
 			<span>${translate("计价")}：${escapeHtml(wageLabel)}</span>
-			<span>${translate("本人已通过/当前分配")}：${formatNumber(row.completed_qty)} / ${formatNumber(currentAssigned)}</span>
 			${movementFacts}
 			${Number(row.pending_qty || 0) ? `<span>${translate("本人待审核")}：${formatNumber(row.pending_qty)}</span>` : ""}
-			<span>${translate("工序已通过/任务量")}：${formatNumber(row.job_card_completed_qty)} / ${formatNumber(row.for_quantity)}</span>
-			<span>${translate("当前可报")}：${formatNumber(row.reportable_qty)}</span>
 			${row.active_started_at ? `<span>${translate("开始时间")}：${escapeHtml(formatDateTime(row.active_started_at))}</span>` : ""}
-			${row.active_report ? `<span>${translate("有效计时")}：${formatNumber(row.active_minutes)} ${translate("分钟")}${row.timer_paused_at ? ` · ${translate("已暂停")}` : ""}</span>` : ""}
 			${row.wage_type === "Time" ? `<span>${translate("今日剩余计薪分钟")}：${formatNumber(remainingMinutes)}</span>` : ""}
 			${row.wage_type === "Time" ? `<span>${translate("计薪工时来源")}：${row.manual_time_entry ? translate("工人手工填写") : translate("计时器有效分钟")}</span>` : ""}
-		</div>
-		${row.notes ? `<p class="text-muted worker-assignment-note">${escapeHtml(row.notes)}</p>` : ""}
-		${blockMessage ? `<p class="text-muted worker-assignment-block-message">${escapeHtml(blockMessage)}</p>` : ""}
-		<div class="worker-assignment-actions">
-			<button class="btn btn-primary worker-report-action" data-assignment="${escapeHtml(row.name)}" ${button.disabled ? "disabled" : ""}>${escapeHtml(button.label)}</button>
-			${timerButton ? `<button class="btn btn-default worker-timer-action" data-assignment="${escapeHtml(row.name)}" data-action="${escapeHtml(timerButton.action)}">${escapeHtml(timerButton.label)}</button>` : ""}
-			<button class="btn btn-default worker-exception-action" data-assignment="${escapeHtml(row.name)}">${translate("申请退料/报废")}</button>
-		</div>
+			</div>
+		</details>
 	</article>`;
 }
 
@@ -316,7 +352,7 @@ function mountWorkerReportingPage({ page, root, mode = "queue" }) {
 		$root.find(".worker-active-list").html(
 			partitions.active.length
 				? cardGrid(partitions.active)
-				: `<div class="worker-reporting-empty worker-active-empty"><strong>${__("当前没有正在做的任务")}</strong><span class="text-muted">${__("从“我的报工”选择派工并开始计时后，会显示在这里。")}</span><button class="btn btn-primary worker-open-queue">${__("查看当前派工")}</button></div>`
+				: `<div class="worker-reporting-empty worker-active-empty"><strong>${__("当前没有正在做的任务")}</strong><span class="text-muted">${__("从“待开始”选择任务并开始计时后，会显示在这里。")}</span><button class="btn btn-primary worker-open-queue">${__("查看待开始任务")}</button></div>`
 		);
 	}
 
@@ -672,6 +708,10 @@ function mountWorkerReportingPage({ page, root, mode = "queue" }) {
 	});
 	$root.on("click", ".worker-open-active", () => frappe.set_route("active-production-work"));
 	$root.on("click", ".worker-open-queue", () => frappe.set_route("my-production-reporting"));
+	$root.on("click", ".worker-task-nav-item", (event) => {
+		const route = $(event.currentTarget).data("route");
+		if (route) frappe.set_route(route);
+	});
 	page.add_inner_button(__("刷新"), () => runWorkerReportingToolbarLoad(load));
 	page.worker_reporting = { state, load };
 	return page.worker_reporting;
@@ -698,6 +738,7 @@ const workerReportingApi = {
 	workerAssignmentPriority,
 	partitionWorkerAssignments,
 	shouldOpenWaitingMaterialGroup,
+	workerTaskNavigationHtml,
 	workerAssignmentCardHtml,
 	mountWorkerReportingPage,
 };

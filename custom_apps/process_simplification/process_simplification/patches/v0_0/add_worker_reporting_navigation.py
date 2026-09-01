@@ -8,6 +8,7 @@ from process_simplification.management_access import (
 	WAGE_MANAGER_ROLE,
 	WORKER_ROLE,
 )
+from process_simplification.navigation_layout import arrange_workspace_card_links
 
 
 SIDEBAR_NAME = "Process Simplification"
@@ -23,13 +24,13 @@ ITEMS = (
 		"icon": "play",
 	},
 	{
-		"label": "我的报工",
+		"label": "我的任务",
 		"link_to": "my-production-reporting",
 		"link_type": "Page",
 		"icon": "edit",
 	},
 	{
-		"label": "报工历史",
+		"label": "我的记录",
 		"link_to": "production-report-history",
 		"link_type": "Page",
 		"icon": "history",
@@ -207,7 +208,7 @@ def _repair_workspace():
 			}
 		)
 		_move_before(workspace.links, row, "shortage-purchase-planning")
-	_recalculate_link_counts(workspace.links)
+	arrange_workspace_card_links(workspace.links)
 	for row in list(workspace.roles):
 		if row.role in LEGACY_APP_MANAGED_ROLES:
 			workspace.roles.remove(row)

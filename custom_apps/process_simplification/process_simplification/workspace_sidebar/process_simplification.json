@@ -114,7 +114,7 @@
    "icon": "edit",
    "indent": 0,
    "keep_closed": 0,
-   "label": "\u6211\u7684\u62a5\u5de5",
+   "label": "\u6211\u7684\u4efb\u52a1",
    "link_to": "my-production-reporting",
    "link_type": "Page",
    "show_arrow": 0,
@@ -126,7 +126,7 @@
    "icon": "history",
    "indent": 0,
    "keep_closed": 0,
-   "label": "\u62a5\u5de5\u5386\u53f2",
+   "label": "\u6211\u7684\u8bb0\u5f55",
    "link_to": "production-report-history",
    "link_type": "Page",
    "show_arrow": 0,
@@ -247,7 +247,7 @@
    "type": "Link"
   }
  ],
- "modified": "2026-08-28 17:02:12.697616",
+ "modified": "2026-09-02 00:40:00.000000",
  "modified_by": "Administrator",
  "module": "Process Simplification",
  "name": "Process Simplification",

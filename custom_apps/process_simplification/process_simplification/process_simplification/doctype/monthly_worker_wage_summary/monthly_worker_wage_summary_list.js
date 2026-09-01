@@ -41,6 +41,12 @@ function setupWageSummaryMonthFilter(listview) {
 
 if (typeof frappe !== "undefined") {
 	frappe.listview_settings["Monthly Worker Wage Summary"] = {
+		add_fields: ["employee_name", "wage_month", "total_amount", "docstatus"],
+		get_indicator(doc) {
+			return doc.docstatus === 1
+				? [__("已确认"), "green", "docstatus,=,1"]
+				: [__("待确认"), "orange", "docstatus,=,0"];
+		},
 		onload(listview) {
 			setupWageSummaryMonthFilter(listview);
 			listview.page.add_inner_button(__("计价规则"), () => {

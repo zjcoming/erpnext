@@ -8,6 +8,7 @@ const {
 	filterFulfillmentOrders,
 	overviewSummary,
 	orderOverviewHtml,
+	orderNextActionLabel,
 	fulfillmentCsv,
 	workbenchPaginationHtml,
 	refreshFulfillmentOverview,
@@ -160,6 +161,28 @@ test("expanded product rows explain stock coverage and production demand", () =>
 	for (const label of ["成品覆盖", "需生产", "已安排", "未安排"]) {
 		assert.match(html, new RegExp(label));
 	}
+});
+
+test("collapsed order names the first enabled business action", () => {
+	const actionable = order("SO-NEXT");
+	actionable.rows[0].next_actions = [
+		{ label: "不可执行", action: "blocked", enabled: false },
+		{ label: "创建发货单", action: "create_delivery_note", enabled: true },
+	];
+
+	assert.equal(orderNextActionLabel(actionable), "创建发货单");
+	const html = orderOverviewHtml(actionable, helpers);
+	assert.match(html, /class="fulfillment-next-action"/);
+	assert.match(html, /<small>下一步<\/small><strong>创建发货单<\/strong>/);
+
+	const active = order("SO-ACTIVE", { active_work_order_qty: 8, unplanned_production_qty: 0 });
+	active.rows[0].active_work_order_qty = 8;
+	active.rows[0].unplanned_production_qty = 0;
+	active.rows[0].uncovered_qty = 0;
+	active.rows[0].next_actions = [
+		{ label: "安排生产", action: "open_production_workbench", enabled: true },
+	];
+	assert.equal(orderNextActionLabel(active), "查看生产进度");
 });
 
 test("expanded product rows show the product name before a labeled code", () => {

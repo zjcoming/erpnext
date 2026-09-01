@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import frappe
 
+from process_simplification.navigation_layout import arrange_workspace_card_links
+
 
 PRODUCTION_CENTER_LABEL = "生产计划中心"
 PRODUCTION_CENTER_ICON = "factory"
@@ -91,6 +93,7 @@ def _repair_workspace():
 			}
 		)
 	_move_before(workspace.links, production, "shortage-purchase-planning")
+	arrange_workspace_card_links(workspace.links)
 	workspace.save(ignore_permissions=True)
 
 

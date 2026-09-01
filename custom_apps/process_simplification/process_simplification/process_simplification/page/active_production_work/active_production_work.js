@@ -14,6 +14,10 @@ if (typeof frappe !== "undefined") {
 		});
 		page.main.html(`
 			<div class="process-simplification-page worker-reporting-page worker-active-page">
+				${activeProductionWorkApi.workerTaskNavigationHtml("active-production-work", {
+					translate: __,
+					escapeHtml: frappe.utils.escape_html,
+				})}
 				<div class="worker-reporting-summary"></div>
 				<section>
 					<h4>${__("正在做的任务")}</h4>

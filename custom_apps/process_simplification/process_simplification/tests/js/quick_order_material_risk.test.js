@@ -1,5 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 
 global.frappe = { pages: { "quick-sales-order": {} } };
 global.__ = (message) => message;
@@ -33,6 +35,20 @@ const helpers = {
 	formatDate: (value) => value,
 	formatCurrency: (value, currency) => `${currency || ""} ${Number(value || 0).toFixed(2)}`.trim(),
 };
+
+test("quick order automatically preflights valid edits while keeping creation as the primary action", () => {
+	const source = fs.readFileSync(
+		path.resolve(
+			__dirname,
+			"../../process_simplification/page/quick_sales_order/quick_sales_order.js"
+		),
+		"utf8"
+	);
+	assert.match(source, /function schedulePreflight\(delay = 1400\)/);
+	assert.match(source, /runPreflight\(\{ silent: true \}\)/);
+	assert.match(source, /class="btn btn-primary confirm-order">\$\{__\("创建销售订单"\)\}/);
+	assert.match(source, /自动检查库存、BOM 和缺料/);
+});
 
 test("lightweight preview sends company and delivery priority to the server", () => {
 	assert.deepEqual(

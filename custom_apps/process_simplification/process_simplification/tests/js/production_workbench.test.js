@@ -185,6 +185,10 @@ test("production chain shows readable item names before labeled trace codes", ()
 	assert.ok(html.indexOf("传感器成品") < html.indexOf("产品编码：901000790"));
 	assert.ok(html.indexOf("插针骨架半成品") < html.indexOf("物料编码：301008201014"));
 	assert.ok(html.indexOf("PA6德尔隆") < html.indexOf("物料编码：204001004"));
+	assert.match(html, /<span>客户交期<\/span><strong>2026-08-08<\/strong>/);
+	assert.match(html, /<span>计划开工<\/span><strong>2026-08-07 08:00:00<\/strong>/);
+	assert.match(html, /class="production-demand-next-action"/);
+	assert.match(html, /<small>下一步<\/small><strong>创建生产计划<\/strong>/);
 });
 
 test("material rows show authoritative net issue instead of repeated gross child quantity", () => {

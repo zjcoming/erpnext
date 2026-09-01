@@ -6,6 +6,7 @@ const path = require("node:path");
 const pageDirectory = path.resolve(__dirname, "../../process_simplification/page");
 const appDirectory = path.resolve(__dirname, "../..");
 const stylesheetPath = path.resolve(__dirname, "../../public/css/process_simplification.css");
+const uiStylesheetPath = path.resolve(__dirname, "../../public/css/process_ui.css");
 
 for (const pageName of [
 	"quick-sales-order",
@@ -75,6 +76,63 @@ test("management links and role-scoped pages are exported", () => {
 	);
 });
 
+test("workspace home groups permitted links by factory responsibility", () => {
+	const workspace = JSON.parse(
+		fs.readFileSync(
+			path.join(
+				appDirectory,
+				"process_simplification",
+				"workspace",
+				"process_simplification",
+				"process_simplification.json"
+			),
+			"utf8"
+		)
+	);
+	const groups = workspace.links
+		.filter((item) => item.type === "Card Break")
+		.map((item) => [item.label, item.link_count]);
+	assert.deepEqual(groups, [
+		["经营总览", 1],
+		["销售与订单", 2],
+		["生产执行", 6],
+		["采购与工资", 3],
+		["系统管理", 2],
+		["标准单据", 6],
+	]);
+	assert.match(JSON.parse(workspace.content)[0].data.text, /按你的岗位开始工作/);
+	assert.equal(workspace.links.find((item) => item.link_to === "my-production-reporting").label, "我的任务");
+	assert.equal(workspace.links.find((item) => item.link_to === "production-report-history").label, "我的记录");
+});
+
+test("wage list views expose business state instead of document identifiers alone", () => {
+	const rateList = fs.readFileSync(
+		path.join(
+			appDirectory,
+			"process_simplification",
+			"doctype",
+			"operation_wage_rate",
+			"operation_wage_rate_list.js"
+		),
+		"utf8"
+	);
+	const summaryList = fs.readFileSync(
+		path.join(
+			appDirectory,
+			"process_simplification",
+			"doctype",
+			"monthly_worker_wage_summary",
+			"monthly_worker_wage_summary_list.js"
+		),
+		"utf8"
+	);
+	assert.match(rateList, /计件/);
+	assert.match(rateList, /计时/);
+	assert.match(rateList, /已失效/);
+	assert.match(summaryList, /已确认/);
+	assert.match(summaryList, /待确认/);
+});
+
 test("collapsed production demand cards do not paint interactive details over later cards", () => {
 	const stylesheet = fs.readFileSync(stylesheetPath, "utf8");
 
@@ -82,6 +140,17 @@ test("collapsed production demand cards do not paint interactive details over la
 		stylesheet,
 		/\.production-demand:not\(\[open\]\)\s*>\s*\.production-demand-details\s*\{[^}]*display:\s*none;/s
 	);
+});
+
+test("factory UI layer is loaded after legacy styles and enforces task-first mobile controls", () => {
+	const hooks = fs.readFileSync(path.resolve(__dirname, "../../hooks.py"), "utf8");
+	const stylesheet = fs.readFileSync(uiStylesheetPath, "utf8");
+	assert.ok(hooks.indexOf("process_simplification.css?v=18") < hooks.indexOf("process_ui.css?v=2"));
+	assert.match(stylesheet, /\.worker-task-nav\s*\{/);
+	assert.match(stylesheet, /\.worker-assignment-key-facts\s*\{/);
+	assert.match(stylesheet, /\.fulfillment-next-action,/);
+	assert.match(stylesheet, /\.production-demand-next-action\s*\{/);
+	assert.match(stylesheet, /min-height:\s*44px/);
 });
 
 test("workspace sidebar groups business pages and hides permission-empty groups", () => {
@@ -109,6 +178,8 @@ test("workspace sidebar groups business pages and hides permission-empty groups"
 
 	assert.equal(sidebar.items[0].link_to, "process-simplification");
 	assert.equal(sidebar.items[0].child, 0);
+	assert.equal(sidebar.items.find((item) => item.link_to === "my-production-reporting").label, "我的任务");
+	assert.equal(sidebar.items.find((item) => item.link_to === "production-report-history").label, "我的记录");
 
 	let cursor = 1;
 	for (const [label, links] of expectedGroups) {

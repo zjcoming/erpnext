@@ -89,21 +89,43 @@ if (typeof frappe !== "undefined") {
 	frappe.pages["production-report-history"].on_page_load = function (wrapper) {
 		const page = frappe.ui.make_app_page({
 			parent: wrapper,
-			title: __("报工历史"),
+			title: __("我的记录"),
 			single_column: true,
 		});
+		const reporting = window.process_simplification.worker_reporting;
 		page.main.html(`
 			<div class="process-simplification-page worker-history-page">
-				<form class="worker-history-filters">
-					<label><span>${__("审核状态")}</span><select name="status" class="form-control"><option value="">${__("全部")}</option><option value="Pending Approval">${__("待审核")}</option><option value="Approved">${__("已通过")}</option><option value="Rejected">${__("已驳回")}</option></select></label>
-					<label><span>${__("工序")}</span><input name="operation" class="form-control" placeholder="${__("工序名称")}"></label>
-					<label><span>${__("生产工单")}</span><input name="work_order" class="form-control" placeholder="${__("可留空")}"></label>
-					<label><span>${__("生产任务单")}</span><input name="job_card" class="form-control" placeholder="${__("可留空")}"></label>
-					<label><span>${__("开始日期")}</span><input name="from_date" type="date" class="form-control"></label>
-					<label><span>${__("结束日期")}</span><input name="to_date" type="date" class="form-control"></label>
-					<label><span>${__("每页")}</span><select name="page_length" class="form-control"><option>20</option><option>50</option><option>100</option></select></label>
-					<button class="btn btn-primary worker-history-search" type="submit">${__("查询")}</button>
-				</form>
+				${reporting.workerTaskNavigationHtml("production-report-history", {
+					translate: __,
+					escapeHtml: frappe.utils.escape_html,
+				})}
+				<div class="worker-history-quick-filters" aria-label="${__("快速筛选")}">
+					<div class="worker-filter-chip-group" data-filter-group="status">
+						<span>${__("状态")}</span>
+						<button type="button" class="worker-filter-chip is-active" data-status="">${__("全部")}</button>
+						<button type="button" class="worker-filter-chip" data-status="Pending Approval">${__("待审核")}</button>
+						<button type="button" class="worker-filter-chip" data-status="Approved">${__("已通过")}</button>
+						<button type="button" class="worker-filter-chip" data-status="Rejected">${__("已驳回")}</button>
+					</div>
+					<div class="worker-filter-chip-group" data-filter-group="period">
+						<span>${__("时间")}</span>
+						<button type="button" class="worker-period-chip is-active" data-period="all">${__("全部时间")}</button>
+						<button type="button" class="worker-period-chip" data-period="month">${__("本月")}</button>
+					</div>
+				</div>
+				<details class="worker-history-advanced">
+					<summary>${__("更多筛选")}</summary>
+					<form class="worker-history-filters">
+						<input type="hidden" name="status" value="">
+						<label><span>${__("工序")}</span><input name="operation" class="form-control" placeholder="${__("工序名称")}"></label>
+						<label><span>${__("生产工单")}</span><input name="work_order" class="form-control" placeholder="${__("可留空")}"></label>
+						<label><span>${__("生产任务单")}</span><input name="job_card" class="form-control" placeholder="${__("可留空")}"></label>
+						<label><span>${__("开始日期")}</span><input name="from_date" type="date" class="form-control"></label>
+						<label><span>${__("结束日期")}</span><input name="to_date" type="date" class="form-control"></label>
+						<label><span>${__("每页")}</span><select name="page_length" class="form-control"><option>20</option><option>50</option><option>100</option></select></label>
+						<button class="btn btn-default worker-history-search" type="submit">${__("应用筛选")}</button>
+					</form>
+				</details>
 				<section><div class="worker-history-results"></div><div class="worker-history-pager"></div></section>
 				<details class="worker-exception-history-section">
 					<summary>${__("退料/报废申请记录")}</summary>
@@ -112,8 +134,12 @@ if (typeof frappe !== "undefined") {
 			</div>`);
 
 		const $root = page.main.find(".worker-history-page");
-		const reporting = window.process_simplification.worker_reporting;
-		const state = { rows: [], exceptions: [], pagination: { page: 1, page_length: 20 } };
+		const state = {
+			rows: [],
+			exceptions: [],
+			pagination: { page: 1, page_length: 20 },
+			reportSequence: 0,
+		};
 		const esc = (value) => frappe.utils.escape_html(String(value ?? ""));
 		const number = (value) => format_number(flt(value), null, 2);
 		const dateTime = (value) =>
@@ -158,12 +184,14 @@ if (typeof frappe !== "undefined") {
 		}
 
 		function loadReports(pageNumber = 1) {
+			const sequence = ++state.reportSequence;
 			return frappe.call({
 				method: "process_simplification.api.production_reporting.get_my_report_history",
 				args: { ...filterValues(), page: pageNumber },
 				freeze: true,
 				freeze_message: __("正在查询报工与审核记录..."),
 			}).then((response) => {
+				if (sequence !== state.reportSequence) return;
 				state.rows = response.message?.rows || [];
 				state.pagination = response.message?.pagination || { page: 1, page_length: 20 };
 				renderReports();
@@ -187,6 +215,34 @@ if (typeof frappe !== "undefined") {
 		$root.on("submit", ".worker-history-filters", (event) => {
 			event.preventDefault();
 			loadReports(1);
+		});
+		$root.on("click", ".worker-filter-chip", (event) => {
+			const $button = $(event.currentTarget);
+			$root.find('.worker-history-filters [name="status"]').val($button.data("status") || "");
+			$root.find(".worker-filter-chip").removeClass("is-active");
+			$button.addClass("is-active");
+			loadReports(1);
+		});
+		$root.on("click", ".worker-period-chip", (event) => {
+			const $button = $(event.currentTarget);
+			const period = $button.data("period");
+			let fromDate = "";
+			let toDate = "";
+			if (period === "month") {
+				const now = frappe.datetime.nowdate();
+				const [year, month] = now.split("-").map(Number);
+				fromDate = `${year}-${String(month).padStart(2, "0")}-01`;
+				toDate = `${year}-${String(month).padStart(2, "0")}-${String(new Date(year, month, 0).getDate()).padStart(2, "0")}`;
+			}
+			$root.find('.worker-history-filters [name="from_date"]').val(fromDate);
+			$root.find('.worker-history-filters [name="to_date"]').val(toDate);
+			$root.find(".worker-period-chip").removeClass("is-active");
+			$button.addClass("is-active");
+			loadReports(1);
+		});
+		$root.on("click", ".worker-task-nav-item", (event) => {
+			const route = $(event.currentTarget).data("route");
+			if (route) frappe.set_route(route);
 		});
 		$root.on("click", ".worker-history-page", (event) => {
 			loadReports(Number($(event.currentTarget).data("page") || 1));

@@ -7,6 +7,7 @@ from process_simplification.management_access import (
 	LEGACY_APP_MANAGED_ROLES,
 	ensure_management_roles,
 )
+from process_simplification.navigation_layout import arrange_workspace_card_links
 
 
 SIDEBAR_NAME = "Process Simplification"
@@ -95,7 +96,7 @@ def _repair_workspace():
 			}
 		)
 		_move_before(workspace.links, row, values["before"])
-	_recalculate_link_counts(workspace.links)
+	arrange_workspace_card_links(workspace.links)
 	for row in list(workspace.roles):
 		if row.role in LEGACY_APP_MANAGED_ROLES:
 			workspace.roles.remove(row)

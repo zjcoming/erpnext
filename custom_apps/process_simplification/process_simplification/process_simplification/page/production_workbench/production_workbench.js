@@ -650,6 +650,13 @@ function productionDemandHtml(demand, helpers) {
 	const purchaseMaterials = hasProductionPlan
 		? purchaseMaterialSummaryHtml(aggregatePurchasedMaterials(demand.materials || []), helpers)
 		: `<div class="text-muted production-empty-section">${esc(emptyMaterialsMessage)}</div>`;
+	const plannedStart = (demand.production_plans || []).find((plan) => plan.planned_date)?.planned_date;
+	const primaryAction = (demand.next_actions || []).find(
+		(row) => row.enabled !== false && row.action !== "view_sales_order"
+	);
+	const nextActionLabel = primaryAction?.label
+		|| ((demand.work_orders || []).length ? t("查看工单进度") : demand.status_label)
+		|| t("查看详情");
 	return `
 		<details class="production-demand production-risk-${esc(demand.risk_level || "gray")}" data-demand-key="${esc(demand.demand_key)}">
 			<summary>
@@ -660,12 +667,11 @@ function productionDemandHtml(demand, helpers) {
 					{ translate: t, escapeHtml: esc },
 					{ linkToItem: true, codeLabel: t("产品编码") }
 				)}</div>
-				<div class="production-demand-fact"><span>${esc(t("交期"))}</span><strong>${esc(date(demand.delivery_date)) || esc(t("未设置"))}</strong></div>
-				<div class="production-demand-fact"><span>${esc(t("成品覆盖 / 待交"))}</span><strong>${number(demand.finished_stock_coverage_qty)} / ${number(demand.pending_qty)}</strong></div>
-				<div class="production-demand-fact"><span>${esc(t("已安排 / 需生产"))}</span><strong>${number(demand.active_work_order_qty)} / ${number(demand.production_required_qty)}</strong></div>
-				<div class="production-demand-fact"><span>${esc(t("未安排 / 已完工"))}</span><strong>${number(demand.unplanned_production_qty)} / ${number(demand.completed_qty)}</strong></div>
+				<div class="production-demand-fact"><span>${esc(t("客户交期"))}</span><strong>${esc(date(demand.delivery_date)) || esc(t("未设置"))}</strong></div>
+				<div class="production-demand-fact"><span>${esc(t("计划开工"))}</span><strong>${esc(date(plannedStart)) || esc(t("未安排"))}</strong></div>
+				<div class="production-demand-fact"><span>${esc(t("需生产 / 未安排"))}</span><strong>${number(demand.production_required_qty)} / ${number(demand.unplanned_production_qty)}</strong></div>
 				<div class="production-demand-risk"><span class="indicator-pill ${esc(demand.risk_level || "gray")}">${esc(demand.risk_label || "")}</span><span class="indicator-pill ${esc(productionStatusMeta(demand.status_code).indicator)}">${esc(demand.status_label || "")}</span></div>
-				<span class="production-demand-toggle">${esc(t("查看并处理"))}</span>
+				<span class="production-demand-next-action"><small>${esc(t("下一步"))}</small><strong>${esc(t(nextActionLabel))}</strong></span>
 			</summary>
 			<div class="production-demand-details">
 				<div class="production-demand-actions">${actions}</div>
@@ -722,6 +728,8 @@ if (typeof frappe !== "undefined") {
 		page.main.html(`
 			<div class="process-simplification-page production-workbench">
 				<div class="production-kpis"></div>
+				<details class="workbench-filter-panel" open>
+					<summary><span>${__("筛选生产需求")}</span><small>${__("按交期、状态、风险或客户缩小范围")}</small></summary>
 				<div class="production-filter-bar">
 					<input class="form-control production-search" data-filter="search" placeholder="${__("搜索订单、客户、产品或工单")}">
 					<select class="form-control" data-filter="deliveryWindow"><option value="">${__("全部交期")}</option><option value="overdue">${__("已逾期")}</option><option value="today">${__("今日交期")}</option><option value="within_7_days">${__("7 天内交期")}</option><option value="later">${__("稍后交期")}</option><option value="missing">${__("缺少交期")}</option></select>
@@ -732,6 +740,7 @@ if (typeof frappe !== "undefined") {
 					<label><input type="checkbox" data-filter="unplannedOnly"> ${__("只看未纳入计划")}</label>
 					<label><input type="checkbox" data-filter="showOther"> ${__("其他生产")}</label>
 				</div>
+				</details>
 				<div class="production-update-time text-muted"></div>
 				<p class="text-muted production-sort-note">${__("客户物料分配优先级：订单行交付日期；同交期按订单创建时间和订单行顺序。")}</p>
 				<div class="production-demand-list"></div>
@@ -740,6 +749,9 @@ if (typeof frappe !== "undefined") {
 			</div>`);
 
 		const $root = page.main.find(".production-workbench");
+		if (window.matchMedia("(max-width: 767px)").matches) {
+			$root.find(".workbench-filter-panel").prop("open", false);
+		}
 		const state = {
 			data: { demands: [], other_work_orders: [], summary: {}, pagination: { page: 1, page_size: 20 } },
 			filters: {},
@@ -772,7 +784,7 @@ if (typeof frappe !== "undefined") {
 				[__("待回补订单"), summary.awaiting_order_reservation_demands, "green"],
 			];
 			$root.find(".production-kpis").html(
-				cards.map(([label, value, color]) => `<div class="production-kpi production-kpi-${color}"><span>${frappe.utils.escape_html(label)}</span><strong>${value}</strong></div>`).join("")
+				cards.map(([label, value, color]) => `<div class="production-kpi production-kpi-${color} ${Number(value || 0) ? "" : "is-zero"}"><span>${frappe.utils.escape_html(label)}</span><strong>${value}</strong></div>`).join("")
 			);
 		}
 

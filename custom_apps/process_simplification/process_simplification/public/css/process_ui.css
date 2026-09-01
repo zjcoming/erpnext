@@ -1,0 +1,583 @@
+/*
+ * Factory UI layer
+ * Priority: simple > obvious > decorative. This file intentionally overrides
+ * presentation only; workflow state and business actions stay in page scripts.
+ */
+
+.process-simplification-page {
+	--ps-ui-accent: var(--primary, #2563eb);
+	--ps-ui-accent-soft: var(--blue-50, #eff6ff);
+	--ps-ui-border: var(--border-color, #d8dce5);
+	--ps-ui-surface: var(--card-bg, #fff);
+	--ps-ui-subtle: var(--subtle-fg, #f6f7f9);
+	--ps-ui-muted: var(--text-muted, #6b7280);
+	max-width: 1480px;
+	margin-inline: auto;
+	padding: 16px 0 40px;
+}
+
+.process-simplification-page :is(.btn, .form-control) {
+	min-height: 40px;
+}
+
+.process-simplification-page .btn-primary {
+	font-weight: 650;
+}
+
+.process-simplification-page :is(.indicator-pill, .badge) {
+	font-weight: 600;
+}
+
+/* Calm overview and settings headers: information before decoration. */
+.ps-executive-dashboard,
+.ps-access-management {
+	max-width: 1480px;
+	padding-top: 16px;
+}
+
+.ps-exec-hero,
+.ps-access-hero {
+	min-height: 0;
+	padding: 22px 24px;
+	border-color: var(--border-color);
+	border-radius: 12px;
+	background: var(--card-bg);
+	box-shadow: none;
+	color: var(--text-color);
+}
+
+.ps-exec-hero::after,
+.ps-access-hero::after {
+	display: none;
+}
+
+.ps-exec-eyebrow,
+.ps-access-hero > div > span {
+	margin-bottom: 6px;
+	color: var(--text-muted);
+	letter-spacing: 0.08em;
+}
+
+.ps-exec-hero h2,
+.ps-access-hero h2 {
+	margin-bottom: 6px;
+	color: var(--text-color);
+	font-size: clamp(24px, 2.3vw, 32px);
+	text-shadow: none;
+}
+
+.ps-exec-hero p,
+.ps-access-hero p {
+	color: var(--text-muted);
+	line-height: 1.55;
+}
+
+.ps-exec-updated {
+	padding: 10px 12px;
+	border-color: var(--border-color);
+	background: var(--subtle-fg);
+	color: var(--text-color);
+	backdrop-filter: none;
+}
+
+.review-hero,
+.shortage-hero {
+	min-height: 0;
+	padding: 18px 20px;
+	border-color: var(--border-color);
+	border-radius: 12px;
+	background: var(--card-bg);
+	box-shadow: none;
+}
+
+.review-hero {
+	grid-template-columns: minmax(240px, 0.8fr) minmax(480px, 1.4fr);
+	gap: 20px;
+}
+
+.shortage-purchase-planning {
+	max-width: 1480px;
+	padding-inline: 0;
+}
+
+.shortage-hero h2,
+.shortage-hero p {
+	color: var(--text-color);
+}
+
+.shortage-hero p {
+	color: var(--text-muted);
+	line-height: 1.55;
+}
+
+.shortage-refresh {
+	box-shadow: none;
+}
+
+/* Quick order: the footer owns the one primary action. */
+.quick-order-v2 {
+	max-width: 1260px;
+}
+
+.quick-order-card,
+.quick-material-risk,
+.quick-order-summary {
+	border-radius: 12px;
+	box-shadow: none;
+}
+
+.quick-order-summary {
+	box-shadow: 0 8px 24px rgba(15, 23, 42, 0.09);
+}
+
+.quick-summary-actions {
+	align-items: center;
+}
+
+.quick-auto-check-hint {
+	max-width: 128px;
+	color: var(--ps-ui-muted);
+	font-size: 12px;
+	line-height: 1.35;
+	text-align: right;
+}
+
+.quick-summary-actions .deep-check {
+	padding-inline: 8px;
+	color: var(--ps-ui-muted);
+}
+
+.quick-summary-actions .confirm-order {
+	min-width: 148px;
+}
+
+/* Order and production cards: conclusion plus a concrete next step. */
+.fulfillment-order,
+.production-demand {
+	overflow: clip;
+	border-radius: 10px;
+	box-shadow: none;
+}
+
+.workbench-filter-panel {
+	margin-bottom: 8px;
+	border: 1px solid var(--ps-ui-border);
+	border-radius: 10px;
+	background: var(--ps-ui-surface);
+}
+
+.workbench-filter-panel > summary {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	min-height: 44px;
+	padding: 10px 12px;
+	cursor: pointer;
+	font-weight: 600;
+}
+
+.workbench-filter-panel > summary small {
+	color: var(--ps-ui-muted);
+	font-weight: 400;
+}
+
+.workbench-filter-panel[open] > summary {
+	border-bottom: 1px solid var(--ps-ui-border);
+}
+
+.workbench-filter-panel .fulfillment-filter-bar,
+.workbench-filter-panel .production-filter-bar {
+	margin: 0;
+	padding: 10px 12px;
+}
+
+.fulfillment-order > summary {
+	grid-template-columns: 20px minmax(170px, 1.25fr) repeat(4, minmax(102px, 0.8fr)) minmax(116px, auto) minmax(138px, 0.85fr);
+}
+
+.production-demand > summary {
+	grid-template-columns: 20px minmax(155px, 1.1fr) minmax(190px, 1.3fr) repeat(3, minmax(104px, 0.72fr)) minmax(120px, auto) minmax(150px, 0.9fr);
+}
+
+.fulfillment-order > summary:hover,
+.production-demand > summary:hover {
+	background: var(--ps-ui-subtle);
+}
+
+.fulfillment-next-action,
+.production-demand-next-action {
+	display: grid;
+	min-width: 0;
+	gap: 2px;
+	padding: 9px 11px;
+	border-radius: 8px;
+	background: var(--ps-ui-accent-soft);
+	color: var(--text-color);
+}
+
+.fulfillment-next-action small,
+.production-demand-next-action small {
+	color: var(--ps-ui-muted);
+	font-size: 11px;
+}
+
+.fulfillment-next-action strong,
+.production-demand-next-action strong {
+	color: var(--ps-ui-accent);
+	font-size: 13px;
+	overflow-wrap: anywhere;
+}
+
+.fulfillment-order-details,
+.production-demand-details {
+	background: var(--ps-ui-surface);
+}
+
+.fulfillment-item-table-wrap,
+.production-material-table-wrap {
+	box-shadow: none;
+}
+
+/* Worker pages share one small task navigator, while active work stays first. */
+.worker-reporting-page,
+.worker-history-page {
+	display: grid;
+	max-width: 1040px;
+	gap: 18px;
+	margin-inline: auto;
+}
+
+.worker-active-page {
+	max-width: 760px;
+}
+
+.worker-task-nav {
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	gap: 4px;
+	padding: 4px;
+	border: 1px solid var(--ps-ui-border);
+	border-radius: 10px;
+	background: var(--ps-ui-subtle);
+}
+
+.worker-task-nav-item {
+	min-height: 42px;
+	padding: 8px 12px;
+	border: 0;
+	border-radius: 7px;
+	background: transparent;
+	color: var(--ps-ui-muted);
+	font-weight: 600;
+}
+
+.worker-task-nav-item.is-active {
+	background: var(--ps-ui-surface);
+	box-shadow: 0 1px 4px rgba(15, 23, 42, 0.1);
+	color: var(--text-color);
+}
+
+.worker-reporting-summary {
+	padding: 12px 14px;
+	box-shadow: none;
+}
+
+.worker-current-assignments > h4,
+.worker-active-page section > h4 {
+	margin: 0 0 12px;
+	font-size: 16px;
+}
+
+.worker-assignment-card {
+	gap: 14px;
+	padding: 16px;
+	border-radius: 12px;
+	box-shadow: none;
+}
+
+.worker-assignment-heading > div {
+	display: grid;
+	min-width: 0;
+	gap: 3px;
+}
+
+.worker-assignment-heading > div > span {
+	color: var(--ps-ui-muted);
+	text-align: left;
+	overflow-wrap: anywhere;
+}
+
+.worker-assignment-key-facts {
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	gap: 8px;
+}
+
+.worker-assignment-key-facts > span {
+	display: grid;
+	min-width: 0;
+	gap: 4px;
+	padding: 10px;
+	border-radius: 8px;
+	background: var(--ps-ui-subtle);
+}
+
+.worker-assignment-key-facts small {
+	color: var(--ps-ui-muted);
+	font-size: 11px;
+}
+
+.worker-assignment-key-facts strong {
+	font-size: 16px;
+	font-variant-numeric: tabular-nums;
+}
+
+.worker-assignment-block-message {
+	margin: 0;
+	padding: 10px 12px;
+	border-left: 3px solid var(--orange-500, #f59e0b);
+	border-radius: 6px;
+	background: var(--orange-50, #fff7ed);
+	color: var(--text-color);
+}
+
+.worker-assignment-actions {
+	grid-template-columns: minmax(160px, 1fr) minmax(120px, auto) auto;
+}
+
+.worker-assignment-actions .worker-exception-action {
+	color: var(--ps-ui-muted);
+}
+
+.worker-assignment-more {
+	border-top: 1px solid var(--ps-ui-border);
+}
+
+.worker-assignment-more > summary {
+	min-height: 40px;
+	padding-top: 10px;
+	cursor: pointer;
+	color: var(--ps-ui-muted);
+	font-size: 12px;
+	font-weight: 600;
+}
+
+.worker-assignment-more .worker-assignment-facts {
+	padding: 4px 0 2px;
+	font-size: 12px;
+}
+
+/* Worker history starts with two obvious filters; audit filters stay available. */
+.worker-history-quick-filters {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	flex-wrap: wrap;
+	gap: 10px 18px;
+}
+
+.worker-filter-chip-group {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 6px;
+}
+
+.worker-filter-chip-group > span {
+	margin-right: 2px;
+	color: var(--ps-ui-muted);
+	font-size: 12px;
+}
+
+.worker-filter-chip,
+.worker-period-chip {
+	min-height: 36px;
+	padding: 6px 12px;
+	border: 1px solid var(--ps-ui-border);
+	border-radius: 18px;
+	background: var(--ps-ui-surface);
+	color: var(--text-color);
+}
+
+.worker-filter-chip.is-active,
+.worker-period-chip.is-active {
+	border-color: var(--ps-ui-accent);
+	background: var(--ps-ui-accent-soft);
+	color: var(--ps-ui-accent);
+	font-weight: 600;
+}
+
+.worker-history-advanced {
+	border: 1px solid var(--ps-ui-border);
+	border-radius: 10px;
+	background: var(--ps-ui-surface);
+}
+
+.worker-history-advanced > summary {
+	min-height: 44px;
+	padding: 12px 14px;
+	cursor: pointer;
+	font-weight: 600;
+}
+
+.worker-history-advanced[open] > summary {
+	border-bottom: 1px solid var(--ps-ui-border);
+}
+
+.worker-history-advanced .worker-history-filters {
+	border: 0;
+	border-radius: 0;
+	box-shadow: none;
+}
+
+@media (max-width: 1100px) {
+	.fulfillment-order > summary,
+	.production-demand > summary {
+		grid-template-columns: 20px minmax(170px, 1.2fr) repeat(3, minmax(108px, 0.8fr));
+	}
+
+	.fulfillment-order-risk,
+	.fulfillment-next-action,
+	.production-demand-risk,
+	.production-demand-next-action {
+		grid-column: auto;
+	}
+}
+
+@media (max-width: 767px) {
+	.process-simplification-page {
+		padding-top: 8px;
+	}
+
+	.process-simplification-page :is(.btn, .form-control, button, summary) {
+		min-height: 44px;
+	}
+
+	.ps-executive-dashboard,
+	.ps-access-management {
+		padding-inline: 0;
+	}
+
+	.ps-exec-hero,
+	.ps-access-hero,
+	.review-hero,
+	.shortage-hero {
+		padding: 18px;
+	}
+
+	.review-hero {
+		grid-template-columns: 1fr;
+	}
+
+	.quick-summary-actions {
+		grid-template-columns: 1fr;
+	}
+
+	.quick-auto-check-hint {
+		max-width: none;
+		text-align: left;
+	}
+
+	.quick-summary-actions .confirm-order {
+		grid-row: 1;
+		width: 100%;
+		min-height: 48px;
+	}
+
+	.quick-summary-actions .deep-check {
+		grid-row: 2;
+	}
+
+	.fulfillment-kpi.is-zero,
+	.production-kpi.is-zero {
+		display: none;
+	}
+
+	.workbench-filter-panel > summary small {
+		display: none;
+	}
+
+	.fulfillment-order > summary,
+	.production-demand > summary {
+		grid-template-columns: 24px minmax(0, 1fr);
+		padding: 12px;
+	}
+
+	.fulfillment-order-primary,
+	.fulfillment-order-fact,
+	.fulfillment-order-risk,
+	.fulfillment-next-action,
+	.production-demand-source,
+	.production-demand-product,
+	.production-demand-fact,
+	.production-demand-risk,
+	.production-demand-next-action {
+		grid-column: 2;
+	}
+
+	.fulfillment-next-action,
+	.production-demand-next-action {
+		margin-top: 2px;
+	}
+
+	.worker-task-nav {
+		position: sticky;
+		z-index: 8;
+		top: 8px;
+	}
+
+	.worker-task-nav-item {
+		padding-inline: 6px;
+		font-size: 13px;
+	}
+
+	.worker-assignment-key-facts {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+
+	.worker-assignment-key-facts > span:first-child {
+		grid-column: 1 / -1;
+	}
+
+	.worker-assignment-actions {
+		grid-template-columns: 1fr;
+	}
+
+	.worker-assignment-actions .worker-report-action {
+		min-height: 50px;
+		font-size: 15px;
+	}
+
+	.worker-history-quick-filters,
+	.worker-filter-chip-group {
+		align-items: stretch;
+	}
+
+	.worker-filter-chip-group {
+		width: 100%;
+	}
+
+	.worker-filter-chip-group > span {
+		display: flex;
+		align-items: center;
+		min-width: 34px;
+	}
+}
+
+@media (max-width: 420px) {
+	.worker-assignment-card,
+	.worker-history-card {
+		padding: 12px;
+	}
+
+	.worker-assignment-key-facts strong {
+		font-size: 15px;
+	}
+
+	.worker-filter-chip,
+	.worker-period-chip {
+		flex: 1 1 auto;
+		padding-inline: 9px;
+	}
+}

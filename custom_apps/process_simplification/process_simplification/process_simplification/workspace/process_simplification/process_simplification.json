@@ -1,7 +1,7 @@
 {
  "app": "process_simplification",
  "charts": [],
- "content": "[{\"id\":\"ps-header\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>流程简化</b></span>\",\"col\":12}},{\"id\":\"ps-card-flow\",\"type\":\"card\",\"data\":{\"card_name\":\"核心流程\",\"col\":4}},{\"id\":\"ps-card-standard\",\"type\":\"card\",\"data\":{\"card_name\":\"标准单据\",\"col\":4}}]",
+ "content": "[{\"id\":\"ps-header\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>按你的岗位开始工作</b></span>\",\"col\":12}},{\"id\":\"ps-card-overview\",\"type\":\"card\",\"data\":{\"card_name\":\"经营总览\",\"col\":4}},{\"id\":\"ps-card-sales\",\"type\":\"card\",\"data\":{\"card_name\":\"销售与订单\",\"col\":4}},{\"id\":\"ps-card-production\",\"type\":\"card\",\"data\":{\"card_name\":\"生产执行\",\"col\":4}},{\"id\":\"ps-card-procurement\",\"type\":\"card\",\"data\":{\"card_name\":\"采购与工资\",\"col\":4}},{\"id\":\"ps-card-system\",\"type\":\"card\",\"data\":{\"card_name\":\"系统管理\",\"col\":4}},{\"id\":\"ps-card-standard\",\"type\":\"card\",\"data\":{\"card_name\":\"标准单据\",\"col\":4}}]",
  "creation": "2026-06-20 00:00:00.000000",
  "custom_blocks": [],
  "docstatus": 0,
@@ -16,8 +16,8 @@
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "核心流程",
-   "link_count": 14,
+   "label": "经营总览",
+   "link_count": 1,
    "onboard": 0,
    "type": "Card Break"
   },
@@ -30,6 +30,14 @@
    "link_type": "Page",
    "onboard": 1,
    "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "销售与订单",
+   "link_count": 2,
+   "onboard": 0,
+   "type": "Card Break"
   },
   {
    "hidden": 0,
@@ -54,6 +62,14 @@
   {
    "hidden": 0,
    "is_query_report": 0,
+   "label": "生产执行",
+   "link_count": 6,
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
    "label": "生产计划中心",
    "link_count": 0,
    "link_to": "production-workbench",
@@ -74,7 +90,7 @@
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "我的报工",
+   "label": "我的任务",
    "link_count": 0,
    "link_to": "my-production-reporting",
    "link_type": "Page",
@@ -84,7 +100,7 @@
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "报工历史",
+   "label": "我的记录",
    "link_count": 0,
    "link_to": "production-report-history",
    "link_type": "Page",
@@ -114,6 +130,24 @@
   {
    "hidden": 0,
    "is_query_report": 0,
+   "label": "采购与工资",
+   "link_count": 3,
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
+   "label": "缺料采购",
+   "link_count": 0,
+   "link_to": "shortage-purchase-planning",
+   "link_type": "Page",
+   "onboard": 1,
+   "type": "Link"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
    "label": "计价规则",
    "link_count": 0,
    "link_to": "Operation Wage Rate",
@@ -134,6 +168,14 @@
   {
    "hidden": 0,
    "is_query_report": 0,
+   "label": "系统管理",
+   "link_count": 2,
+   "onboard": 0,
+   "type": "Card Break"
+  },
+  {
+   "hidden": 0,
+   "is_query_report": 0,
    "label": "简化流程总设置",
    "link_count": 0,
    "link_to": "Process Simplification Settings",
@@ -147,16 +189,6 @@
    "label": "权限管理",
    "link_count": 0,
    "link_to": "process-access-management",
-   "link_type": "Page",
-   "onboard": 1,
-   "type": "Link"
-  },
-  {
-   "hidden": 0,
-   "is_query_report": 0,
-   "label": "缺料采购",
-   "link_count": 0,
-   "link_to": "shortage-purchase-planning",
    "link_type": "Page",
    "onboard": 1,
    "type": "Link"
@@ -230,7 +262,7 @@
    "type": "Link"
   }
  ],
- "modified": "2026-08-02 00:00:00.000000",
+ "modified": "2026-09-02 00:40:00.000000",
  "modified_by": "Administrator",
  "module": "Process Simplification",
  "name": "process-simplification",

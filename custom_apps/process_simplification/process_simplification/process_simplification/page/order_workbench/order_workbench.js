@@ -118,6 +118,20 @@ function fulfillmentStatusColor(statusCode) {
 	}[statusCode] || "gray";
 }
 
+function orderNextActionLabel(order, translate = (message) => message) {
+	for (const row of order?.rows || []) {
+		const action = (row.next_actions || []).find((item) => item.enabled);
+		if (!action?.label) continue;
+		if (
+			action.action === "open_production_workbench" &&
+			Number(row.unplanned_production_qty || row.uncovered_qty || 0) <= 0 &&
+			Number(row.active_work_order_qty || 0) > 0
+		) return translate("查看生产进度");
+		return translate(action.label);
+	}
+	return translate(order?.status_label || "查看详情");
+}
+
 function fulfillmentCsv(orders) {
 	const quote = (value) => {
 		const text = String(value ?? "");
@@ -194,6 +208,7 @@ function orderOverviewHtml(order, helpers) {
 	const riskPill = riskLabel && riskLabel !== statusLabel
 		? `<span class="indicator-pill ${esc(order.risk_level || "gray")} fulfillment-order-risk-pill">${esc(riskLabel)}</span>`
 		: "";
+	const nextActionLabel = orderNextActionLabel(order, t);
 	return `
 		<details class="fulfillment-order fulfillment-risk-${esc(order.risk_level || "gray")}" data-sales-order="${esc(order.name)}">
 			<summary>
@@ -206,7 +221,7 @@ function orderOverviewHtml(order, helpers) {
 				<div class="fulfillment-order-fact fulfillment-number"><span>${esc(t("成品覆盖 / 待交"))}</span><strong>${number(order.finished_stock_coverage_qty ?? order.reserved_qty)} / ${number(order.pending_qty)}</strong></div>
 				<div class="fulfillment-order-fact fulfillment-number"><span>${esc(t("已安排 / 未安排"))}</span><strong>${number(order.active_work_order_qty)} / ${number(order.unplanned_production_qty ?? order.uncovered_qty)}</strong></div>
 				<div class="fulfillment-order-risk">${statusPill}${statusPill && riskPill ? " " : ""}${riskPill}</div>
-				<span class="fulfillment-toggle">${esc(t("查看并处理"))}</span>
+				<span class="fulfillment-next-action"><small>${esc(t("下一步"))}</small><strong>${esc(nextActionLabel)}</strong></span>
 			</summary>
 			<div class="fulfillment-order-details">
 				<div class="fulfillment-order-actions" aria-label="${esc(t("订单操作"))}">
@@ -241,6 +256,7 @@ const fulfillmentOverviewApi = {
 	filterFulfillmentOrders,
 	overviewSummary,
 	fulfillmentCsv,
+	orderNextActionLabel,
 	workbenchPaginationHtml: workbenchPaginationHtmlSafe,
 	orderOverviewHtml,
 	refreshFulfillmentOverview,
@@ -263,6 +279,8 @@ if (typeof frappe !== "undefined") {
 		page.main.html(`
 			<div class="process-simplification-page order-workbench fulfillment-overview">
 				<div class="fulfillment-kpis"></div>
+				<details class="workbench-filter-panel" open>
+					<summary><span>${__("筛选与导出")}</span><small>${__("按交期、状态、客户或风险缩小范围")}</small></summary>
 				<div class="fulfillment-filter-bar">
 					<input class="form-control fulfillment-search" data-filter="search" placeholder="${__("搜索销售订单、客户或产品")}">
 					<select class="form-control" data-filter="deliveryWindow">
@@ -286,6 +304,7 @@ if (typeof frappe !== "undefined") {
 					<label class="fulfillment-risk-filter"><input type="checkbox" data-filter="riskOnly"> ${__("仅看风险")}</label>
 					<button class="btn btn-default fulfillment-export">${__("导出当前可见 CSV")}</button>
 				</div>
+				</details>
 				<p class="text-muted fulfillment-sort-note">${__("默认排序：最早交期、最高风险、创建时间。")}</p>
 				<div class="fulfillment-order-list"></div>
 				<div class="fulfillment-pagination"></div>
@@ -293,6 +312,9 @@ if (typeof frappe !== "undefined") {
 		`);
 
 		const $root = page.main.find(".fulfillment-overview");
+		if (window.matchMedia("(max-width: 767px)").matches) {
+			$root.find(".workbench-filter-panel").prop("open", false);
+		}
 		const state = {
 			data: { orders: [], summary: {}, pagination: { page: 1, page_size: 20 } },
 			filters: {},
@@ -320,7 +342,7 @@ if (typeof frappe !== "undefined") {
 				[__("可发货"), summary.direct_ship_orders, "green"],
 			];
 			$root.find(".fulfillment-kpis").html(
-				cards.map(([label, value, color]) => `<div class="fulfillment-kpi fulfillment-kpi-${color}"><span>${frappe.utils.escape_html(label)}</span><strong>${value}</strong></div>`).join("")
+				cards.map(([label, value, color]) => `<div class="fulfillment-kpi fulfillment-kpi-${color} ${Number(value || 0) ? "" : "is-zero"}"><span>${frappe.utils.escape_html(label)}</span><strong>${value}</strong></div>`).join("")
 			);
 		}
 

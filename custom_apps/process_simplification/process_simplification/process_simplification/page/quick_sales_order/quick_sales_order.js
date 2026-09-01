@@ -357,8 +357,9 @@ frappe.pages["quick-sales-order"].on_page_load = function (wrapper) {
 					<div><span>${__("最近检查")}</span><strong data-summary="checked_at">—</strong></div>
 				</div>
 				<div class="quick-summary-actions">
-					<button class="btn btn-default deep-check">${__("检查库存与缺料")}</button>
-					<button class="btn btn-primary confirm-order">${__("确认下单")}</button>
+					<span class="quick-auto-check-hint">${__("自动检查库存、BOM 和缺料")}</span>
+					<button class="btn btn-link deep-check">${__("立即重新检查")}</button>
+					<button class="btn btn-primary confirm-order">${__("创建销售订单")}</button>
 				</div>
 			</footer>
 		</div>
@@ -371,6 +372,7 @@ frappe.pages["quick-sales-order"].on_page_load = function (wrapper) {
 		rowIndex: 0,
 		previewSequence: 0,
 		previewTimer: null,
+		preflightTimer: null,
 		editSequence: 0,
 		deepResult: null,
 		lastMaterialResult: null,
@@ -696,11 +698,26 @@ frappe.pages["quick-sales-order"].on_page_load = function (wrapper) {
 		updateSummary();
 		if (hadDeepResult) announce(__("订单已修改，确认下单前请重新检查。"));
 		if (refreshPreview) schedulePreview();
+		schedulePreflight();
 	}
 
 	function schedulePreview() {
 		window.clearTimeout(state.previewTimer);
 		state.previewTimer = window.setTimeout(runPreview, 650);
+	}
+
+	function schedulePreflight(delay = 1400) {
+		window.clearTimeout(state.preflightTimer);
+		const payload = collectPayload();
+		if (validateClientPayload(payload)) return;
+		state.preflightTimer = window.setTimeout(() => {
+			if (["preview_loading", "deep_checking"].includes(state.status)) {
+				schedulePreflight(500);
+				return;
+			}
+			if (state.status === "submitting") return;
+			runPreflight({ silent: true }).catch(() => {});
+		}, delay);
 	}
 
 	function runPreview() {
@@ -775,12 +792,14 @@ frappe.pages["quick-sales-order"].on_page_load = function (wrapper) {
 		});
 	}
 
-	function runPreflight({ openConfirmation = false } = {}) {
+	function runPreflight({ openConfirmation = false, silent = false } = {}) {
+		window.clearTimeout(state.preflightTimer);
+		state.preflightTimer = null;
 		const payload = collectPayload();
 		const editSequence = state.editSequence;
 		const validation = validateClientPayload(payload);
 		if (validation) {
-			frappe.msgprint({ title: __("快速开单"), message: validation, indicator: "red" });
+			if (!silent) frappe.msgprint({ title: __("快速开单"), message: validation, indicator: "red" });
 			return Promise.resolve(null);
 		}
 		setStatus("deep_checking");
@@ -807,7 +826,7 @@ frappe.pages["quick-sales-order"].on_page_load = function (wrapper) {
 				rememberMaterialResult(result);
 				updateSummary(result);
 				renderMaterialRisk(result, { stale: false });
-				$root.find(".deep-check").text(__("重新检查库存与缺料"));
+				$root.find(".deep-check").text(__("立即重新检查"));
 				if (!result.can_submit) {
 					showBlocked(result);
 					return result;
@@ -818,7 +837,7 @@ frappe.pages["quick-sales-order"].on_page_load = function (wrapper) {
 				return result;
 			})
 			.catch((error) => {
-				$root.find(".deep-check").text(__("检查库存与缺料"));
+				$root.find(".deep-check").text(__("立即重新检查"));
 				if (state.lastMaterialResult) renderMaterialRisk(state.lastMaterialResult, { stale: true });
 				if (state.status === "deep_checking") setStatus("editing");
 				throw error;
