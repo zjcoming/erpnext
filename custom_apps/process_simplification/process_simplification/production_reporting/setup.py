@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import frappe
 from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
-from frappe.utils import cint
+from frappe.utils import cint, flt
 
 from process_simplification.production_reporting.constants import (
 	REVIEW_ROLES,
@@ -106,6 +106,13 @@ def ensure_worker_reporting_indexes():
 			(["work_order", "item_code", "source_warehouse", "status"], "per_material_reservation"),
 			(["job_card", "request_type", "status", "name"], "per_job_loss_status"),
 		],
+		"Job Card Assignment Movement": [
+			(["job_card", "movement_type", "name"], "jcam_job_type_name"),
+			(["source_assignment", "movement_type", "name"], "jcam_source_type_name"),
+			(["target_assignment", "movement_type", "name"], "jcam_target_type_name"),
+			(["source_movement", "movement_type", "name"], "jcam_release_consumption"),
+			(["request_key", "movement_type", "name"], "jcam_request_type_name"),
+		],
 	}
 	for doctype, definitions in indexes.items():
 		if not frappe.db.table_exists(doctype):
@@ -153,6 +160,122 @@ def backfill_work_report_employee_names():
 		where ifnull(report.employee_name, '') != ifnull(employee.employee_name, '')
 		"""
 	)
+
+
+def backfill_worker_assignment_quantities():
+	"""Give legacy multi-worker assignments one complete, deterministic quantity plan."""
+	if not (
+		frappe.db.table_exists("Job Card Worker Assignment")
+		and frappe.db.has_column("Job Card Worker Assignment", "assigned_qty")
+		and frappe.db.table_exists("Job Card Work Report")
+	):
+		return
+	precision = frappe.get_precision("Job Card", "total_completed_qty") or 6
+	job_cards = frappe.db.sql(
+		"""
+		select distinct job_card
+		from `tabJob Card Worker Assignment`
+		where ifnull(job_card, '') != ''
+		order by job_card
+		""",
+		pluck=True,
+	)
+	for job_card in job_cards:
+		rows = frappe.get_all(
+			"Job Card Worker Assignment",
+			filters={"job_card": job_card},
+			fields=["name", "status", "assigned_qty", "assigned_at", "creation"],
+			order_by="assigned_at asc, creation asc, name asc",
+			limit=0,
+		)
+		if not rows:
+			continue
+		target_qty = flt(
+			frappe.db.get_value("Job Card", job_card, "for_quantity")
+			or frappe.db.get_value(
+				"Job Card Worker Assignment", rows[0].name, "job_card_qty"
+			),
+			precision,
+		)
+		current_total = flt(sum(flt(row.assigned_qty) for row in rows), precision)
+		if current_total == target_qty:
+			continue
+		usage_rows = frappe.db.sql(
+			"""
+			select assignment, sum(ifnull(completed_qty, 0)) as used_qty
+			from `tabJob Card Work Report`
+			where assignment in %(assignments)s
+			  and status in ('Pending Approval', 'Approved')
+			group by assignment
+			""",
+			{"assignments": tuple(row.name for row in rows)},
+			as_dict=True,
+		)
+		quantities = {
+			row.name: flt(next((usage.used_qty for usage in usage_rows if usage.assignment == row.name), 0), precision)
+			for row in rows
+		}
+		used_total = flt(sum(quantities.values()), precision)
+		if used_total > target_qty:
+			frappe.throw(
+				f"Legacy worker reports exceed Job Card {job_card} while backfilling assigned quantities."
+			)
+		remaining = flt(target_qty - used_total, precision)
+		candidates = [row for row in rows if row.status == "Active"] or rows
+		if remaining and candidates:
+			share = flt(remaining / len(candidates), precision)
+			for row in candidates[:-1]:
+				quantities[row.name] = flt(quantities[row.name] + share, precision)
+			allocated = flt(sum(quantities.values()), precision)
+			last = candidates[-1]
+			quantities[last.name] = flt(
+				quantities[last.name] + target_qty - allocated,
+				precision,
+			)
+		for row in rows:
+			frappe.db.set_value(
+				"Job Card Worker Assignment",
+				row.name,
+				"assigned_qty",
+				quantities[row.name],
+				update_modified=False,
+			)
+
+
+def backfill_completed_material_releases():
+	"""Replay posted worker returns into the immutable release ledger once."""
+	if not all(
+		frappe.db.table_exists(doctype)
+		for doctype in (
+			"Job Card Assignment Movement",
+			"Job Card Worker Assignment",
+			"Production Exception Request",
+			"Job Card",
+		)
+	):
+		return
+	rows = frappe.db.sql(
+		"""
+		select request.assignment, max(request.name) as reference_request
+		from `tabProduction Exception Request` request
+		inner join `tabJob Card` job_card on job_card.name = request.job_card
+		where request.status = 'Completed'
+		  and request.request_type in ('Material Return', 'Material Scrap')
+		  and job_card.docstatus = 0
+		group by request.assignment
+		order by request.assignment
+		""",
+		as_dict=True,
+	)
+	if not rows:
+		return
+	from process_simplification.production_exceptions.service import (
+		ensure_completed_material_release,
+	)
+
+	for row in rows:
+		request = frappe.get_doc("Production Exception Request", row.reference_request)
+		ensure_completed_material_release(request)
 
 
 def release_cancelled_monthly_summary_keys():
@@ -263,15 +386,31 @@ def backfill_work_report_wage_option_snapshots():
 def ensure_process_simplification_settings_defaults():
 	if not frappe.db.exists("DocType", "Process Simplification Settings"):
 		return
-	if frappe.db.get_single_value(
-		"Process Simplification Settings", "allow_manual_time_entry"
-	) in (None, ""):
-		frappe.db.set_single_value(
-			"Process Simplification Settings",
-			"allow_manual_time_entry",
-			1,
-			update_modified=False,
+	fieldnames = (
+		"allow_manual_time_entry",
+		"enable_process_notifications",
+		"enable_notification_sound",
+	)
+	saved_fields = set(
+		frappe.db.sql(
+			"""
+			select field
+			from `tabSingles`
+			where doctype = 'Process Simplification Settings'
+			  and field in %s
+			""",
+			(fieldnames,),
+			pluck=True,
 		)
+	)
+	for fieldname in fieldnames:
+		if fieldname not in saved_fields:
+			frappe.db.set_single_value(
+				"Process Simplification Settings",
+				fieldname,
+				1,
+				update_modified=False,
+			)
 
 
 def setup_worker_reporting():
@@ -367,6 +506,8 @@ def setup_worker_reporting():
 		update=True,
 	)
 	ensure_worker_reporting_reference_fields()
+	backfill_worker_assignment_quantities()
+	backfill_completed_material_releases()
 	if frappe.db.table_exists("Job Card Worker Assignment"):
 		# The parent marker makes cancellation fail closed without taking Job Card
 		# locks from a before_cancel hook that already owns the Work Order lock.

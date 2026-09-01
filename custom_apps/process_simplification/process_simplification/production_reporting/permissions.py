@@ -56,6 +56,14 @@ def assignment_query(user: str | None = None) -> str:
 	return "1 = 0"
 
 
+def movement_query(user: str | None = None) -> str:
+	user = user or frappe.session.user
+	if _is_admin_reviewer(user):
+		companies = _review_scope(user)
+		return "" if companies is None else _company_condition("Job Card Assignment Movement", companies)
+	return "1 = 0"
+
+
 def report_query(user: str | None = None) -> str:
 	user = user or frappe.session.user
 	clauses = []
@@ -107,6 +115,13 @@ def wage_rate_query(user: str | None = None) -> str:
 
 
 def assignment_permission(doc, ptype: str | None = None, user: str | None = None, debug=False) -> bool:
+	if not _is_read_permission(ptype):
+		return False
+	user = user or frappe.session.user
+	return _is_admin_reviewer(user) and _company_allowed(doc, _review_scope(user))
+
+
+def movement_permission(doc, ptype: str | None = None, user: str | None = None, debug=False) -> bool:
 	if not _is_read_permission(ptype):
 		return False
 	user = user or frappe.session.user

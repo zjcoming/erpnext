@@ -1,21 +1,21 @@
 {
  "actions": [],
- "creation": "2026-08-30 00:00:00.000000",
+ "creation": "2026-09-01 00:00:00.000000",
  "doctype": "DocType",
  "editable_grid": 1,
  "engine": "InnoDB",
- "field_order": ["company", "responsibility", "user"],
+ "field_order": ["company", "responsibility", "role_profile"],
  "fields": [
   {"fieldname": "company", "fieldtype": "Link", "in_list_view": 1, "label": "公司", "options": "Company", "reqd": 1},
   {"fieldname": "responsibility", "fieldtype": "Select", "in_list_view": 1, "label": "通知责任", "options": "库存处理\n缺料采购\n生产派工", "reqd": 1},
-  {"fieldname": "user", "fieldtype": "Link", "in_list_view": 1, "label": "追加接收用户", "options": "User", "reqd": 1}
+  {"fieldname": "role_profile", "fieldtype": "Link", "in_list_view": 1, "label": "追加接收岗位", "options": "Role Profile", "reqd": 1}
  ],
  "index_web_pages_for_search": 0,
  "istable": 1,
- "modified": "2026-08-30 00:00:00.000000",
+ "modified": "2026-09-01 00:00:00.000000",
  "modified_by": "Administrator",
  "module": "Process Simplification",
- "name": "Process Notification Recipient",
+ "name": "Process Notification Role Recipient",
  "owner": "Administrator",
  "permissions": [],
  "sort_field": "modified",

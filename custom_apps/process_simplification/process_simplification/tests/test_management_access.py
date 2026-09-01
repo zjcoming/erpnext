@@ -301,7 +301,7 @@ class TestManagementAccess(IntegrationTestCase):
 			return frappe.db.get_value(
 				"Custom DocPerm",
 				{"parent": doctype, "role": role, "permlevel": 0, "if_owner": 0},
-				["read", "create", "write", "submit", "cancel", "delete", "amend"],
+				["read", "select", "create", "write", "submit", "cancel", "delete", "amend"],
 				as_dict=True,
 			)
 
@@ -312,6 +312,29 @@ class TestManagementAccess(IntegrationTestCase):
 		warehouse_stock = permission("Stock Entry", WAREHOUSE_OPERATOR_ROLE)
 		self.assertTrue(warehouse_stock.read and warehouse_stock.create and warehouse_stock.write and warehouse_stock.submit)
 		self.assertFalse(warehouse_stock.cancel or warehouse_stock.delete or warehouse_stock.amend)
+
+		warehouse_stock_settings = permission("Stock Settings", WAREHOUSE_OPERATOR_ROLE)
+		self.assertTrue(warehouse_stock_settings.read)
+		self.assertFalse(
+			warehouse_stock_settings.create
+			or warehouse_stock_settings.write
+			or warehouse_stock_settings.submit
+			or warehouse_stock_settings.cancel
+			or warehouse_stock_settings.delete
+			or warehouse_stock_settings.amend
+		)
+
+		for reference_doctype in ("Account", "Price List", "Supplier Group"):
+			warehouse_reference = permission(reference_doctype, WAREHOUSE_OPERATOR_ROLE)
+			self.assertTrue(warehouse_reference.read and warehouse_reference.select)
+			self.assertFalse(
+				warehouse_reference.create
+				or warehouse_reference.write
+				or warehouse_reference.submit
+				or warehouse_reference.cancel
+				or warehouse_reference.delete
+				or warehouse_reference.amend
+			)
 
 		warehouse_purchase = permission("Purchase Order", WAREHOUSE_OPERATOR_ROLE)
 		self.assertTrue(warehouse_purchase.read and warehouse_purchase.create and warehouse_purchase.write)

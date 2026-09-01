@@ -372,6 +372,31 @@ def approved_report_qty(job_card: str, *, for_update: bool = False) -> float:
 	)
 
 
+def assignment_reported_qty(
+	assignment: str,
+	*,
+	statuses: tuple[str, ...] = ("Pending Approval", "Approved"),
+	for_update: bool = False,
+) -> float:
+	"""Return quantity reserved or accepted against one worker allocation."""
+	report = frappe.qb.DocType("Job Card Work Report")
+	query = (
+		frappe.qb.from_(report)
+		.select(report.completed_qty)
+		.where(
+			(report.assignment == assignment)
+			& (report.status.isin(statuses))
+		)
+	)
+	if for_update:
+		query = query.for_update()
+	precision = job_card_qty_precision()
+	return flt(
+		sum(flt(row.completed_qty, precision) for row in query.run(as_dict=True)),
+		precision,
+	)
+
+
 def reportable_qty(job_card: frappe._dict, *, for_update: bool = False) -> float:
 	precision = job_card_qty_precision()
 	return flt(

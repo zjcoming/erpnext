@@ -26,6 +26,10 @@ from contextlib import contextmanager
 import frappe
 from frappe.utils import now_datetime
 
+from process_simplification.production_workflow.stock_reservation import (
+	allow_guided_stock_reservations_for,
+)
+
 
 _AUTO_SUBMIT_SAVEPOINT = "production_task_auto_submit"
 _AUTO_JOB_CARD_WORK_ORDER_FLAG = "simplified_flow_job_card_work_order"
@@ -78,7 +82,9 @@ def _work_orders_for_plan(production_plan: str):
 
 def _submit_work_orders(work_orders: list[str]) -> None:
 	for name in work_orders:
-		with _allow_generated_job_cards_for(name):
+		with _allow_generated_job_cards_for(name), allow_guided_stock_reservations_for(
+			"Work Order", name
+		):
 			frappe.get_doc("Work Order", name).submit()
 
 
@@ -101,6 +107,25 @@ def _apply_guided_source_warehouse(work_orders: list[str], source_warehouse: str
 		work_order.source_warehouse = source_warehouse
 		work_order.set_required_items(reset_source_warehouse=True)
 		work_order.save()
+
+
+def _populate_raw_material_reservation_rows(plan, source_warehouse: str | None) -> None:
+	"""Populate the child rows that ERPNext actually uses for Plan SREs.
+
+	``reserve_stock`` is only an enable flag. Production Plan submission creates
+	reservations from ``mr_items`` (and sub-assembly rows), so leaving that table
+	empty produces no raw-material lock. Keep the same source warehouse that is
+	later applied to generated Work Orders, otherwise the Plan reservation cannot
+	be transferred to those Work Order Item rows.
+	"""
+	from erpnext.manufacturing.doctype.production_plan.production_plan import (
+		get_items_for_material_requests,
+	)
+
+	plan.for_warehouse = source_warehouse
+	plan.set("mr_items", [])
+	for row in get_items_for_material_requests(plan.as_dict()):
+		plan.append("mr_items", row)
 
 
 def create_work_orders_via_production_plan(
@@ -152,7 +177,8 @@ def create_work_orders_via_production_plan(
 		plan.insert()
 		plan.get_sub_assembly_items()
 		plan.save()
-		plan.submit()
+		with allow_guided_stock_reservations_for("Production Plan", plan.name):
+			plan.submit()
 
 		with _muted_messages():
 			# Create the finished-good WO plus one WO per remaining in-house level.
@@ -168,5 +194,76 @@ def create_work_orders_via_production_plan(
 	return {
 		"production_plan": plan.name,
 		"work_orders": work_orders,
+		"sub_assembly_count": len(plan.sub_assembly_items or []),
+	}
+
+
+def create_replenishment_work_orders_via_production_plan(
+	*,
+	material_request: str,
+	company: str,
+	source_warehouse: str | None,
+	sub_assembly_warehouse: str | None,
+	target_work_order: str,
+	target_work_order_item: str,
+):
+	"""Create a traceable multi-level supplement chain from a Manufacture MR."""
+	plan = frappe.new_doc("Production Plan")
+	plan.company = company
+	plan.get_items_from = "Material Request"
+	# A supplement task is a recovery commitment, not merely a forecast. Let
+	# ERPNext move exact stock reservations from the plan into every generated
+	# Work Order so another urgent order cannot silently consume its inputs.
+	plan.reserve_stock = 1
+	plan.for_warehouse = source_warehouse
+	plan.skip_available_sub_assembly_item = 1
+	plan.sub_assembly_warehouse = sub_assembly_warehouse
+	plan.combine_sub_items = 0
+	plan.append(
+		"material_requests",
+		{
+			"material_request": material_request,
+			"material_request_date": frappe.db.get_value(
+				"Material Request", material_request, "transaction_date"
+			),
+		},
+	)
+
+	frappe.db.savepoint(_AUTO_SUBMIT_SAVEPOINT)
+	try:
+		plan.get_items()
+		if not plan.po_items:
+			frappe.throw("补产申请没有可生成生产任务的物料。")
+		plan.insert()
+		plan.get_sub_assembly_items()
+		_populate_raw_material_reservation_rows(plan, source_warehouse)
+		plan.save()
+		with allow_guided_stock_reservations_for("Production Plan", plan.name):
+			plan.submit()
+
+		with _muted_messages():
+			plan.make_work_order()
+
+		work_orders = _work_orders_for_plan(plan.name)
+		_apply_guided_source_warehouse(work_orders, source_warehouse)
+		replenishment_work_orders = []
+		for name in work_orders:
+			work_order = frappe.get_doc("Work Order", name)
+			if work_order.get("material_request") == material_request:
+				work_order.custom_replenishes_work_order = target_work_order
+				work_order.custom_replenishes_work_order_item = target_work_order_item
+				work_order.save()
+				replenishment_work_orders.append(name)
+		if len(replenishment_work_orders) != 1:
+			frappe.throw("补产申请必须且只能生成一个直接目标工单，请检查生产计划明细。")
+		_submit_work_orders(work_orders)
+	except Exception:
+		frappe.db.rollback(save_point=_AUTO_SUBMIT_SAVEPOINT)
+		raise
+
+	return {
+		"production_plan": plan.name,
+		"work_orders": work_orders,
+		"replenishment_work_order": replenishment_work_orders[0],
 		"sub_assembly_count": len(plan.sub_assembly_items or []),
 	}

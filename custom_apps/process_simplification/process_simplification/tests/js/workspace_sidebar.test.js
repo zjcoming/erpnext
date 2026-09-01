@@ -15,6 +15,7 @@ for (const pageName of [
 	"my-production-reporting",
 	"production-report-history",
 	"production-report-review",
+	"production-exception-review",
 	"shortage-purchase-planning",
 	"executive-dashboard",
 	"process-access-management",
@@ -44,6 +45,10 @@ test("workspace sidebar uses the native module identity while the workspace keep
 	assert.equal(
 		sidebar.items.find((item) => item.link_to === "production-report-review").icon,
 		"file-check"
+	);
+	assert.equal(
+		sidebar.items.find((item) => item.link_to === "production-exception-review").icon,
+		"triangle-alert"
 	);
 });
 

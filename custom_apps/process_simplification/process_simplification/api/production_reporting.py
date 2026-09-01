@@ -111,8 +111,20 @@ def get_work_order_assignment_context(work_order):
 
 
 @frappe.whitelist(methods=["POST"])
-def assign_worker(job_card, employee, supervisor=None, notes=None):
-	return service.assign_worker(job_card, employee, supervisor, notes)
+def assign_worker(job_card, employee, supervisor=None, notes=None, assigned_qty=None):
+	return service.assign_worker(job_card, employee, supervisor, notes, assigned_qty)
+
+
+@frappe.whitelist(methods=["POST"])
+def assign_workers(job_card, assignments, supervisor=None):
+	parsed = frappe.parse_json(assignments) if isinstance(assignments, str) else assignments
+	return service.assign_workers(job_card, parsed, supervisor)
+
+
+@frappe.whitelist(methods=["POST"])
+def redispatch_remaining(job_card, allocations, request_id, reason=None):
+	parsed = frappe.parse_json(allocations) if isinstance(allocations, str) else allocations
+	return service.redispatch_remaining(job_card, parsed, request_id, reason)
 
 
 @frappe.whitelist(methods=["POST"])
@@ -162,6 +174,7 @@ def search_workers(doctype=None, txt=None, searchfield=None, start=0, page_len=2
 		txt=txt,
 		start=start,
 		page_len=page_len,
+		include_assigned=filters.get("include_assigned"),
 	)
 
 

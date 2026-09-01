@@ -271,10 +271,22 @@ def _validate_managed_job_card(doc, *, reset_process_loss: bool):
 		frappe.throw(
 			_("Approved production, process loss, and pending work reports exceed the Job Card quantity.")
 		)
-	for snapshot in _assignment_rows(
+	assignment_snapshots = _assignment_rows(
 		doc.name,
-		fields=["work_order", "company", "operation", "operation_id", "job_card_qty"],
-	):
+		fields=[
+			"work_order",
+			"company",
+			"operation",
+			"operation_id",
+			"job_card_qty",
+			"assigned_qty",
+		],
+	)
+	if assignment_snapshots and flt(
+		sum(flt(row.assigned_qty) for row in assignment_snapshots), precision
+	) != flt(doc.for_quantity, precision):
+		frappe.throw(_("Worker assigned quantities must equal the Job Card quantity."))
+	for snapshot in assignment_snapshots:
 		for fieldname in ("work_order", "company", "operation", "operation_id"):
 			if snapshot.get(fieldname) != doc.get(fieldname):
 				frappe.throw(_("Job Card identity cannot change after worker assignment."))

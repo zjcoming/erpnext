@@ -7,11 +7,12 @@ app_license = "GPL-3.0"
 
 required_apps = ["erpnext"]
 
-app_include_css = "/assets/process_simplification/css/process_simplification.css?v=15"
+app_include_css = "/assets/process_simplification/css/process_simplification.css?v=18"
 app_include_js = [
 	"/assets/process_simplification/js/item_identity.js?v=2",
-	"/assets/process_simplification/js/worker_assignment.js?v=5",
-	"/assets/process_simplification/js/worker_reporting.js?v=2",
+	"/assets/process_simplification/js/worker_assignment.js?v=12",
+	"/assets/process_simplification/js/worker_reporting.js?v=4",
+	"/assets/process_simplification/js/notification_sound.js?v=3",
 ]
 
 after_install = "process_simplification.install.after_install"
@@ -21,9 +22,13 @@ extend_doctype_class = {
 	"Work Order": "process_simplification.production_reporting.work_order.WorkerReportingWorkOrderMixin",
 	"Job Card": "process_simplification.production_reporting.job_card.SimplifiedFlowJobCardMixin",
 	"Stock Entry": "process_simplification.production_reporting.stock_entry.SubassemblyReservationStockEntryMixin",
+	"Stock Reservation Entry": "process_simplification.production_workflow.stock_reservation.GuidedStockReservationEntryMixin",
 }
 
 doc_events = {
+	"Notification Log": {
+		"after_insert": "process_simplification.notifications.publish_notification_sound",
+	},
 	"Job Card": {
 		"before_save": "process_simplification.production_reporting.job_card.before_save",
 		"before_submit": "process_simplification.production_reporting.job_card.before_submit",
@@ -42,6 +47,7 @@ permission_query_conditions = {
 	"Job Card": "process_simplification.production_reporting.permissions.job_card_query",
 	"Work Order": "process_simplification.production_reporting.permissions.work_order_query",
 	"Job Card Worker Assignment": "process_simplification.production_reporting.permissions.assignment_query",
+	"Job Card Assignment Movement": "process_simplification.production_reporting.permissions.movement_query",
 	"Job Card Work Report": "process_simplification.production_reporting.permissions.report_query",
 	"Operation Wage Rate": "process_simplification.production_reporting.permissions.wage_rate_query",
 	"Monthly Worker Wage Summary": "process_simplification.production_reporting.permissions.summary_query",
@@ -52,6 +58,7 @@ has_permission = {
 	"Job Card": "process_simplification.production_reporting.permissions.job_card_permission",
 	"Work Order": "process_simplification.production_reporting.permissions.work_order_permission",
 	"Job Card Worker Assignment": "process_simplification.production_reporting.permissions.assignment_permission",
+	"Job Card Assignment Movement": "process_simplification.production_reporting.permissions.movement_permission",
 	"Job Card Work Report": "process_simplification.production_reporting.permissions.report_permission",
 	"Operation Wage Rate": "process_simplification.production_reporting.permissions.wage_rate_permission",
 	"Monthly Worker Wage Summary": "process_simplification.production_reporting.permissions.summary_permission",

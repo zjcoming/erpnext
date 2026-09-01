@@ -32,6 +32,8 @@ STATUS_LABELS = {
 	"material_shortage": "缺料",
 	"awaiting_supply": "等待到料",
 	"waiting_subassembly": "等待半成品",
+	"awaiting_receipt": "待完工入库",
+	"awaiting_issue": "待生产发料",
 	"ready_to_start": "可开工",
 	"in_production": "生产中",
 	"partially_completed": "部分完工",
@@ -68,6 +70,8 @@ def _risk_for_demand(delivery_timing: str, status_code: str):
 		"material_shortage",
 		"awaiting_supply",
 		"waiting_subassembly",
+		"awaiting_receipt",
+		"awaiting_issue",
 		"in_production",
 		"partially_completed",
 	}:
@@ -78,6 +82,10 @@ def _risk_for_demand(delivery_timing: str, status_code: str):
 		return "blue", 55, "采购在途"
 	if status_code == "waiting_subassembly":
 		return "blue", 50, "等待下级生产"
+	if status_code == "awaiting_receipt":
+		return "blue", 45, "等待完工入库"
+	if status_code == "awaiting_issue":
+		return "blue", 45, "等待生产发料"
 	if status_code == "unplanned":
 		return "orange", 70, "生产未安排"
 	if status_code == "planning_required":
@@ -315,6 +323,7 @@ def attach_production_plan_readiness(demands, readiness_by_sales_order_item):
 		]
 
 		statuses = {row.get("readiness_status") for row in demand.work_orders}
+		flow_statuses = {row.get("flow_status") for row in demand.work_orders if row.get("flow_status")}
 		purchased_shortages = [
 			row
 			for row in demand.materials
@@ -338,7 +347,8 @@ def attach_production_plan_readiness(demands, readiness_by_sales_order_item):
 			else "awaiting_supply"
 			if awaiting_supply
 			else "waiting_subassembly"
-			if "waiting_subassembly" in statuses and "ready_now" not in statuses
+			if statuses.intersection({"waiting_subassembly", "replenishment_required"})
+			and "ready_now" not in statuses
 			else "ready",
 			"material_count": len(demand.materials),
 			"shortage_item_count": len(purchased_shortages),
@@ -347,7 +357,17 @@ def attach_production_plan_readiness(demands, readiness_by_sales_order_item):
 		}
 
 		if demand.get("status_code") not in {"in_production", "partially_completed"}:
-			if "in_progress" in statuses:
+			if "in_production" in flow_statuses:
+				demand.status_code = "in_production"
+			elif flow_statuses.intersection({"awaiting_receipt_request", "awaiting_receipt_submission"}):
+				demand.status_code = "awaiting_receipt"
+			elif "issued_waiting_dispatch" in flow_statuses:
+				demand.status_code = "ready_to_start"
+			elif flow_statuses.intersection(
+				{"awaiting_issue_submission", "ready_for_issue", "partially_ready_for_issue"}
+			):
+				demand.status_code = "awaiting_issue"
+			elif "in_progress" in statuses:
 				demand.status_code = "in_production"
 			elif "ready_now" in statuses:
 				demand.status_code = "ready_to_start"
@@ -357,7 +377,7 @@ def attach_production_plan_readiness(demands, readiness_by_sales_order_item):
 				demand.status_code = "awaiting_supply"
 			elif blocked:
 				demand.status_code = "master_data_blocked"
-			elif "waiting_subassembly" in statuses:
+			elif statuses.intersection({"waiting_subassembly", "replenishment_required"}):
 				demand.status_code = "waiting_subassembly"
 		demand.status_label = STATUS_LABELS[demand.status_code]
 		risk = _risk_for_demand(demand.delivery_timing, demand.status_code)

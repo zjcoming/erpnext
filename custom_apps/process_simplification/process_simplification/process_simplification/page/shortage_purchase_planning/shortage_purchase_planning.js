@@ -2,59 +2,212 @@ const shortageItemIdentity = typeof module !== "undefined" && module.exports
 	? require("../../../public/js/item_identity.js")
 	: window.process_simplification.item_identity;
 
+function shortageDocumentLink(doctype, name, helpers) {
+	if (!name) return "";
+	const esc = helpers.escapeHtml;
+	const route = encodeURIComponent(String(name));
+	const slug = String(doctype || "").toLowerCase().replaceAll(" ", "-");
+	return `<a href="/app/${slug}/${route}">${esc(name)}</a>`;
+}
+
 function shortageSourceHtml(source, helpers) {
 	const esc = helpers.escapeHtml;
 	const fmt = helpers.formatQty;
-	const order = [source.sales_order, source.sales_order_item]
-		.filter(Boolean)
-		.map((value) => esc(value))
-		.join(" / ");
-	const production = [source.production_plan, source.work_order]
-		.filter(Boolean)
-		.map((value) => esc(value))
-		.join(" / ");
-	const labels = [order, esc(source.finished_item || ""), production].filter(Boolean).join(" · ");
-	return `${labels}: ${fmt(source.required_qty)}`;
+	const translate = helpers.translate || ((message) => message);
+	const order = shortageDocumentLink("Sales Order", source.sales_order, helpers);
+	const productionPlanLink = shortageDocumentLink("Production Plan", source.production_plan, helpers);
+	const workOrderLink = shortageDocumentLink("Work Order", source.work_order, helpers);
+	const productionPlan = productionPlanLink
+		? `<span>${esc(translate("生产计划"))} ${productionPlanLink}</span>`
+		: "";
+	const workOrder = workOrderLink
+		? `<span>${esc(translate("工单"))} ${workOrderLink}</span>`
+		: "";
+	const finishedItem = source.finished_item
+		? `<span>${esc(translate("成品"))} ${esc(source.finished_item)}</span>`
+		: "";
+	const production = [productionPlan, workOrder].filter(Boolean).join(" · ");
+
+	return `
+		<div class="shortage-source-item">
+			<div class="shortage-source-primary">${order || productionPlanLink || workOrderLink || finishedItem || esc(translate("生产需求"))}</div>
+			<div class="shortage-source-meta">
+				${[finishedItem, production].filter(Boolean).join(" · ")}
+				<span>${esc(translate("需用"))} ${fmt(source.required_qty)}</span>
+			</div>
+		</div>
+	`;
+}
+
+function shortageSourcesHtml(sources, helpers) {
+	const rows = sources || [];
+	const visible = rows.slice(0, 3).map((source) => shortageSourceHtml(source, helpers)).join("");
+	if (rows.length <= 3) return visible;
+	const rest = rows.slice(3).map((source) => shortageSourceHtml(source, helpers)).join("");
+	return `${visible}<details class="shortage-more-sources"><summary>${helpers.escapeHtml(
+		helpers.translate("另")
+	)} ${rows.length - 3} ${helpers.escapeHtml(helpers.translate("个来源"))}</summary>${rest}</details>`;
 }
 
 function shortageRowsHtml(rows, helpers) {
 	const esc = helpers.escapeHtml;
 	const fmt = helpers.formatQty;
+	const translate = helpers.translate || ((message) => message);
 	return (rows || []).map((row, index) => {
-		const sources = (row.sources || [])
-			.map((source) => shortageSourceHtml(source, helpers))
-			.join("<br>");
-		const purchaseQty = Number(row.shortage_qty || 0);
+		const rowIndex = row._row_index === undefined ? index : row._row_index;
+		const purchaseQty = Number(row.purchase_qty ?? row.shortage_qty ?? 0);
+		const selected = row._selected !== false;
 		return `
-			<tr data-index="${index}">
-				<td><input type="checkbox" class="shortage-select" checked></td>
-				<td>${shortageItemIdentity.itemIdentityHtml(
-					row.item_code,
-					row.item_name,
-					{ translate: helpers.translate || ((message) => message), escapeHtml: esc },
-					{ linkToItem: true }
-				)}</td>
-				<td>${esc(row.warehouse || "")}</td>
-				<td class="text-right">${fmt(row.required_qty)}</td>
-				<td class="text-right">${fmt(row.available_qty)}</td>
-				<td class="text-right">${fmt(row.open_material_request_qty)}</td>
-				<td class="text-right">${fmt(row.open_purchase_order_qty)}</td>
-				<td class="text-right">${fmt(row.shortage_qty)}</td>
-				<td><input class="form-control input-sm text-right purchase-qty" type="number" min="0" step="any" value="${purchaseQty}"></td>
-				<td><small>${sources}</small></td>
+			<tr data-index="${rowIndex}" class="${selected ? "is-selected" : ""}">
+				<td class="shortage-check-cell" data-label="${esc(translate("选择"))}">
+					<label class="shortage-check" title="${esc(translate("选择此物料"))}">
+						<input type="checkbox" class="shortage-select" ${selected ? "checked" : ""}>
+						<span></span>
+					</label>
+				</td>
+				<td class="shortage-material-cell" data-label="${esc(translate("物料"))}">
+					${shortageItemIdentity.itemIdentityHtml(
+						row.item_code,
+						row.item_name,
+						{ translate, escapeHtml: esc },
+						{ linkToItem: true }
+					)}
+					${row.stock_uom ? `<span class="shortage-uom">${esc(row.stock_uom)}</span>` : ""}
+				</td>
+				<td class="shortage-warehouse-cell" data-label="${esc(translate("来源仓"))}">
+					<span class="shortage-warehouse">${esc(row.warehouse || translate("未配置"))}</span>
+				</td>
+				<td class="shortage-coverage-cell" data-label="${esc(translate("缺料测算"))}">
+					<div class="shortage-coverage-grid">
+						<span><small>${esc(translate("总需求"))}</small><strong>${fmt(row.required_qty)}</strong></span>
+						<span><small>${esc(translate("可用库存"))}</small><strong>${fmt(row.available_qty)}</strong></span>
+						<span><small>${esc(translate("采购申请"))}</small><strong>${fmt(row.open_material_request_qty)}</strong></span>
+						<span><small>${esc(translate("采购订单"))}</small><strong>${fmt(row.open_purchase_order_qty)}</strong></span>
+						<span class="shortage-gap"><small>${esc(translate("仍需采购"))}</small><strong>${fmt(row.shortage_qty)}</strong></span>
+					</div>
+				</td>
+				<td class="shortage-purchase-cell" data-label="${esc(translate("本次采购"))}">
+					<div class="shortage-qty-editor">
+						<input class="form-control text-right purchase-qty" type="number" min="0" step="any" value="${purchaseQty}">
+						${row.stock_uom ? `<span>${esc(row.stock_uom)}</span>` : ""}
+					</div>
+					<small>${esc(translate("建议按剩余缺口采购"))}</small>
+				</td>
+				<td class="shortage-sources-cell" data-label="${esc(translate("需求来源"))}">
+					${shortageSourcesHtml(row.sources, { ...helpers, translate })}
+				</td>
 			</tr>
 		`;
 	}).join("");
+}
+
+function shortageSummary(rows) {
+	const salesOrders = new Set();
+	const warehouses = new Set();
+	for (const row of rows || []) {
+		if (row.warehouse) warehouses.add(row.warehouse);
+		for (const source of row.sources || []) {
+			if (source.sales_order) salesOrders.add(source.sales_order);
+		}
+	}
+	return {
+		itemCount: (rows || []).length,
+		salesOrderCount: salesOrders.size,
+		warehouseCount: warehouses.size,
+	};
+}
+
+function filterShortageRows(rows, search) {
+	const needle = String(search || "").trim().toLocaleLowerCase();
+	if (!needle) return rows || [];
+	return (rows || []).filter((row) => {
+		const sourceText = (row.sources || []).map((source) => [
+			source.sales_order,
+			source.sales_order_item,
+			source.production_plan,
+			source.work_order,
+			source.finished_item,
+		].filter(Boolean).join(" ")).join(" ");
+		return [row.item_code, row.item_name, row.warehouse, sourceText]
+			.filter(Boolean)
+			.join(" ")
+			.toLocaleLowerCase()
+			.includes(needle);
+	});
 }
 
 function canCreateMaterialRequest(model) {
 	return Boolean(model && typeof model.can_create === "function" && model.can_create("Material Request"));
 }
 
+function shortagePageHtml(helpers) {
+	const esc = helpers.escapeHtml;
+	const translate = helpers.translate;
+	return `
+		<div class="process-simplification-page shortage-purchase-planning">
+			<section class="shortage-hero">
+				<div>
+					<span class="shortage-eyebrow">${esc(translate("采购执行台"))}</span>
+					<h2>${esc(translate("当前待采购缺料"))}</h2>
+					<p>${esc(translate("打开即汇总全部未完成生产需求（含未排产订单），并扣除可用库存、在途采购申请和采购订单。"))}</p>
+				</div>
+				<button type="button" class="btn btn-default shortage-refresh" data-action="refresh">
+					<span aria-hidden="true">↻</span> ${esc(translate("刷新缺料"))}
+				</button>
+			</section>
+
+			<section class="shortage-summary" aria-live="polite">
+				<div><span>${esc(translate("待采购物料"))}</span><strong data-summary="items">—</strong></div>
+				<div><span>${esc(translate("本次已选"))}</span><strong data-summary="selected">—</strong></div>
+				<div><span>${esc(translate("关联销售订单"))}</span><strong data-summary="orders">—</strong></div>
+				<div><span>${esc(translate("涉及来源仓"))}</span><strong data-summary="warehouses">—</strong></div>
+			</section>
+
+			<section class="shortage-panel">
+				<div class="shortage-toolbar">
+					<div class="shortage-search-wrap">
+						<span aria-hidden="true">⌕</span>
+						<input class="form-control shortage-search" type="search" placeholder="${esc(translate("搜索物料、订单、工单或仓库"))}">
+					</div>
+					<div class="shortage-date-field" data-field="schedule_date"></div>
+					<label class="shortage-select-all-wrap">
+						<input type="checkbox" class="select-all" checked>
+						<span>${esc(translate("选择当前显示"))}</span>
+					</label>
+				</div>
+
+				<div class="shortage-status"></div>
+				<div class="shortage-table-wrap">
+					<table class="table shortage-table">
+						<thead><tr>
+							<th class="shortage-check-cell"></th>
+							<th>${esc(translate("物料"))}</th>
+							<th>${esc(translate("来源仓"))}</th>
+							<th>${esc(translate("缺料测算"))}</th>
+							<th>${esc(translate("本次采购"))}</th>
+							<th>${esc(translate("需求来源"))}</th>
+						</tr></thead>
+						<tbody></tbody>
+					</table>
+				</div>
+			</section>
+
+			<div class="shortage-safety-note">
+				<span aria-hidden="true">✓</span>
+				<div><strong>${esc(translate("提交前会再次核验"))}</strong><small>${esc(translate("系统会按最新库存与在途数量复核，防止重复采购；采购申请生成后自动提交。"))}</small></div>
+			</div>
+		</div>
+	`;
+}
+
 const shortagePurchasePlanningApi = {
+	shortageDocumentLink,
 	shortageSourceHtml,
 	shortageRowsHtml,
+	shortageSummary,
+	filterShortageRows,
 	canCreateMaterialRequest,
+	shortagePageHtml,
 };
 
 if (typeof module !== "undefined" && module.exports) {
@@ -69,167 +222,194 @@ frappe.pages["shortage-purchase-planning"].on_page_load = function (wrapper) {
 		single_column: true,
 	});
 
-	page.main.html(`
-		<div class="process-simplification-page shortage-purchase-planning">
-			<div class="row form-section">
-				<div class="col-md-4" data-field="sales_order"></div>
-				<div class="col-md-4" data-field="schedule_date"></div>
-				<div class="col-md-4 text-right shortage-actions"></div>
-			</div>
-			<div class="form-section selected-wrapper">
-				<h5>${__("待检查订单明细")}</h5>
-				<div class="selected-rows text-muted">${__("从订单履约总览选择订单行，或输入销售订单后读取。")}</div>
-			</div>
-			<div class="form-section">
-				<h5>${__("缺料结果")}</h5>
-				<div class="table-responsive">
-					<table class="table table-bordered shortage-table">
-						<thead>
-							<tr>
-								<th><input type="checkbox" class="select-all" checked></th>
-								<th>${__("原料")}</th>
-								<th>${__("来源仓")}</th>
-								<th class="text-right">${__("总需求")}</th>
-								<th class="text-right">${__("当前库存")}</th>
-								<th class="text-right">${__("采购申请")}</th>
-								<th class="text-right">${__("采购订单")}</th>
-								<th class="text-right">${__("采购缺口")}</th>
-								<th class="text-right">${__("本次采购")}</th>
-								<th>${__("来源")}</th>
-							</tr>
-						</thead>
-						<tbody></tbody>
-					</table>
-				</div>
-			</div>
-		</div>
-	`);
-
+	page.main.html(shortagePageHtml({ translate: __, escapeHtml: frappe.utils.escape_html }));
 	const $root = page.main.find(".shortage-purchase-planning");
-	let selected_rows = (frappe.route_options && frappe.route_options.selected_rows) || [];
-	let shortage_rows = [];
+	const canCreate = canCreateMaterialRequest(frappe.model);
+	const state = {
+		rows: [],
+		selectedIndexes: new Set(),
+		search: "",
+		loading: false,
+		loaded: false,
+	};
 
-	const sales_order_field = frappe.ui.form.make_control({
-		parent: $root.find('[data-field="sales_order"]'),
-		df: { fieldname: "sales_order", fieldtype: "Link", options: "Sales Order", label: __("销售订单") },
-		render_input: true,
-	});
-	const schedule_date_field = frappe.ui.form.make_control({
+	const scheduleDateField = frappe.ui.form.make_control({
 		parent: $root.find('[data-field="schedule_date"]'),
-		df: { fieldname: "schedule_date", fieldtype: "Date", label: __("需要日期"), default: frappe.datetime.add_days(frappe.datetime.nowdate(), 1) },
+		df: {
+			fieldname: "schedule_date",
+			fieldtype: "Date",
+			label: __("需要日期"),
+			default: frappe.datetime.add_days(frappe.datetime.nowdate(), 1),
+			reqd: 1,
+		},
 		render_input: true,
 	});
+	scheduleDateField.set_value(frappe.datetime.add_days(frappe.datetime.nowdate(), 1));
 
 	function fmt(value) {
 		return format_number(flt(value), null, 2);
 	}
 
-	function render_selected() {
-		if (!selected_rows.length) {
-			$root.find(".selected-rows").html(__("暂无已选择订单明细。"));
+	function visibleEntries() {
+		const visibleRows = new Set(filterShortageRows(state.rows, state.search));
+		return state.rows
+			.map((row, index) => ({ row, index }))
+			.filter(({ row }) => visibleRows.has(row));
+	}
+
+	function selectedRows() {
+		return state.rows.filter((row, index) => state.selectedIndexes.has(index)).map((row) => ({
+			...row,
+			purchase_qty: flt(row.purchase_qty ?? row.shortage_qty),
+			schedule_date: scheduleDateField.get_value(),
+		}));
+	}
+
+	function updatePrimaryAction() {
+		if (!canCreate) {
+			page.clear_primary_action();
 			return;
 		}
-		$root.find(".selected-rows").html(
-			selected_rows.map((row) => `<span class="badge badge-default mr-2">${frappe.utils.escape_html(row.sales_order)} / ${frappe.utils.escape_html(row.sales_order_item)}</span>`).join(" ")
+		const count = state.selectedIndexes.size;
+		page.set_primary_action(__("生成采购申请（{0} 项）", [count]), createMaterialRequest);
+		page.btn_primary && page.btn_primary.prop("disabled", !count || state.loading);
+	}
+
+	function renderSummary() {
+		const summary = shortageSummary(state.rows);
+		$root.find('[data-summary="items"]').text(summary.itemCount);
+		$root.find('[data-summary="selected"]').text(state.selectedIndexes.size);
+		$root.find('[data-summary="orders"]').text(summary.salesOrderCount);
+		$root.find('[data-summary="warehouses"]').text(summary.warehouseCount);
+		updatePrimaryAction();
+	}
+
+	function renderStatus(kind, message) {
+		const content = {
+			loading: `<div class="shortage-state shortage-loading"><span class="shortage-spinner"></span><div><strong>${__("正在汇总全部缺料")}</strong><small>${__("正在核对已排产需求、库存和在途采购…")}</small></div></div>`,
+			empty: `<div class="shortage-state shortage-empty"><span>✓</span><div><strong>${__("当前没有待采购缺料")}</strong><small>${__("已排产需求均有库存或在途采购覆盖。")}</small></div></div>`,
+			filtered: `<div class="shortage-state shortage-empty"><span>⌕</span><div><strong>${__("没有匹配结果")}</strong><small>${__("换一个物料、订单、工单或仓库关键词试试。")}</small></div></div>`,
+			error: `<div class="shortage-state shortage-error"><span>!</span><div><strong>${__("缺料读取失败")}</strong><small>${frappe.utils.escape_html(message || __("请刷新重试。"))}</small></div><button type="button" class="btn btn-default" data-action="refresh">${__("重新读取")}</button></div>`,
+		}[kind] || "";
+		$root.find(".shortage-status").html(content);
+	}
+
+	function renderRows() {
+		const entries = visibleEntries();
+		$root.find("tbody").html(shortageRowsHtml(entries.map(({ row, index }) => ({
+			...row,
+			_row_index: index,
+			_selected: state.selectedIndexes.has(index),
+		})), {
+			escapeHtml: frappe.utils.escape_html,
+			formatQty: fmt,
+			translate: __,
+		}));
+		$root.find(".shortage-table-wrap").toggle(Boolean(entries.length));
+		if (state.loaded && !entries.length) renderStatus(state.rows.length ? "filtered" : "empty");
+		else if (!state.loading) $root.find(".shortage-status").empty();
+
+		const visibleIndexes = entries.map(({ index }) => index);
+		const allVisibleSelected = Boolean(visibleIndexes.length)
+			&& visibleIndexes.every((index) => state.selectedIndexes.has(index));
+		$root.find(".select-all").prop("checked", allVisibleSelected);
+		$root.find(".select-all").prop("indeterminate",
+			!allVisibleSelected && visibleIndexes.some((index) => state.selectedIndexes.has(index))
 		);
+		renderSummary();
 	}
 
-	function load_from_sales_order() {
-		const sales_order = sales_order_field.get_value();
-		if (!sales_order) return;
-		frappe.call({
-			method: "process_simplification.api.workbench.get_order_workbench",
-			args: { sales_order },
-			freeze: true,
-		}).then((r) => {
-			selected_rows = (r.message.rows || [])
-				.filter((row) => !row.unsupported && (flt(row.uncovered_qty) > 0 || flt(row.active_work_order_qty) > 0))
-				.map((row) => ({ sales_order, sales_order_item: row.sales_order_item }));
-			render_selected();
-		});
-	}
-
-	function check_shortage() {
-		frappe.call({
-			method: "process_simplification.api.shortage.check_shortage",
-			args: { selected_rows },
-			freeze: true,
-			freeze_message: __("正在检查缺料..."),
-		}).then((r) => {
-			shortage_rows = (r.message && r.message.shortages) || [];
-			render_shortages();
-			if (!shortage_rows.length) {
-				frappe.msgprint((r.message && r.message.message) || __("没有需要采购的缺料。"));
-			}
-		});
-	}
-
-	function check_all_shortages() {
+	function loadAllShortages() {
+		if (state.loading) return;
+		state.loading = true;
+		state.loaded = false;
+		$root.find(".shortage-table-wrap").hide();
+		$root.find('[data-action="refresh"]').prop("disabled", true);
+		renderStatus("loading");
+		renderSummary();
 		frappe.call({
 			method: "process_simplification.api.shortage.check_all_shortages",
-			freeze: true,
-			freeze_message: __("正在汇总全部订单缺料..."),
-		}).then((r) => {
-			shortage_rows = (r.message && r.message.shortages) || [];
-			selected_rows = [];
-			render_selected();
-			render_shortages();
-			if (!shortage_rows.length) {
-				frappe.msgprint((r.message && r.message.message) || __("所有订单没有需要采购的缺料。"));
-			}
+		}).then((response) => {
+			state.rows = ((response && response.message && response.message.shortages) || []).map((row) => ({
+				...row,
+				purchase_qty: flt(row.shortage_qty),
+			}));
+			state.selectedIndexes = new Set(state.rows.map((_, index) => index));
+			state.loaded = true;
+			state.loading = false;
+			$root.find('[data-action="refresh"]').prop("disabled", false);
+			renderRows();
+		}, (error) => {
+			state.loading = false;
+			state.loaded = false;
+			$root.find('[data-action="refresh"]').prop("disabled", false);
+			$root.find(".shortage-table-wrap").hide();
+			renderStatus("error", error && (error.message || error.exc));
+			renderSummary();
 		});
 	}
 
-	function render_shortages() {
-		$root.find("tbody").html(
-			shortageRowsHtml(shortage_rows, {
-				escapeHtml: frappe.utils.escape_html,
-				formatQty: fmt,
-			})
-		);
-	}
-
-	function selected_shortages() {
-		return $root.find("tbody tr").toArray().filter((tr) => $(tr).find(".shortage-select").prop("checked")).map((tr) => {
-			const index = cint($(tr).data("index"));
-			return Object.assign({}, shortage_rows[index], {
-				purchase_qty: flt($(tr).find(".purchase-qty").val()),
-				schedule_date: schedule_date_field.get_value(),
-			});
-		});
-	}
-
-	function create_material_request() {
-		const rows = selected_shortages();
+	function createMaterialRequest() {
+		const rows = selectedRows();
 		if (!rows.length) {
 			frappe.msgprint(__("请至少选择一条缺料记录。"));
 			return;
 		}
-		frappe.confirm(__("确认生成并提交采购申请？"), () => {
-			frappe.call({
-				method: "process_simplification.api.shortage.create_material_request",
-				type: "POST",
-				args: { shortage_rows: rows, schedule_date: schedule_date_field.get_value() },
-				freeze: true,
-				freeze_message: __("正在生成采购申请..."),
-			}).then((r) => {
-				if (r.message && r.message.material_request) {
-					frappe.set_route("Form", "Material Request", r.message.material_request);
-				}
-			});
-		});
+		if (!scheduleDateField.get_value()) {
+			frappe.msgprint(__("请选择需要日期。"));
+			return;
+		}
+		const invalid = rows.find((row) => flt(row.purchase_qty) <= 0);
+		if (invalid) {
+			frappe.msgprint(__("物料 {0} 的本次采购数量必须大于 0。", [invalid.item_code]));
+			return;
+		}
+		frappe.confirm(
+			__("确认按当前 {0} 项物料生成并提交采购申请？提交前会再次核验最新缺口。", [rows.length]),
+			() => {
+				frappe.call({
+					method: "process_simplification.api.shortage.create_material_request",
+					type: "POST",
+					args: { shortage_rows: rows, schedule_date: scheduleDateField.get_value() },
+					freeze: true,
+					freeze_message: __("正在复核并生成采购申请…"),
+				}).then((response) => {
+					const materialRequest = response && response.message && response.message.material_request;
+					if (materialRequest) frappe.set_route("Form", "Material Request", materialRequest);
+				});
+			}
+		);
 	}
 
-	$root.on("change", ".select-all", (event) => {
-		$root.find(".shortage-select").prop("checked", $(event.currentTarget).prop("checked"));
+	$root.on("input", ".shortage-search", (event) => {
+		state.search = event.currentTarget.value || "";
+		renderRows();
 	});
-	page.add_inner_button(__("读取订单"), load_from_sales_order);
-	page.add_inner_button(__("检查缺料"), check_shortage);
-	page.add_inner_button(__("汇总全部缺料"), check_all_shortages);
-	if (canCreateMaterialRequest(frappe.model)) {
-		page.set_primary_action(__("生成采购申请"), create_material_request);
-	}
-	render_selected();
+	$root.on("change", ".shortage-select", (event) => {
+		const $row = $(event.currentTarget).closest("tr");
+		const index = cint($row.data("index"));
+		if ($(event.currentTarget).prop("checked")) state.selectedIndexes.add(index);
+		else state.selectedIndexes.delete(index);
+		$row.toggleClass("is-selected", state.selectedIndexes.has(index));
+		renderRows();
+	});
+	$root.on("change", ".select-all", (event) => {
+		const checked = $(event.currentTarget).prop("checked");
+		for (const { index } of visibleEntries()) {
+			if (checked) state.selectedIndexes.add(index);
+			else state.selectedIndexes.delete(index);
+		}
+		renderRows();
+	});
+	$root.on("input change", ".purchase-qty", (event) => {
+		const index = cint($(event.currentTarget).closest("tr").data("index"));
+		if (state.rows[index]) state.rows[index].purchase_qty = flt(event.currentTarget.value);
+	});
+	$root.on("click", '[data-action="refresh"]', loadAllShortages);
+
+	wrapper.shortage_purchase_planning = { state, loadAllShortages };
+	renderSummary();
+	loadAllShortages();
 };
 
 }

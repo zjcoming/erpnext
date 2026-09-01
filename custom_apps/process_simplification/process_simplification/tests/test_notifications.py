@@ -9,11 +9,15 @@ from frappe.utils import random_string
 from process_simplification.management_access import (
 	OWNER_ROLE,
 	PRODUCTION_MANAGER_ROLE,
+	ROLE_DEFINITION_BY_ROLE,
 	WAGE_MANAGER_ROLE,
 	WAREHOUSE_OPERATOR_ROLE,
+	ensure_management_role_profiles,
 )
 from process_simplification.notifications import (
+	APP_NAME,
 	PROCUREMENT_RESPONSIBILITY,
+	PROCESS_NOTIFICATION_REALTIME_EVENT,
 	PRODUCTION_DISPATCH_RESPONSIBILITY,
 	WAREHOUSE_RESPONSIBILITY,
 	notify_exception_approved,
@@ -23,6 +27,8 @@ from process_simplification.notifications import (
 	notify_work_report_decision,
 	notify_work_report_submitted,
 	notify_worker_assignment,
+	notify_worker_assignment_cancelled,
+	publish_notification_sound,
 	responsibility_recipients,
 )
 from process_simplification.production_exceptions.constants import (
@@ -37,8 +43,12 @@ class TestProcessNotifications(IntegrationTestCase):
 		frappe.set_user("Administrator")
 		self.company = frappe.db.get_value("Company", {}, "name")
 		self.assertTrue(self.company)
+		ensure_management_role_profiles()
 		settings = frappe.get_single("Process Simplification Settings")
+		settings.enable_process_notifications = 1
+		settings.enable_notification_sound = 1
 		settings.set("notification_recipients", [])
+		settings.set("notification_role_recipients", [])
 		settings.save(ignore_permissions=True)
 
 	def tearDown(self):
@@ -48,15 +58,19 @@ class TestProcessNotifications(IntegrationTestCase):
 
 	def _make_user(self, role: str) -> str:
 		email = "ps-notify-{0}@example.com".format(random_string(12).lower())
-		frappe.get_doc(
-			{
-				"doctype": "User",
-				"email": email,
-				"first_name": "Notification Test",
-				"send_welcome_email": 0,
-				"roles": [{"role": role}],
-			}
-		).insert(ignore_permissions=True)
+		user = {
+			"doctype": "User",
+			"email": email,
+			"first_name": "Notification Test",
+			"send_welcome_email": 0,
+		}
+		if role in ROLE_DEFINITION_BY_ROLE:
+			user["role_profiles"] = [
+				{"role_profile": ROLE_DEFINITION_BY_ROLE[role]["profile"]}
+			]
+		else:
+			user["roles"] = [{"role": role}]
+		frappe.get_doc(user).insert(ignore_permissions=True)
 		return email
 
 	def _configure(self, responsibility: str, user: str) -> None:
@@ -67,6 +81,18 @@ class TestProcessNotifications(IntegrationTestCase):
 				"company": self.company,
 				"responsibility": responsibility,
 				"user": user,
+			},
+		)
+		settings.save(ignore_permissions=True)
+
+	def _configure_role(self, responsibility: str, role_profile: str) -> None:
+		settings = frappe.get_single("Process Simplification Settings")
+		settings.append(
+			"notification_role_recipients",
+			{
+				"company": self.company,
+				"responsibility": responsibility,
+				"role_profile": role_profile,
 			},
 		)
 		settings.save(ignore_permissions=True)
@@ -92,7 +118,7 @@ class TestProcessNotifications(IntegrationTestCase):
 				"document_name": "JCWR-NOTIFY-TEST",
 				"subject": "测试通知",
 			},
-			fields=["type", "app", "link", "read"],
+			fields=["name", "type", "app", "link", "read"],
 		)
 		self.assertEqual(len(logs), 1)
 		self.assertEqual(logs[0].type, "Alert")
@@ -114,19 +140,46 @@ class TestProcessNotifications(IntegrationTestCase):
 			),
 			1,
 		)
+		sound_calls = [
+			call
+			for call in publish_realtime.call_args_list
+			if call.args and call.args[0] == PROCESS_NOTIFICATION_REALTIME_EVENT
+		]
+		self.assertEqual(len(sound_calls), 1)
+		self.assertEqual(sound_calls[0].args[1]["notification_log"], logs[0].name)
+		self.assertTrue(sound_calls[0].args[1]["play_sound"])
+		self.assertEqual(sound_calls[0].kwargs["user"], worker)
+		self.assertTrue(sound_calls[0].kwargs["after_commit"])
 
-	def test_configured_recipient_overrides_role_fallback(self):
+	def test_configured_recipient_is_added_to_default_chain(self):
 		configured = self._make_user(WAREHOUSE_OPERATOR_ROLE)
-		self._make_user(WAREHOUSE_OPERATOR_ROLE)
 		self._configure(WAREHOUSE_RESPONSIBILITY, configured)
 
-		self.assertEqual(
-			responsibility_recipients(self.company, WAREHOUSE_RESPONSIBILITY),
-			[configured],
-		)
+		with patch(
+			"process_simplification.notifications._default_responsibility_recipients",
+			return_value=["default-warehouse@example.com"],
+		):
+			self.assertEqual(
+				responsibility_recipients(self.company, WAREHOUSE_RESPONSIBILITY),
+				["default-warehouse@example.com", configured],
+			)
+
+	def test_role_profile_recipient_adds_profile_users(self):
+		owner = self._make_user(OWNER_ROLE)
+		owner_profile = ROLE_DEFINITION_BY_ROLE[OWNER_ROLE]["profile"]
+		self._configure_role(WAREHOUSE_RESPONSIBILITY, owner_profile)
+
+		with patch(
+			"process_simplification.notifications._default_responsibility_recipients",
+			return_value=[],
+		):
+			self.assertIn(
+				owner,
+				responsibility_recipients(self.company, WAREHOUSE_RESPONSIBILITY),
+			)
 
 	def test_route_rejects_user_without_responsible_role(self):
-		production_manager = self._make_user("Process Simplification Production Manager")
+		production_manager = self._make_user(PRODUCTION_MANAGER_ROLE)
 		settings = frappe.get_single("Process Simplification Settings")
 		settings.append(
 			"notification_recipients",
@@ -139,6 +192,76 @@ class TestProcessNotifications(IntegrationTestCase):
 		with self.assertRaises(frappe.ValidationError):
 			settings.save(ignore_permissions=True)
 
+	def test_route_rejects_role_profile_for_wrong_responsibility(self):
+		settings = frappe.get_single("Process Simplification Settings")
+		settings.append(
+			"notification_role_recipients",
+			{
+				"company": self.company,
+				"responsibility": PROCUREMENT_RESPONSIBILITY,
+				"role_profile": ROLE_DEFINITION_BY_ROLE[PRODUCTION_MANAGER_ROLE]["profile"],
+			},
+		)
+		with self.assertRaises(frappe.ValidationError):
+			settings.save(ignore_permissions=True)
+
+	def test_master_switch_stops_persistence_and_realtime_push(self):
+		worker = self._make_user("Production Worker")
+		settings = frappe.get_single("Process Simplification Settings")
+		settings.enable_process_notifications = 0
+		settings.save(ignore_permissions=True)
+
+		with patch("frappe.publish_realtime") as publish_realtime:
+			self.assertEqual(
+				notify_users(
+					[worker],
+					subject="关闭通知测试",
+					description="不应生成通知。",
+					document_type="User",
+					document_name=worker,
+					link="/app/user",
+				),
+				[],
+			)
+
+		self.assertFalse(
+			frappe.db.exists(
+				"Notification Log",
+				{"for_user": worker, "subject": "关闭通知测试"},
+			)
+		)
+		publish_realtime.assert_not_called()
+
+	def test_sound_switch_keeps_notification_but_marks_event_silent(self):
+		worker = self._make_user("Production Worker")
+		settings = frappe.get_single("Process Simplification Settings")
+		settings.enable_notification_sound = 0
+		settings.save(ignore_permissions=True)
+
+		with patch("frappe.publish_realtime") as publish_realtime:
+			notify_users(
+				[worker],
+				subject="静音通知测试",
+				description="应生成通知但不播放声音。",
+				document_type="User",
+				document_name=worker,
+				link="/app/user",
+			)
+
+		sound_calls = [
+			call
+			for call in publish_realtime.call_args_list
+			if call.args and call.args[0] == PROCESS_NOTIFICATION_REALTIME_EVENT
+		]
+		self.assertEqual(len(sound_calls), 1)
+		self.assertFalse(sound_calls[0].args[1]["play_sound"])
+		self.assertTrue(
+			frappe.db.exists(
+				"Notification Log",
+				{"for_user": worker, "subject": "静音通知测试"},
+			)
+		)
+
 	def test_wage_manager_cannot_change_notification_responsibility(self):
 		warehouse = self._make_user(WAREHOUSE_OPERATOR_ROLE)
 		wage_manager = self._make_user(WAGE_MANAGER_ROLE)
@@ -150,9 +273,19 @@ class TestProcessNotifications(IntegrationTestCase):
 		settings.save()
 
 		frappe.set_user("Administrator")
-		self.assertEqual(
+		self.assertTrue(
+			frappe.db.exists(
+				"Process Notification Recipient",
+				{
+					"parent": "Process Simplification Settings",
+					"responsibility": WAREHOUSE_RESPONSIBILITY,
+					"user": warehouse,
+				},
+			)
+		)
+		self.assertIn(
+			warehouse,
 			responsibility_recipients(self.company, WAREHOUSE_RESPONSIBILITY),
-			[warehouse],
 		)
 
 	def test_workflow_helpers_notify_exact_people_and_routes(self):
@@ -173,6 +306,14 @@ class TestProcessNotifications(IntegrationTestCase):
 		)
 		notify_worker_assignment(assignment)
 		notify_worker_assignment(assignment)
+		cancelled_assignment = frappe._dict(
+			name="JCWA-NOTIFY-CANCELLED",
+			employee_user=worker,
+			operation="焊接",
+			job_card="JC-NOTIFY-CANCELLED",
+			work_order="WO-NOTIFY-CANCELLED",
+		)
+		notify_worker_assignment_cancelled(cancelled_assignment)
 
 		report = frappe._dict(
 			name="JCWR-NOTIFY-1",
@@ -220,6 +361,7 @@ class TestProcessNotifications(IntegrationTestCase):
 			)
 		)
 		self.assertIn("收到新派工：切割", worker_subjects)
+		self.assertIn("派工已取消：焊接", worker_subjects)
 		self.assertIn("报工已通过", worker_subjects)
 		self.assertIn("生产异常已通过：余料退库", worker_subjects)
 		self.assertEqual(
@@ -273,6 +415,71 @@ class TestProcessNotifications(IntegrationTestCase):
 
 
 class TestProcessNotificationRouting(UnitTestCase):
+	def test_missing_notification_switch_defaults_to_enabled_without_overriding_saved_off(self):
+		with (
+			patch(
+				"process_simplification.notifications.frappe.db.exists",
+				return_value=True,
+			),
+			patch(
+				"process_simplification.notifications.frappe.db.sql",
+				side_effect=[[], ["0"]],
+			),
+		):
+			from process_simplification.notifications import process_notifications_enabled
+
+			self.assertTrue(process_notifications_enabled())
+			self.assertFalse(process_notifications_enabled())
+
+	def test_sound_event_targets_only_the_persisted_app_notification_recipient(self):
+		doc = frappe._dict(
+			name="PS-NOTIFICATION-SOUND",
+			app=APP_NAME,
+			for_user="recipient@example.com",
+			type="Alert",
+		)
+		with (
+			patch(
+				"process_simplification.notifications.process_notifications_enabled",
+				return_value=True,
+			),
+			patch(
+				"process_simplification.notifications.process_notification_sound_enabled",
+				return_value=True,
+			),
+			patch(
+				"process_simplification.notifications.frappe.publish_realtime"
+			) as publish_realtime,
+		):
+			publish_notification_sound(doc)
+
+		publish_realtime.assert_called_once_with(
+			PROCESS_NOTIFICATION_REALTIME_EVENT,
+			{
+				"notification_log": doc.name,
+				"type": "Alert",
+				"subject": None,
+				"link": None,
+				"document_type": None,
+				"document_name": None,
+				"play_sound": True,
+			},
+			after_commit=True,
+			user=doc.for_user,
+		)
+
+	def test_sound_event_ignores_notifications_owned_by_other_apps(self):
+		doc = frappe._dict(
+			name="OTHER-NOTIFICATION",
+			app="frappe",
+			for_user="recipient@example.com",
+			type="Alert",
+		)
+		with patch("process_simplification.notifications.frappe.publish_realtime") as publish_realtime:
+			publish_notification_sound(doc)
+
+		publish_realtime.assert_not_called()
+
 	def test_administrator_is_not_an_implicit_operational_recipient(self):
 		from process_simplification.notifications import _enabled_system_user
 

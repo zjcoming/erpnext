@@ -1012,8 +1012,8 @@ class TestSimplifiedFlow(UnitTestCase):
 		self.assertEqual(row_from_workbench.call_count, 2)
 
 	@patch("process_simplification.api.shortage._workbench_row")
-	@patch("process_simplification.api.production_readiness.get_production_plan_readiness", return_value={})
-	def test_shortage_selection_requires_demand(self, get_production_plan_readiness, workbench_row):
+	@patch("process_simplification.api.shortage.calculate_company_purchase_shortages", return_value=[])
+	def test_shortage_selection_requires_demand(self, calculate_shortages, workbench_row):
 		from process_simplification.api.shortage import check_shortage
 
 		workbench_row.return_value = frappe._dict(
@@ -1025,13 +1025,9 @@ class TestSimplifiedFlow(UnitTestCase):
 		self.assertEqual(result["shortages"], [])
 
 	@patch("process_simplification.api.shortage._workbench_row")
-	@patch("process_simplification.api.shortage.calculate_plan_purchase_shortages", return_value=[])
-	@patch(
-		"process_simplification.api.production_readiness.get_production_plan_readiness",
-		return_value={"SO-ITEM-TEST": []},
-	)
+	@patch("process_simplification.api.shortage.calculate_company_purchase_shortages", return_value=[])
 	def test_shortage_check_allocates_all_company_plans_before_filtering_selected_items(
-		self, get_production_plan_readiness, calculate_shortages, workbench_row
+		self, calculate_shortages, workbench_row
 	):
 		from process_simplification.api.shortage import check_shortage
 
@@ -1045,8 +1041,7 @@ class TestSimplifiedFlow(UnitTestCase):
 			company="_Test Company",
 		)
 
-		get_production_plan_readiness.assert_called_once_with(company="_Test Company")
-		self.assertEqual(calculate_shortages.call_args.args[1], {"SO-ITEM-TEST"})
+		calculate_shortages.assert_called_once_with("_Test Company", {"SO-ITEM-TEST"})
 
 	@patch("process_simplification.api.shortage.get_order_workbench")
 	def test_shortage_check_rejects_item_that_does_not_belong_to_selected_order(self, get_order_workbench):
@@ -1064,10 +1059,10 @@ class TestSimplifiedFlow(UnitTestCase):
 
 	@patch("process_simplification.api.shortage.get_company_defaults")
 	@patch("process_simplification.api.shortage._workbench_row")
-	@patch("process_simplification.api.production_readiness.get_production_plan_readiness", return_value={})
+	@patch("process_simplification.api.shortage.calculate_company_purchase_shortages", return_value=[])
 	def test_shortage_check_uses_selected_order_company_when_company_is_omitted(
 		self,
-		get_production_plan_readiness,
+		calculate_shortages,
 		workbench_row,
 		get_company_defaults,
 	):
@@ -1088,7 +1083,7 @@ class TestSimplifiedFlow(UnitTestCase):
 
 		self.assertEqual(result["shortages"], [])
 		get_company_defaults.assert_called_once_with("_Other Company")
-		get_production_plan_readiness.assert_called_once_with(company="_Other Company")
+		calculate_shortages.assert_called_once_with("_Other Company", {"SO-ITEM-TEST"})
 
 	def test_workbench_row_serializes_actions(self):
 		row = WorkbenchRow(

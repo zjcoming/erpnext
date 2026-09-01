@@ -45,7 +45,7 @@ function workerExceptionMaterialOption(
 		value: material?.key || "",
 		description: `${translate("物料编码")}：${code || translate("未设置")} · ${
 			material?.source_warehouse || "-"
-		} → ${target || "-"} · ${translate("可申请")} ${formatNumber(material?.requestable_qty)} ${
+		} → ${target || "-"} · ${translate("个人可申请")} ${formatNumber(material?.requestable_qty)} ${
 			material?.stock_uom || ""
 		}`,
 	};
@@ -81,7 +81,7 @@ function workReportTimerButtonMeta(assignment, translate = (message) => message)
 function workReportBlockMessage(assignment, translate = (message) => message) {
 	const messages = {
 		PENDING_REPORT: translate("已有报工等待主管审核，审核完成后才能继续。"),
-		NO_REMAINING_QTY: translate("该生产任务单已没有可报工数量。"),
+		NO_REMAINING_QTY: translate("本人的派工数量已报完，或该生产任务单已没有可报数量。"),
 		RATE_MISSING: translate("当前日期没有有效计价规则，请联系主管。"),
 		DAILY_MINUTES_LIMIT: translate("今日计薪分钟已达到上限。"),
 		MATERIAL_NOT_TRANSFERRED: translate("物料尚未发放到在制仓，发料后才能开始报工。"),
@@ -220,6 +220,10 @@ function workerAssignmentCardHtml(row, helpers = {}) {
 	const blockMessage = workReportBlockMessage(row, translate);
 	const wageLabel = workReportWageLabel(row, formatNumber, translate);
 	const remainingMinutes = workReportRemainingMinutes(row);
+	const currentAssigned = row.effective_assigned_qty ?? row.assigned_qty;
+	const movementFacts = Number(row.released_qty || 0) || Number(row.redispatched_qty || 0)
+		? `<span>${translate("派工变动")}：${translate("原派")} ${formatNumber(row.original_assigned_qty ?? row.assigned_qty)}${Number(row.released_qty || 0) ? ` · ${translate("释放")} ${formatNumber(row.released_qty)}` : ""}${Number(row.redispatched_qty || 0) ? ` · ${translate("二次派入")} ${formatNumber(row.redispatched_qty)}` : ""}</span>`
+		: "";
 	const stateClass = row.active_report
 		? "is-active"
 		: row.can_start
@@ -234,7 +238,10 @@ function workerAssignmentCardHtml(row, helpers = {}) {
 			<span>${translate("生产工单")}：${escapeHtml(row.work_order)}</span>
 			<span>${translate("工作站")}：${escapeHtml(row.workstation || "-")}</span>
 			<span>${translate("计价")}：${escapeHtml(wageLabel)}</span>
-			<span>${translate("已通过/任务量")}：${formatNumber(row.completed_qty)} / ${formatNumber(row.for_quantity)}</span>
+			<span>${translate("本人已通过/当前分配")}：${formatNumber(row.completed_qty)} / ${formatNumber(currentAssigned)}</span>
+			${movementFacts}
+			${Number(row.pending_qty || 0) ? `<span>${translate("本人待审核")}：${formatNumber(row.pending_qty)}</span>` : ""}
+			<span>${translate("工序已通过/任务量")}：${formatNumber(row.job_card_completed_qty)} / ${formatNumber(row.for_quantity)}</span>
 			<span>${translate("当前可报")}：${formatNumber(row.reportable_qty)}</span>
 			${row.active_started_at ? `<span>${translate("开始时间")}：${escapeHtml(formatDateTime(row.active_started_at))}</span>` : ""}
 			${row.active_report ? `<span>${translate("有效计时")}：${formatNumber(row.active_minutes)} ${translate("分钟")}${row.timer_paused_at ? ` · ${translate("已暂停")}` : ""}</span>` : ""}
@@ -584,13 +591,13 @@ function mountWorkerReportingPage({ page, root, mode = "queue" }) {
 				{ fieldname: "request_type", fieldtype: "Select", label: __("申请类型"), reqd: 1, options: Object.keys(typeLabels), onchange: refreshMaterialChoices },
 				{ fieldname: "cause", fieldtype: "Select", label: __("原因类别"), reqd: 1, options: Object.keys(causeLabels) },
 				{ fieldname: "material_choice", fieldtype: "Autocomplete", label: __("物料与仓库路径"), reqd: 1, options: [], onchange: refreshAvailableQty },
-				{ fieldname: "available_qty", fieldtype: "Float", label: __("当前最多可申请数量"), read_only: 1 },
+				{ fieldname: "available_qty", fieldtype: "Float", label: __("个人当前最多可申请数量"), read_only: 1 },
 				{ fieldname: "qty", fieldtype: "Float", label: __("申请数量"), reqd: 1 },
 				{ fieldname: "reason", fieldtype: "Small Text", label: __("情况说明"), reqd: 1 },
 				{
 					fieldname: "posting_note",
 					fieldtype: "HTML",
-					options: `<p class="text-muted">${__("主管批准退料或物料报废后，系统只生成原生库存移动草稿；库存人员提交单据后才会改变库存。生产损耗经批准后计入 Job Card，但不计入工人工资数量。")}</p>`,
+					options: `<p class="text-muted">${__("多人派工时，可退上限按个人派工数量和 BOM 折算；待审核的退料或报废会先占用个人额度，并按整件向下取整减少可报数量。补料后相应额度自动恢复。主管批准后系统只生成原生库存移动草稿，库存人员提交单据后才会改变库存。")}</p>`,
 				},
 			],
 			primary_action_label: __("提交主管审核"),

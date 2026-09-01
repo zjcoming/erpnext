@@ -1,3 +1,9 @@
+const WORKER_ASSIGNMENT_GRID_COLUMNS = Object.freeze({
+	employee: 4,
+	assigned_qty: 2,
+	notes: 4,
+});
+
 function workerAssignmentStatusMeta(status, translate = (message) => message) {
 	const statuses = {
 		"In Progress": { label: translate("计时中"), indicator: "blue" },
@@ -19,12 +25,90 @@ function workerAssignmentMaterialStatusMeta(status, translate = (message) => mes
 	return statuses[status] || { label: translate("待确认"), indicator: "gray" };
 }
 
+function workerAssignmentWorkOrderStatusLabel(status, translate = (message) => message) {
+	const statuses = {
+		Draft: "草稿",
+		"Not Started": "未开始",
+		"In Process": "生产中",
+		Stopped: "已停止",
+		Completed: "已完成",
+		Closed: "已关闭",
+		Cancelled: "已取消",
+	};
+	return translate(statuses[status] || status || "待确认");
+}
+
 function canManageWorkerAssignments(user, roles = []) {
 	return user === "Administrator" || ["System Manager", "Process Simplification Production Manager"].some((role) => roles.includes(role));
 }
 
 function defaultAssignmentJobCard(context = {}) {
 	return (context.job_cards || []).find((row) => row.can_assign)?.name || "";
+}
+
+function workerAssignmentPlanRows(row = {}) {
+	return ((row || {}).assignments || [])
+		.filter((assignment) => assignment.assignment_status === "Active")
+		.map((assignment) => ({
+			employee: assignment.employee,
+			assigned_qty: Number(assignment.assigned_qty || 0),
+			notes: assignment.notes || "",
+		}));
+}
+
+function normalizeWorkerAssignmentPlan(rows = []) {
+	return (rows || [])
+		.filter((row) => row?.employee || Number(row?.assigned_qty || 0) || row?.notes)
+		.map((row) => ({
+			employee: String(row.employee || "").trim(),
+			assigned_qty: Number(row.assigned_qty || 0),
+			notes: String(row.notes || "").trim(),
+		}));
+}
+
+function workerAssignmentPlanTotal(rows = []) {
+	return normalizeWorkerAssignmentPlan(rows).reduce(
+		(total, row) => total + Number(row.assigned_qty || 0),
+		0
+	);
+}
+
+function workerAssignmentPlanError(rows, targetQty, translate = (message) => message) {
+	const plan = normalizeWorkerAssignmentPlan(rows);
+	if (!plan.length) return translate("请至少添加一名工人并填写派工数量。");
+	const employees = new Set();
+	for (const row of plan) {
+		if (!row.employee) return translate("每一行都必须选择工人。");
+		if (employees.has(row.employee)) return translate("同一名工人不能重复添加。");
+		if (!(row.assigned_qty > 0)) return translate("每名工人的派工数量必须大于 0。");
+		employees.add(row.employee);
+	}
+	const total = workerAssignmentPlanTotal(plan);
+	if (Math.abs(total - Number(targetQty || 0)) > 1e-6) {
+		return translate("所有工人的派工总数必须等于任务量：{0} ≠ {1}")
+			.replace("{0}", String(total))
+			.replace("{1}", String(Number(targetQty || 0)));
+	}
+	return "";
+}
+
+function workerRedispatchPlanError(rows, maxQty, translate = (message) => message) {
+	const plan = normalizeWorkerAssignmentPlan(rows);
+	if (!plan.length) return translate("请至少添加一名承接工人并填写数量。");
+	const employees = new Set();
+	for (const row of plan) {
+		if (!row.employee) return translate("每一行都必须选择承接工人。");
+		if (employees.has(row.employee)) return translate("同一名工人不能重复添加。");
+		if (!(row.assigned_qty > 0)) return translate("二次派工数量必须大于 0。");
+		employees.add(row.employee);
+	}
+	const total = workerAssignmentPlanTotal(plan);
+	if (total - Number(maxQty || 0) > 1e-6) {
+		return translate("本次重新派工最多只能分配 {0} 件，当前合计 {1} 件。")
+			.replace("{0}", String(Number(maxQty || 0)))
+			.replace("{1}", String(total));
+	}
+	return "";
 }
 
 function workerAssignmentBlockMessage(row = {}, translate = (message) => message) {
@@ -34,6 +118,11 @@ function workerAssignmentBlockMessage(row = {}, translate = (message) => message
 		NO_REMAINING_QTY: "生产任务单已没有剩余可报数量。",
 		RATE_MISSING: "请先为该工序配置当前有效的计价规则。",
 		RATE_CONFLICT: "该工序当前存在多条有效计价规则，请先处理冲突。",
+		MATERIAL_NOT_FULLY_ISSUED: "物料尚未全部发到在制品仓，当前只能查看派工记录。",
+		MATERIAL_NOT_READY: "物料尚未满足正式派工条件，当前只能查看派工记录。",
+		DIRECT_MATERIAL_SHORTAGE: "直耗料现场库存不足，补料或锁料完成前不能新增派工。",
+		DIRECT_PRIORITY_CONFLICT: "直耗料已优先分配给其他工单，当前不能新增派工。",
+		ASSIGNMENT_PLAN_LOCKED: "已有报工记录，不能重做整单派工；退料释放的未完成数量需由主管重新派工。",
 		SUPERVISOR_CONFLICT: "现有派工使用了不同审核主管，请先处理主管冲突。",
 		OTHER_SUPERVISOR: "该生产任务单已由其他生产主管负责。",
 		TIME_LOG_SETTING: "当前制造设置与简化报工计时方式不兼容。",
@@ -42,11 +131,14 @@ function workerAssignmentBlockMessage(row = {}, translate = (message) => message
 		SPECIAL_JOB_CARD: "简化报工暂不支持半成品跟踪或委外生产任务单。",
 		PROCESS_LOSS: "简化报工暂不支持含制程损耗的生产任务单。",
 	};
+	if (row.block_code === "ASSIGNMENT_PLAN_LOCKED" && row.block_message) {
+		return row.block_message;
+	}
 	return messages[row.block_code] ? translate(messages[row.block_code]) : row.block_message || "";
 }
 
-function assignmentDialogCanSubmit(context) {
-	return !context || Boolean(context.can_assign);
+function assignmentDialogCanSubmit(context, mode = "assign") {
+	return mode !== "history" && (!context || Boolean(context.can_assign));
 }
 
 function workOrderAssignmentContextHtml(context = {}, helpers) {
@@ -63,23 +155,115 @@ function workOrderAssignmentContextHtml(context = {}, helpers) {
 							assignment.report_status || assignment.assignment_status,
 							t
 						);
-						return `<span class="worker-assignment-person">${esc(assignment.employee_name || assignment.employee || "")} <span class="indicator-pill ${esc(status.indicator)}">${esc(status.label)}</span>${assignment.supervisor ? ` <span class="text-muted">· ${esc(t("审核"))}：${esc(assignment.supervisor)}</span>` : ""}</span>`;
+						const movementFacts = Number(assignment.released_qty || 0) || Number(assignment.redispatched_qty || 0)
+							? ` · ${esc(t("原派"))} ${number(assignment.original_assigned_qty)}${Number(assignment.released_qty || 0) ? ` · ${esc(t("释放"))} ${number(assignment.released_qty)}` : ""}${Number(assignment.redispatched_qty || 0) ? ` · ${esc(t("转入"))} ${number(assignment.redispatched_qty)}` : ""}`
+							: "";
+						return `<span class="worker-assignment-person">${esc(assignment.employee_name || assignment.employee || "")} <span class="text-muted">· ${esc(t("当前分配"))} ${number(assignment.effective_assigned_qty ?? assignment.assigned_qty)}${movementFacts} · ${esc(t("已报"))} ${number(assignment.completed_qty)}${Number(assignment.pending_qty || 0) > 0 ? ` · ${esc(t("待审"))} ${number(assignment.pending_qty)}` : ""} · ${esc(t("剩余"))} ${number(assignment.remaining_qty)}</span> <span class="indicator-pill ${esc(status.indicator)}">${esc(status.label)}</span>${assignment.supervisor ? ` <span class="text-muted">· ${esc(t("审核"))}：${esc(assignment.supervisor)}</span>` : ""}</span>`;
 					})
 					.join("")
 			: `<span class="text-muted">${esc(t("未派工"))}</span>`;
 		const blockMessage = workerAssignmentBlockMessage(row, t);
+		const blockClass = row.block_code === "ASSIGNMENT_PLAN_LOCKED" ? "text-info" : "text-danger";
+		const redispatchAction = row.can_redispatch
+			? `<button class="btn btn-xs btn-primary worker-assignment-redispatch" data-job-card="${esc(row.name || "")}">${esc(t("重新派工剩余 {0} 件")).replace("{0}", number(row.redispatchable_qty))}</button>`
+			: "";
 		return `<article class="worker-assignment-job-card${row.can_assign ? "" : " is-blocked"}">
 			<div class="worker-assignment-job-heading"><a href="/app/job-card/${encodeURIComponent(row.name || "")}" target="_blank"><strong>${esc(row.name || "")}</strong></a><span>${esc(row.operation || "")}</span><span class="indicator-pill ${esc(material.indicator)}">${esc(material.label)}</span></div>
-			<div class="worker-assignment-job-facts"><span>${esc(t("工作站"))}：${esc(row.workstation || t("未设置"))}</span><span>${esc(t("任务量"))}：${number(row.for_quantity)}</span><span>${esc(t("已完成"))}：${number(row.completed_qty)}</span><span>${esc(t("剩余"))}：${number(row.remaining_qty)}</span><span>${esc(t("当前可报"))}：${number(row.available_reportable_qty)}</span><span>${esc(t("审核主管"))}：${esc(row.display_supervisor || row.assignment_supervisor || "")}</span></div>
+			<div class="worker-assignment-job-facts"><span>${esc(t("工作站"))}：${esc(row.workstation || t("未设置"))}</span><span>${esc(t("任务量"))}：${number(row.for_quantity)}</span><span>${esc(t("原派合计"))}：${number(row.assigned_total_qty)}</span><span>${esc(t("当前分配合计"))}：${number(row.effective_assigned_total_qty ?? row.assigned_total_qty)}</span><span>${esc(t("已完成"))}：${number(row.completed_qty)}</span><span>${esc(t("剩余"))}：${number(row.remaining_qty)}</span><span>${esc(t("当前可报"))}：${number(row.available_reportable_qty)}</span>${Number(row.released_pool_qty || 0) ? `<span>${esc(t("待重新派工"))}：${number(row.released_pool_qty)}</span>` : ""}<span>${esc(t("审核主管"))}：${esc(row.display_supervisor || row.assignment_supervisor || "")}</span></div>
 			<div class="worker-assignment-people">${assignments}</div>
-			${blockMessage ? `<p class="text-danger worker-assignment-block">${esc(blockMessage)}</p>` : ""}
+			${blockMessage ? `<p class="${blockClass} worker-assignment-block">${esc(blockMessage)}</p>` : ""}
+			${redispatchAction ? `<div class="worker-assignment-actions">${redispatchAction}</div>` : ""}
 		</article>`;
 	}).join("");
 	return `<div class="worker-assignment-context">
-		<div class="worker-assignment-work-order"><strong>${esc(workOrder.name || "")}</strong><span>${esc(workOrder.production_item || "")}</span><span>${esc(workOrder.status || "")}</span><span>${esc(t("已生产 / 计划"))}：${number(workOrder.produced_qty)} / ${number(workOrder.qty)}</span></div>
+		<div class="worker-assignment-work-order"><strong>${esc(workOrder.name || "")}</strong><span>${esc(workOrder.production_item || "")}</span><span>${esc(workerAssignmentWorkOrderStatusLabel(workOrder.status, t))}</span><span>${esc(t("已生产 / 计划"))}：${number(workOrder.produced_qty)} / ${number(workOrder.qty)}</span></div>
 		<div class="worker-assignment-job-list">${cards || `<div class="text-muted">${esc(t("该生产工单没有生产任务单。"))}</div>`}</div>
-		${context.can_assign === false ? `<p class="text-muted worker-assignment-read-only">${esc(t("当前工单没有可派工的生产任务，仅显示已有状态和历史记录。"))}</p>` : ""}
+		${context.can_assign === false ? `<p class="text-muted worker-assignment-read-only">${esc(t(context.can_redispatch ? "原派工历史保持不变；只对已释放且补料覆盖的未完成数量重新派工。" : "当前不能新增或重做整单派工；已有有效分配仍可继续报工。"))}</p>` : ""}
 	</div>`;
+}
+
+function openWorkerRedispatchDialog(row, options = {}) {
+	const maxQty = Number(row?.redispatchable_qty || 0);
+	const dialog = new frappe.ui.Dialog({
+		title: __("重新派工未完成数量 · {0}", [row?.name || ""]),
+		size: "large",
+		fields: [
+			{
+				fieldtype: "HTML",
+				options: `<p>${__("原派工与报工历史不会修改。本次最多重新分配 {0} 件；补料本身不会自动分回原工人。", [format_number(flt(maxQty), null, 2)])}</p>`,
+			},
+			{
+				fieldname: "allocations",
+				fieldtype: "Table",
+				label: __("承接工人及数量"),
+				reqd: 1,
+				in_place_edit: true,
+				data: [{ employee: "", assigned_qty: maxQty }],
+				fields: [
+					{
+						fieldname: "employee",
+						fieldtype: "Link",
+						options: "Employee",
+						label: __("承接工人"),
+						reqd: 1,
+						in_list_view: 1,
+						columns: WORKER_ASSIGNMENT_GRID_COLUMNS.employee,
+						get_query: () => ({
+							query: "process_simplification.api.production_reporting.search_workers",
+							filters: { job_card: row.name, include_assigned: 1 },
+						}),
+					},
+					{
+						fieldname: "assigned_qty",
+						fieldtype: "Float",
+						label: __("二次派工数量"),
+						reqd: 1,
+						in_list_view: 1,
+						columns: WORKER_ASSIGNMENT_GRID_COLUMNS.assigned_qty,
+					},
+				],
+			},
+			{
+				fieldname: "reason",
+				fieldtype: "Small Text",
+				label: __("重新派工说明"),
+				default: __("退料释放后的未完成数量重新派工"),
+			},
+		],
+		primary_action_label: __("确认重新派工"),
+		primary_action: async (values) => {
+			const allocations = normalizeWorkerAssignmentPlan(values.allocations);
+			const error = workerRedispatchPlanError(allocations, maxQty, __);
+			if (error) {
+				frappe.msgprint(error);
+				return;
+			}
+			const requestId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+			const $button = dialog.get_primary_btn();
+			$button.prop("disabled", true).text(__("处理中..."));
+			try {
+				await frappe.call({
+					method: "process_simplification.api.production_reporting.redispatch_remaining",
+					type: "POST",
+					args: {
+						job_card: row.name,
+						allocations: JSON.stringify(allocations),
+						request_id: requestId,
+						reason: values.reason,
+					},
+				});
+				dialog.hide();
+				options.parent_dialog?.hide();
+				frappe.show_alert({ message: __("未完成数量已重新派工。"), indicator: "green" });
+				await options.on_success?.();
+			} finally {
+				$button.prop("disabled", false).text(__("确认重新派工"));
+			}
+		},
+	});
+	dialog.$wrapper.addClass("ps-worker-assignment-dialog");
+	dialog.show();
+	return dialog;
 }
 
 function openWorkerAssignmentDialog(options = {}) {
@@ -93,9 +277,12 @@ function openWorkerAssignmentDialog(options = {}) {
 		: Promise.resolve({ message: null });
 
 	return loadContext.then((response) => {
-		const context = response.message || null;
-		const canSubmit = assignmentDialogCanSubmit(context);
-		const defaultJobCard = context ? defaultAssignmentJobCard(context) : "";
+		let context = response.message || null;
+		const canSubmit = assignmentDialogCanSubmit(context, options.mode);
+		const displayContext = options.mode === "history" && context
+			? { ...context, can_assign: false }
+			: context;
+		const defaultJobCard = canSubmit && context ? defaultAssignmentJobCard(context) : "";
 		const defaultRow = context
 			? (context.job_cards || []).find((row) => row.name === defaultJobCard)
 			: null;
@@ -103,7 +290,7 @@ function openWorkerAssignmentDialog(options = {}) {
 		if (context) {
 			fields.push({
 				fieldtype: "HTML",
-				options: workOrderAssignmentContextHtml(context, {
+				options: workOrderAssignmentContextHtml(displayContext, {
 					translate: __,
 					escapeHtml: frappe.utils.escape_html,
 					formatNumber: (value) => format_number(flt(value), null, 2),
@@ -118,12 +305,31 @@ function openWorkerAssignmentDialog(options = {}) {
 				label: __("生产任务单（工序）"),
 				reqd: 1,
 				default: defaultJobCard,
-				onchange: () => {
-					dialog.set_value("employee", "");
-					if (!context?.can_choose_supervisor) return;
-					const row = (context.job_cards || []).find(
-						(item) => item.name === dialog.get_value("job_card")
-					);
+				onchange: async () => {
+					const jobCard = dialog.get_value("job_card");
+					let row = (context?.job_cards || []).find((item) => item.name === jobCard);
+					if (!row && jobCard) {
+						const values = await frappe.db.get_value(
+							"Job Card",
+							jobCard,
+							["work_order", "for_quantity"]
+						);
+						const workOrder = values?.message?.work_order;
+						if (workOrder) {
+							const result = await frappe.call({
+								method: "process_simplification.api.production_reporting.get_work_order_assignment_context",
+								args: { work_order: workOrder },
+							});
+							context = result.message || context;
+							row = (context?.job_cards || []).find((item) => item.name === jobCard);
+						}
+						if (!row) row = { name: jobCard, for_quantity: values?.message?.for_quantity };
+					}
+					dialog.set_value("task_qty", Number(row?.for_quantity || 0));
+					const allocationField = dialog.fields_dict.allocations;
+					allocationField.df.data = workerAssignmentPlanRows(row);
+					allocationField.grid.refresh();
+					if (!context?.can_choose_supervisor || !dialog.fields_dict.supervisor) return;
 					dialog.set_value("supervisor", row?.assignment_supervisor || "");
 					dialog.set_df_property("supervisor", "read_only", !row?.can_choose_supervisor);
 				},
@@ -148,17 +354,53 @@ function openWorkerAssignmentDialog(options = {}) {
 				}]
 				: []),
 			{
-				fieldname: "employee",
-				fieldtype: "Link",
-				options: "Employee",
-				label: __("工人"),
-				reqd: 1,
-				get_query: () => ({
-					query: "process_simplification.api.production_reporting.search_workers",
-					filters: { job_card: dialog.get_value("job_card") },
-				}),
+				fieldname: "task_qty",
+				fieldtype: "Float",
+				label: __("任务量"),
+				read_only: 1,
+				default: Number(defaultRow?.for_quantity || 0),
 			},
-			{ fieldname: "notes", fieldtype: "Small Text", label: __("派工备注") }
+			{
+				fieldname: "allocations",
+				fieldtype: "Table",
+				label: __("工人及派工数量"),
+				reqd: 1,
+				in_place_edit: true,
+				cannot_add_rows: false,
+				cannot_delete_rows: false,
+				description: __("逐人填写派工数量；所有行合计必须等于任务量。"),
+				data: workerAssignmentPlanRows(defaultRow),
+				fields: [
+					{
+						fieldname: "employee",
+						fieldtype: "Link",
+						options: "Employee",
+						label: __("工人"),
+						reqd: 1,
+						in_list_view: 1,
+						columns: WORKER_ASSIGNMENT_GRID_COLUMNS.employee,
+						get_query: () => ({
+							query: "process_simplification.api.production_reporting.search_workers",
+							filters: { job_card: dialog.get_value("job_card") },
+						}),
+					},
+					{
+						fieldname: "assigned_qty",
+						fieldtype: "Float",
+						label: __("派工数量"),
+						reqd: 1,
+						in_list_view: 1,
+						columns: WORKER_ASSIGNMENT_GRID_COLUMNS.assigned_qty,
+					},
+					{
+						fieldname: "notes",
+						fieldtype: "Data",
+						label: __("派工备注"),
+						in_list_view: 1,
+						columns: WORKER_ASSIGNMENT_GRID_COLUMNS.notes,
+					},
+				],
+			}
 		);
 
 		const dialogOptions = {
@@ -171,7 +413,8 @@ function openWorkerAssignmentDialog(options = {}) {
 							: "工单派工状态 · {0}",
 					[context.work_order.name]
 				)
-				: __("新增工人派工"),
+				: __("新增多人派工"),
+			size: "large",
 			fields,
 		};
 		if (canSubmit) {
@@ -184,20 +427,31 @@ function openWorkerAssignmentDialog(options = {}) {
 					frappe.msgprint(workerAssignmentBlockMessage(selected, __) || __("当前生产任务单不可派工。"));
 					return;
 				}
+				const allocations = normalizeWorkerAssignmentPlan(values.allocations);
+				const planError = workerAssignmentPlanError(
+					allocations,
+					selected?.for_quantity || values.task_qty,
+					__
+				);
+				if (planError) {
+					frappe.msgprint(planError);
+					return;
+				}
 				dialog.get_primary_btn().prop("disabled", true).text(__("处理中..."));
 				try {
 					await frappe.call({
-						method: "process_simplification.api.production_reporting.assign_worker",
+						method: "process_simplification.api.production_reporting.assign_workers",
 						type: "POST",
 						args: {
-							...values,
+							job_card: values.job_card,
+							assignments: JSON.stringify(allocations),
 							supervisor: context
 								? values.supervisor || selected?.assignment_supervisor
 								: undefined,
 						},
 					});
 					dialog.hide();
-					frappe.show_alert({ message: __("派工已创建。"), indicator: "green" });
+					frappe.show_alert({ message: __("多人派工方案已保存。"), indicator: "green" });
 					await options.on_success?.();
 				} finally {
 					dialog.get_primary_btn().prop("disabled", false).text(__("确认派工"));
@@ -205,19 +459,38 @@ function openWorkerAssignmentDialog(options = {}) {
 			};
 		}
 		const dialog = new frappe.ui.Dialog(dialogOptions);
+		dialog.$wrapper.addClass("ps-worker-assignment-dialog");
+		dialog.$wrapper.on("click", ".worker-assignment-redispatch", (event) => {
+			const jobCard = String($(event.currentTarget).data("job-card") || "");
+			const row = (context?.job_cards || []).find((item) => item.name === jobCard);
+			if (row?.can_redispatch) {
+				openWorkerRedispatchDialog(row, {
+					parent_dialog: dialog,
+					on_success: options.on_success,
+				});
+			}
+		});
 		dialog.show();
 		return dialog;
 	});
 }
 
 const workerAssignmentApi = {
+	WORKER_ASSIGNMENT_GRID_COLUMNS,
 	workerAssignmentStatusMeta,
 	workerAssignmentMaterialStatusMeta,
+	workerAssignmentWorkOrderStatusLabel,
 	canManageWorkerAssignments,
 	defaultAssignmentJobCard,
+	workerAssignmentPlanRows,
+	normalizeWorkerAssignmentPlan,
+	workerAssignmentPlanTotal,
+	workerAssignmentPlanError,
+	workerRedispatchPlanError,
 	workerAssignmentBlockMessage,
 	assignmentDialogCanSubmit,
 	workOrderAssignmentContextHtml,
+	openWorkerRedispatchDialog,
 	openWorkerAssignmentDialog,
 };
 

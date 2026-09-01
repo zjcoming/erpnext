@@ -143,8 +143,8 @@ class TestAggregatedShortage(UnitTestCase):
 
 		with (
 			patch(
-				"process_simplification.api.production_readiness.get_production_plan_readiness",
-				return_value=readiness,
+				"process_simplification.api.shortage._purchase_inputs_from_production_overview",
+				return_value=(readiness, []),
 			),
 			patch("process_simplification.api.shortage.frappe.has_permission", return_value=True),
 		):
@@ -167,8 +167,8 @@ class TestAggregatedShortage(UnitTestCase):
 
 		with (
 			patch(
-				"process_simplification.api.production_readiness.get_production_plan_readiness",
-				return_value={},
+				"process_simplification.api.shortage._purchase_inputs_from_production_overview",
+				return_value=({}, []),
 			),
 			patch("process_simplification.api.shortage.frappe.has_permission", return_value=True),
 		):
@@ -176,6 +176,66 @@ class TestAggregatedShortage(UnitTestCase):
 
 		self.assertEqual(result["shortages"], [])
 		self.assertIn("message", result)
+
+	def test_check_all_shortages_includes_sales_order_before_production_plan(self):
+		from process_simplification.api import shortage
+
+		unplanned_demand = {
+			"bom_no": "BOM-FG-001",
+			"qty": 5,
+			"source": {
+				"sales_order": "SO-NEW",
+				"sales_order_item": "SOI-NEW",
+				"finished_item": "FG-NEW",
+			},
+		}
+		coverage = {
+			"requirements": [
+				frappe._dict(
+					company="_Test Company",
+					item_code="RM-NEW",
+					item_name="新订单原料",
+					stock_uom="Nos",
+					warehouse="Stores - TC",
+					required_qty=5,
+					actual_qty=0,
+					committed_qty=0,
+					available_qty=0,
+					open_material_request_qty=0,
+					open_purchase_order_qty=0,
+					current_gap_qty=5,
+					shortage_qty=5,
+					status="new_purchase_required",
+					supply_type="purchased",
+					blocked=False,
+					sources=[
+						{
+							"sales_order": "SO-NEW",
+							"sales_order_item": "SOI-NEW",
+							"shortage_qty": 5,
+						}
+					],
+					supply_documents=[],
+				)
+			]
+		}
+
+		with (
+			patch(
+				"process_simplification.api.shortage._purchase_inputs_from_production_overview",
+				return_value=({}, [unplanned_demand]),
+			),
+			patch(
+				"process_simplification.api.shortage.calculate_multilevel_material_coverage",
+				return_value=coverage,
+			),
+			patch("process_simplification.api.shortage.frappe.has_permission", return_value=True),
+		):
+			result = shortage.check_all_shortages(company="_Test Company")
+
+		self.assertEqual([row["item_code"] for row in result["shortages"]], ["RM-NEW"])
+		self.assertEqual(result["shortages"][0]["shortage_qty"], 5)
+		self.assertEqual(result["shortages"][0]["sources"][0]["sales_order"], "SO-NEW")
 
 	def test_material_request_rows_are_rejected_when_plan_shortage_has_changed(self):
 		from process_simplification.api import shortage
@@ -400,18 +460,13 @@ class TestAggregatedShortage(UnitTestCase):
 
 	@patch("process_simplification.api.shortage.frappe.db.commit")
 	@patch("process_simplification.api.shortage.revalidate_purchase_rows")
-	@patch("process_simplification.api.shortage.calculate_plan_purchase_shortages", return_value=[])
-	@patch(
-		"process_simplification.api.production_readiness.get_production_plan_readiness",
-		return_value={},
-	)
+	@patch("process_simplification.api.shortage.calculate_company_purchase_shortages", return_value=[])
 	@patch("process_simplification.api.shortage.get_company_defaults")
 	@patch("process_simplification.api.shortage.frappe.new_doc")
 	def test_material_request_uses_shortage_row_company_when_company_is_omitted(
 		self,
 		new_doc,
 		get_company_defaults,
-		get_production_plan_readiness,
 		calculate_shortages,
 		revalidate_rows,
 		commit,
@@ -455,7 +510,4 @@ class TestAggregatedShortage(UnitTestCase):
 		self.assertEqual(mr.company, "_Other Company")
 		get_company_defaults.assert_called_once_with("_Other Company")
 		commit.assert_called_once_with()
-		get_production_plan_readiness.assert_called_once_with(
-			company="_Other Company",
-			sales_order_items=["SOI-1"],
-		)
+		calculate_shortages.assert_called_once_with("_Other Company", ["SOI-1"])

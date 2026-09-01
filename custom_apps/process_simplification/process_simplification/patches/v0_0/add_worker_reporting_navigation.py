@@ -44,7 +44,7 @@ ITEMS = (
 		"label": "异常审核",
 		"link_to": "production-exception-review",
 		"link_type": "Page",
-		"icon": "alert-triangle",
+		"icon": "triangle-alert",
 	},
 	{
 		"label": "计价规则",

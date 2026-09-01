@@ -221,10 +221,14 @@ SALES_OPERATOR_PERMISSIONS = {
 
 WAREHOUSE_OPERATOR_PERMISSIONS = {
 	**{doctype: {"read", "select"} for doctype in REFERENCE_READ_DOCTYPES},
+	"Account": {"read", "select"},
 	"Sales Order": {"read", "select"},
 	"Production Plan": {"read", "select"},
 	"Work Order": {"read", "select"},
 	"Job Card": {"read", "select"},
+	"Price List": {"read", "select"},
+	"Supplier Group": {"read", "select"},
+	"Stock Settings": {"read"},
 	"Stock Reservation Entry": {"read", "select", "create", "write", "submit"},
 	"Stock Entry": {"read", "select", "create", "write", "submit"},
 	"Delivery Note": {"read", "select", "create", "write", "submit"},

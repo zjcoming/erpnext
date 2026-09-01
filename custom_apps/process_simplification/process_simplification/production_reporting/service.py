@@ -30,6 +30,7 @@ from process_simplification.production_reporting.constants import (
 from process_simplification.production_reporting.domain import (
 	WAGE_TYPES,
 	approved_report_qty,
+	assignment_reported_qty as domain_assignment_reported_qty,
 	assert_worker_user_isolated,
 	assert_supported_job_card,
 	daily_minutes_limit,
@@ -63,6 +64,128 @@ MAX_REVIEW_PAGE_LENGTH = 100
 
 def _hash_key(*values) -> str:
 	return hashlib.sha256("|".join(str(value or "") for value in values).encode()).hexdigest()
+
+
+def _assignment_status_qty(
+	assignment: str,
+	statuses: list[str] | tuple[str, ...],
+	*,
+	for_update: bool = False,
+) -> float:
+	report = frappe.qb.DocType("Job Card Work Report")
+	query = (
+		frappe.qb.from_(report)
+		.select(report.completed_qty)
+		.where(
+			(report.assignment == assignment)
+			& (report.status.isin(statuses))
+		)
+	)
+	if for_update:
+		query = query.for_update()
+	return sum(flt(row.completed_qty) for row in query.run(as_dict=True))
+
+
+def _assignment_reported_qty(assignment: str, *, for_update: bool = False) -> float:
+	"""Return quantity already reserved or accepted against one worker's allocation."""
+	return domain_assignment_reported_qty(assignment, for_update=for_update)
+
+
+def _assignment_reportable_qty(jc, assignment, *, for_update: bool = False) -> float:
+	"""Apply shared Work Order stock plus this worker's BOM allocation."""
+	from process_simplification.production_exceptions.service import (
+		assignment_material_output_capacity,
+	)
+	from process_simplification.production_reporting.assignment_movement import (
+		assignment_effective_qty,
+	)
+
+	precision = job_card_qty_precision()
+	reported = _assignment_reported_qty(assignment.name, for_update=for_update)
+	effective_qty = assignment_effective_qty(assignment, for_update=for_update)
+	assignment_remaining = max(
+		flt(effective_qty, precision) - flt(reported, precision),
+		0,
+	)
+	personal_capacity = assignment_material_output_capacity(
+		jc,
+		assignment,
+		for_update=for_update,
+	)
+	personal_remaining = assignment_remaining
+	if personal_capacity is not None:
+		personal_remaining = max(
+			flt(personal_capacity, precision) - flt(reported, precision),
+			0,
+		)
+	return flt(
+		max(
+			0,
+			min(
+				material_reportable_qty(jc, for_update=for_update),
+				assignment_remaining,
+				personal_remaining,
+			),
+		),
+		precision,
+	)
+
+
+def _normalize_assignment_plan(assignments, target_qty: float, precision: int) -> list[frappe._dict]:
+	if isinstance(assignments, str):
+		assignments = frappe.parse_json(assignments)
+	if not isinstance(assignments, list) or not assignments:
+		frappe.throw(_("Add at least one worker allocation."))
+
+	normalized = []
+	seen_employees = set()
+	for allocation in assignments:
+		if not isinstance(allocation, dict):
+			frappe.throw(_("Every worker allocation must contain an Employee and quantity."))
+		employee = str(allocation.get("employee") or "").strip()
+		assigned_qty = flt(allocation.get("assigned_qty"), precision)
+		if not employee:
+			frappe.throw(_("Every worker allocation requires an Employee."))
+		if employee in seen_employees:
+			frappe.throw(_("Employee {0} appears more than once in the dispatch plan.").format(employee))
+		if assigned_qty <= 0:
+			frappe.throw(_("The assigned quantity for employee {0} must be greater than zero.").format(employee))
+		seen_employees.add(employee)
+		normalized.append(
+			frappe._dict(
+				employee=employee,
+				assigned_qty=assigned_qty,
+				notes=str(allocation.get("notes") or "").strip(),
+			)
+		)
+
+	assigned_total = flt(sum(row.assigned_qty for row in normalized), precision)
+	if assigned_total != flt(target_qty, precision):
+		frappe.throw(
+			_("Worker allocation total must equal the Job Card quantity: {0} != {1}.").format(
+				assigned_total,
+				flt(target_qty, precision),
+			)
+		)
+	return normalized
+
+
+def _assignment_plan_matches(existing_assignments, allocations, supervisor: str, precision: int) -> bool:
+	if len(existing_assignments) != len(allocations):
+		return False
+	existing_by_employee = {row.employee: row for row in existing_assignments}
+	for allocation in allocations:
+		existing = existing_by_employee.get(allocation.employee)
+		if not existing:
+			return False
+		if (
+			existing.status != "Active"
+			or existing.supervisor != supervisor
+			or flt(existing.assigned_qty, precision) != flt(allocation.assigned_qty, precision)
+			or str(existing.notes or "").strip() != allocation.notes
+		):
+			return False
+	return True
 
 
 def manual_time_entry_enabled() -> bool:
@@ -285,6 +408,12 @@ def validate_assignment_document(doc):
 		frappe.throw(_("Invalid worker assignment status."))
 	if not doc.assignment_key or not doc.job_card or not doc.operation_id or not doc.employee or not doc.supervisor:
 		frappe.throw(_("Worker assignment is missing required immutable facts."))
+	if (
+		doc.is_new()
+		and flt(doc.assigned_qty, job_card_qty_precision()) <= 0
+		and not getattr(doc.flags, "redispatch_target", False)
+	):
+		frappe.throw(_("Worker assigned quantity must be greater than zero."))
 	if doc.is_new():
 		return
 	old = frappe.db.get_value(
@@ -298,6 +427,7 @@ def validate_assignment_document(doc):
 			"operation",
 			"operation_id",
 			"job_card_qty",
+			"assigned_qty",
 			"employee",
 			"employee_user",
 			"supervisor",
@@ -464,7 +594,8 @@ def validate_report_document(doc):
 		frappe.throw(_("This work report status transition is not allowed."))
 
 
-def assign_worker(job_card: str, employee: str, supervisor: str | None = None, notes: str | None = None):
+def assign_workers(job_card: str, assignments, supervisor: str | None = None):
+	"""Create or replace one complete, quantity-balanced Job Card dispatch plan."""
 	require_reviewer()
 	supervisor = supervisor or frappe.session.user
 	if not is_admin_reviewer() and supervisor != frappe.session.user:
@@ -477,16 +608,31 @@ def assign_worker(job_card: str, employee: str, supervisor: str | None = None, n
 		frappe.db.get_value("Work Order", jc.work_order, "status", for_update=True)
 	if not jc.work_order or not jc.company or not jc.operation or not jc.operation_id:
 		frappe.throw(_("Job Card must have a Work Order, company, operation, and operation row before assignment."))
-	employee_row = frappe.db.get_value(
-		"Employee",
-		employee,
-		["company", "status", "user_id"],
-		as_dict=True,
-		for_update=True,
+	from process_simplification.production_workflow.service import (
+		assert_work_order_dispatch_ready,
 	)
-	if not employee_row or employee_row.status != "Active" or employee_row.company != jc.company:
-		frappe.throw(_("The worker must be an active Employee in the Job Card company."))
-	worker_user = employee_user(employee, for_update=True)
+
+	assert_work_order_dispatch_ready(jc.work_order)
+	precision = job_card_qty_precision()
+	allocations = _normalize_assignment_plan(assignments, jc.for_quantity, precision)
+	worker_users = {}
+	for allocation in sorted(allocations, key=lambda row: row.employee):
+		employee_row = frappe.db.get_value(
+			"Employee",
+			allocation.employee,
+			["company", "status", "user_id"],
+			as_dict=True,
+			for_update=True,
+		)
+		if not employee_row or employee_row.status != "Active" or employee_row.company != jc.company:
+			frappe.throw(
+				_("Employee {0} must be active in the Job Card company.").format(
+					allocation.employee
+				)
+			)
+		worker_users[allocation.employee] = employee_user(
+			allocation.employee, for_update=True
+		)
 	# Administrator/System Manager may assign another reviewer. Pre-lock mutable
 	# reviewer users in a stable order before role checks to avoid U1 -> U2 / U2 -> U1.
 	# The special Administrator row is intentionally excluded; see
@@ -496,26 +642,23 @@ def assign_worker(job_card: str, employee: str, supervisor: str | None = None, n
 			frappe.db.get_value("User", reviewer_user, "name", for_update=True)
 	_assert_reviewer_scope(supervisor, for_update=True)
 	_assert_supervisor_company(supervisor, jc.company)
-	if worker_user == supervisor:
-		frappe.throw(_("A worker cannot supervise or approve their own production report."))
-
-	key = _hash_key(job_card, employee)
-	existing = frappe.db.get_value(
-		"Job Card Worker Assignment",
-		{"assignment_key": key},
-		["name", "status", "supervisor"],
-		as_dict=True,
-		for_update=True,
-	)
-	if existing:
-		if existing.status == "Active" and existing.supervisor == supervisor:
-			return frappe.get_doc("Job Card Worker Assignment", existing.name, for_update=True)
-		frappe.throw(_("This worker already has an assignment for the Job Card."))
+	for allocation in allocations:
+		if worker_users[allocation.employee] == supervisor:
+			frappe.throw(
+				_("A worker cannot supervise or approve their own production report.")
+			)
 
 	assignment_table = frappe.qb.DocType("Job Card Worker Assignment")
 	existing_assignments = (
 		frappe.qb.from_(assignment_table)
-		.select(assignment_table.name, assignment_table.employee, assignment_table.supervisor)
+		.select(
+			assignment_table.name,
+			assignment_table.employee,
+			assignment_table.supervisor,
+			assignment_table.status,
+			assignment_table.assigned_qty,
+			assignment_table.notes,
+		)
 		.where(assignment_table.job_card == job_card)
 		.for_update()
 	).run(as_dict=True)
@@ -528,6 +671,26 @@ def assign_worker(job_card: str, employee: str, supervisor: str | None = None, n
 				"All workers on one Job Card must use the same reviewing supervisor."
 			)
 		)
+	if _assignment_plan_matches(existing_assignments, allocations, supervisor, precision):
+		return [
+			frappe.get_doc("Job Card Worker Assignment", row.name, for_update=True)
+			for row in existing_assignments
+		]
+	existing_names = [row.name for row in existing_assignments]
+	if existing_names:
+		report_table = frappe.qb.DocType("Job Card Work Report")
+		existing_reports = (
+			frappe.qb.from_(report_table)
+			.select(report_table.name)
+			.where(report_table.assignment.isin(existing_names))
+			.for_update()
+		).run(as_dict=True)
+		if existing_reports:
+			frappe.throw(
+				_(
+					"The dispatch plan cannot change after any worker has started or submitted work."
+				)
+			)
 	if not existing_assignments and (
 		flt(jc.total_completed_qty)
 		or frappe.db.get_value("Job Card Time Log", {"parent": job_card}, "name", for_update=True)
@@ -539,27 +702,49 @@ def assign_worker(job_card: str, employee: str, supervisor: str | None = None, n
 	if not get_wage_rate(jc.company, jc.operation, nowdate(), for_update=True):
 		frappe.throw(_("Configure an enabled wage rate for this operation before assigning workers."))
 
-	doc = frappe.get_doc(
-		{
-			"doctype": "Job Card Worker Assignment",
-			"assignment_key": key,
-			"job_card": jc.name,
-			"work_order": jc.work_order,
-			"company": jc.company,
-			"operation": jc.operation,
-			"operation_id": jc.operation_id,
-			"job_card_qty": flt(jc.for_quantity),
-			"employee": employee,
-			"employee_user": worker_user,
-			"supervisor": supervisor,
-			"status": "Active",
-			"notes": str(notes or "").strip(),
-			"assigned_by": frappe.session.user,
-			"assigned_at": now_datetime(),
-		}
-	)
-	doc.flags.worker_reporting_action = True
-	doc.insert(ignore_permissions=True)
+	allocation_employees = {allocation.employee for allocation in allocations}
+	removed_assignment_notifications = []
+	for existing in existing_assignments:
+		doc = frappe.get_doc("Job Card Worker Assignment", existing.name, for_update=True)
+		if doc.employee not in allocation_employees:
+			removed_assignment_notifications.append(
+				frappe._dict(
+					name=doc.name,
+					employee_user=doc.employee_user,
+					operation=doc.operation,
+					job_card=doc.job_card,
+					work_order=doc.work_order,
+				)
+			)
+		doc.flags.worker_reporting_action = True
+		doc.delete(ignore_permissions=True)
+
+	docs = []
+	assigned_at = now_datetime()
+	for allocation in allocations:
+		doc = frappe.get_doc(
+			{
+				"doctype": "Job Card Worker Assignment",
+				"assignment_key": _hash_key(job_card, allocation.employee),
+				"job_card": jc.name,
+				"work_order": jc.work_order,
+				"company": jc.company,
+				"operation": jc.operation,
+				"operation_id": jc.operation_id,
+				"job_card_qty": flt(jc.for_quantity),
+				"assigned_qty": allocation.assigned_qty,
+				"employee": allocation.employee,
+				"employee_user": worker_users[allocation.employee],
+				"supervisor": supervisor,
+				"status": "Active",
+				"notes": allocation.notes,
+				"assigned_by": frappe.session.user,
+				"assigned_at": assigned_at,
+			}
+		)
+		doc.flags.worker_reporting_action = True
+		doc.insert(ignore_permissions=True)
+		docs.append(doc)
 
 	job_card_doc = frappe.get_doc("Job Card", jc.name, for_update=True)
 	job_card_doc.custom_worker_reporting_enabled = 1
@@ -581,10 +766,278 @@ def assign_worker(job_card: str, employee: str, supervisor: str | None = None, n
 		1,
 		update_modified=False,
 	)
-	from process_simplification.notifications import notify_worker_assignment
+	from process_simplification.notifications import (
+		notify_worker_assignment,
+		notify_worker_assignment_cancelled,
+	)
 
-	notify_worker_assignment(doc)
-	return doc
+	for removed_assignment in removed_assignment_notifications:
+		notify_worker_assignment_cancelled(removed_assignment)
+	for doc in docs:
+		notify_worker_assignment(doc)
+	return docs
+
+
+def assign_worker(
+	job_card: str,
+	employee: str,
+	supervisor: str | None = None,
+	notes: str | None = None,
+	assigned_qty=None,
+):
+	"""Compatibility entry point for a one-worker, full-quantity dispatch plan."""
+	jc = job_card_values(job_card)
+	qty = assigned_qty if assigned_qty not in (None, "") else (jc.for_quantity if jc else 0)
+	docs = assign_workers(
+		job_card,
+		[
+			{
+				"employee": employee,
+				"assigned_qty": qty,
+				"notes": notes,
+			}
+		],
+		supervisor,
+	)
+	return docs[0]
+
+
+def _normalize_redispatch_plan(allocations) -> list[frappe._dict]:
+	if isinstance(allocations, str):
+		allocations = frappe.parse_json(allocations)
+	if not isinstance(allocations, list) or not allocations:
+		frappe.throw(_("Add at least one worker to the redispatch plan."))
+	precision = job_card_qty_precision()
+	rows = []
+	seen = set()
+	for allocation in allocations:
+		if not isinstance(allocation, dict):
+			frappe.throw(_("Every redispatch row must contain an Employee and quantity."))
+		employee = str(allocation.get("employee") or "").strip()
+		qty = flt(allocation.get("assigned_qty"), precision)
+		if not employee or qty <= 0:
+			frappe.throw(_("Every redispatch row requires an Employee and positive quantity."))
+		if employee in seen:
+			frappe.throw(_("Employee {0} appears more than once in the redispatch plan.").format(employee))
+		seen.add(employee)
+		rows.append(frappe._dict(employee=employee, assigned_qty=qty))
+	return rows
+
+
+def _redispatch_batch_result(request_id: str, allocations=None):
+	from process_simplification.production_reporting.assignment_movement import (
+		redispatch_request_rows,
+	)
+
+	rows = redispatch_request_rows(request_id, for_update=True)
+	if not rows:
+		return None
+	target_names = sorted({row.target_assignment for row in rows if row.target_assignment})
+	targets = {
+		row.name: row
+		for row in frappe.get_all(
+			"Job Card Worker Assignment",
+			filters={"name": ["in", target_names]},
+			fields=["name", "employee"],
+			limit=0,
+		)
+	}
+	by_employee = {}
+	for row in rows:
+		target = targets.get(row.target_assignment)
+		if target:
+			by_employee[target.employee] = by_employee.get(target.employee, 0.0) + flt(row.qty)
+	precision = job_card_qty_precision()
+	if allocations is not None:
+		expected = {
+			row.employee: flt(row.assigned_qty, precision) for row in allocations
+		}
+		actual = {employee: flt(qty, precision) for employee, qty in by_employee.items()}
+		if actual != expected:
+			frappe.throw(_("This redispatch request id was already used with different allocations."))
+	return {
+		"ok": True,
+		"request_id": request_id,
+		"redispatched_qty": flt(sum(by_employee.values()), precision),
+		"allocations": [
+			{"employee": employee, "assigned_qty": flt(qty, precision)}
+			for employee, qty in sorted(by_employee.items())
+		],
+		"movements": [row.name for row in rows],
+	}
+
+
+def redispatch_remaining(
+	job_card: str,
+	allocations,
+	request_id: str,
+	reason: str | None = None,
+):
+	"""Move only released unfinished quantity; original assignment/report facts stay intact."""
+	require_reviewer()
+	request_id = str(request_id or "").strip()
+	if not request_id:
+		frappe.throw(_("A redispatch request id is required."))
+	plan = _normalize_redispatch_plan(allocations)
+	jc = job_card_values(job_card, for_update=True)
+	if not jc:
+		frappe.throw(_("Job Card does not exist."))
+	if jc.work_order:
+		frappe.db.get_value("Work Order", jc.work_order, "status", for_update=True)
+	assert_supported_job_card(jc, for_update=True)
+	from process_simplification.production_workflow.service import (
+		assert_work_order_dispatch_ready,
+	)
+
+	assert_work_order_dispatch_ready(jc.work_order)
+	_assert_supervisor_company(frappe.session.user, jc.company)
+	assignment_table = frappe.qb.DocType("Job Card Worker Assignment")
+	existing_assignments = (
+		frappe.qb.from_(assignment_table)
+		.select(
+			assignment_table.name,
+			assignment_table.assignment_key,
+			assignment_table.job_card,
+			assignment_table.work_order,
+			assignment_table.company,
+			assignment_table.operation,
+			assignment_table.operation_id,
+			assignment_table.job_card_qty,
+			assignment_table.assigned_qty,
+			assignment_table.employee,
+			assignment_table.employee_user,
+			assignment_table.supervisor,
+			assignment_table.status,
+		)
+		.where(assignment_table.job_card == job_card)
+		.orderby(assignment_table.name)
+		.for_update()
+	).run(as_dict=True)
+	if not existing_assignments:
+		frappe.throw(_("Create the original complete dispatch plan before redispatching quantity."))
+	supervisors = {row.supervisor for row in existing_assignments if row.status == "Active"}
+	if len(supervisors) != 1:
+		frappe.throw(_("All active assignments must use one reviewing supervisor."))
+	supervisor = next(iter(supervisors))
+	_assert_reviewer_scope(supervisor, for_update=True)
+	if not is_admin_reviewer() and supervisor != frappe.session.user:
+		frappe.throw(_("You can only redispatch Job Cards assigned to you."), frappe.PermissionError)
+	existing_batch = _redispatch_batch_result(request_id, plan)
+	if existing_batch:
+		return existing_batch
+
+	from process_simplification.production_reporting.assignment_movement import (
+		create_redispatch_movement,
+		redispatchable_qty,
+		release_pool_rows,
+	)
+
+	precision = job_card_qty_precision()
+	requested_qty = flt(sum(row.assigned_qty for row in plan), precision)
+	available_qty = redispatchable_qty(jc, for_update=True)
+	if requested_qty > flt(available_qty, precision):
+		frappe.throw(
+			_("Only {0} released and material-covered quantity remains redispatchable.").format(
+				flt(available_qty, precision)
+			)
+		)
+
+	worker_users = {}
+	for allocation in sorted(plan, key=lambda row: row.employee):
+		employee_row = frappe.db.get_value(
+			"Employee",
+			allocation.employee,
+			["company", "status", "user_id"],
+			as_dict=True,
+			for_update=True,
+		)
+		if not employee_row or employee_row.status != "Active" or employee_row.company != jc.company:
+			frappe.throw(
+				_("Employee {0} must be active in the Job Card company.").format(allocation.employee)
+			)
+		worker_users[allocation.employee] = employee_user(allocation.employee, for_update=True)
+		if worker_users[allocation.employee] == supervisor:
+			frappe.throw(_("A worker cannot supervise or approve their own production report."))
+
+	by_employee = {row.employee: row for row in existing_assignments}
+	target_docs = {}
+	assigned_at = now_datetime()
+	for allocation in plan:
+		existing = by_employee.get(allocation.employee)
+		if existing:
+			if (
+				existing.status != "Active"
+				or existing.supervisor != supervisor
+				or existing.employee_user != worker_users[allocation.employee]
+			):
+				frappe.throw(_("The existing assignment for employee {0} cannot receive redispatch.").format(allocation.employee))
+			target_docs[allocation.employee] = frappe.get_doc(
+				"Job Card Worker Assignment", existing.name, for_update=True
+			)
+			continue
+		doc = frappe.get_doc(
+			{
+				"doctype": "Job Card Worker Assignment",
+				"assignment_key": _hash_key(job_card, allocation.employee),
+				"job_card": jc.name,
+				"work_order": jc.work_order,
+				"company": jc.company,
+				"operation": jc.operation,
+				"operation_id": jc.operation_id,
+				"job_card_qty": flt(jc.for_quantity),
+				"assigned_qty": 0,
+				"employee": allocation.employee,
+				"employee_user": worker_users[allocation.employee],
+				"supervisor": supervisor,
+				"status": "Active",
+				"notes": str(reason or _("Redispatched unfinished quantity.")),
+				"assigned_by": frappe.session.user,
+				"assigned_at": assigned_at,
+			}
+		)
+		doc.flags.worker_reporting_action = True
+		doc.flags.redispatch_target = True
+		doc.insert(ignore_permissions=True)
+		target_docs[allocation.employee] = doc
+
+	pool_rows = release_pool_rows(job_card, for_update=True)
+	movements = []
+	pool_index = 0
+	sequence = 0
+	for allocation in plan:
+		remaining = flt(allocation.assigned_qty, precision)
+		while remaining > 0:
+			if pool_index >= len(pool_rows):
+				frappe.throw(_("Released assignment quantity changed; reload and try again."))
+			release = pool_rows[pool_index]
+			chunk = min(remaining, flt(release.remaining_qty, precision))
+			movements.append(
+				create_redispatch_movement(
+					release=release,
+					target_assignment=target_docs[allocation.employee],
+					qty=chunk,
+					request_key=request_id,
+					reason=reason,
+					sequence=sequence,
+				)
+			)
+			sequence += 1
+			remaining = flt(remaining - chunk, precision)
+			release.remaining_qty = flt(release.remaining_qty - chunk, precision)
+			if release.remaining_qty <= 0:
+				pool_index += 1
+
+	from process_simplification.notifications import notify_worker_redispatch
+
+	for allocation in plan:
+		notify_worker_redispatch(target_docs[allocation.employee], allocation.assigned_qty)
+	return {
+		"ok": True,
+		"request_id": request_id,
+		"redispatched_qty": requested_qty,
+		"allocations": [dict(row) for row in plan],
+		"movements": [doc.name for doc in movements],
+	}
 
 
 def unassign_worker(assignment: str):
@@ -617,6 +1070,23 @@ def unassign_worker(assignment: str):
 		"Job Card Work Report", {"assignment": doc.name}, "name", for_update=True
 	):
 		frappe.throw(_("An assignment with work reports cannot be removed."))
+	other_assignment = frappe.db.get_value(
+		"Job Card Worker Assignment",
+		{"job_card": doc.job_card, "name": ["!=", doc.name]},
+		"name",
+		for_update=True,
+	)
+	if other_assignment:
+		frappe.throw(
+			_("A multi-worker dispatch plan must be adjusted as a complete quantity-balanced plan.")
+		)
+	cancelled_assignment = frappe._dict(
+		name=doc.name,
+		employee_user=doc.employee_user,
+		operation=doc.operation,
+		job_card=doc.job_card,
+		work_order=doc.work_order,
+	)
 	doc.flags.worker_reporting_action = True
 	doc.delete(ignore_permissions=True)
 
@@ -639,6 +1109,11 @@ def unassign_worker(assignment: str):
 			0,
 			update_modified=False,
 		)
+	# Create the alert after deletion so Frappe's dynamic-link cleanup cannot
+	# remove the cancellation notification together with the assignment.
+	from process_simplification.notifications import notify_worker_assignment_cancelled
+
+	notify_worker_assignment_cancelled(cancelled_assignment)
 	return {"ok": True}
 
 
@@ -697,6 +1172,7 @@ def get_worker_dashboard():
 			"operation",
 			"operation_id",
 			"job_card_qty",
+			"assigned_qty",
 			"supervisor",
 			"notes",
 		],
@@ -750,7 +1226,30 @@ def get_worker_dashboard():
 		)
 		rate = rate_options[0] if rate_options else None
 		assignment.for_quantity = flt(jc.for_quantity) if jc else 0
-		assignment.completed_qty = flt(jc.total_completed_qty) if jc else 0
+		assignment.job_card_completed_qty = flt(jc.total_completed_qty) if jc else 0
+		assignment.completed_qty = _assignment_status_qty(assignment.name, ("Approved",))
+		assignment.pending_qty = _assignment_status_qty(
+			assignment.name, ("Pending Approval",)
+		)
+		from process_simplification.production_reporting.assignment_movement import (
+			assignment_effective_qty,
+			movement_totals,
+		)
+
+		movement = movement_totals([assignment.name])[assignment.name]
+		assignment.original_assigned_qty = flt(assignment.assigned_qty)
+		assignment.released_qty = flt(movement.released_qty)
+		assignment.redispatched_qty = flt(movement.redispatched_qty)
+		assignment.effective_assigned_qty = assignment_effective_qty(
+			assignment,
+			totals={assignment.name: movement},
+		)
+		assignment.assignment_remaining_qty = max(
+			flt(assignment.effective_assigned_qty, job_card_qty_precision())
+			- flt(assignment.completed_qty, job_card_qty_precision())
+			- flt(assignment.pending_qty, job_card_qty_precision()),
+			0,
+		)
 		assignment.production_item = jc.production_item if jc else None
 		assignment.workstation = jc.workstation if jc else None
 		if jc:
@@ -771,7 +1270,9 @@ def get_worker_dashboard():
 				code="JOB_CARD_QUANTITY_CHANGED",
 				message=_("Job Card quantity changed after worker assignment."),
 			)
-		assignment.reportable_qty = material_reportable_qty(jc) if jc else 0
+		assignment.reportable_qty = (
+			_assignment_reportable_qty(jc, assignment) if jc else 0
+		)
 		assignment.active_report = active_session.name if active_session else None
 		assignment.active_started_at = active_session.actual_start_time if active_session else None
 		assignment.timer_paused_at = active_session.timer_paused_at if active_session else None
@@ -1002,6 +1503,7 @@ def _lock_worker_assignment(assignment: str):
 			"operation",
 			"operation_id",
 			"job_card_qty",
+			"assigned_qty",
 			"employee",
 			"employee_user",
 			"supervisor",
@@ -1018,6 +1520,12 @@ def _lock_worker_assignment(assignment: str):
 			frappe.throw(_("Job Card identity changed after worker assignment; reporting is blocked."))
 	if flt(task.job_card_qty, precision) != flt(jc.for_quantity, precision):
 		frappe.throw(_("Job Card quantity changed after worker assignment; reporting is blocked."))
+	from process_simplification.production_reporting.assignment_movement import (
+		assignment_effective_qty,
+	)
+
+	if flt(assignment_effective_qty(task, for_update=True), precision) <= 0:
+		frappe.throw(_("This worker assignment has no reportable allocated quantity."))
 	if task.status != "Active":
 		frappe.throw(_("This worker assignment is not active."))
 	assert_supported_job_card(jc, for_update=True)
@@ -1087,7 +1595,21 @@ def start_work_session(
 	)
 	if active:
 		frappe.throw(_("You already have an active work session {0}.").format(active.name))
-	if material_reportable_qty(jc, for_update=True) <= 0:
+	from process_simplification.production_reporting.assignment_movement import (
+		assignment_effective_qty,
+	)
+
+	if flt(
+		assignment_effective_qty(task, for_update=True)
+		- flt(_assignment_reported_qty(task.name, for_update=True), job_card_qty_precision()),
+		job_card_qty_precision(),
+	) <= 0:
+		frappe.throw(_("This worker's assigned quantity is fully reported."))
+	if _assignment_reportable_qty(jc, task, for_update=True) <= 0:
+		if material_reportable_qty(jc, for_update=True) > 0:
+			frappe.throw(
+				_("This worker's BOM material allocation has no remaining reportable quantity.")
+			)
 		if reportable_qty(jc, for_update=True) > 0:
 			frappe.throw(_("Materials have not been issued for the remaining production quantity."))
 		frappe.throw(_("The Job Card has no remaining reportable quantity."))
@@ -1324,9 +1846,11 @@ def finish_work_session(
 		frappe.throw(_("This employee's monthly wage summary is already confirmed."))
 	if qty <= 0:
 		frappe.throw(_("Completed quantity must be greater than zero."))
-	remaining = material_reportable_qty(jc, for_update=True)
+	remaining = _assignment_reportable_qty(jc, task, for_update=True)
 	if qty > remaining:
-		frappe.throw(_("This Job Card currently allows at most {0}.").format(remaining))
+		frappe.throw(
+			_("This worker assignment currently allows at most {0}.").format(remaining)
+		)
 	ended_at = get_datetime(ended_at or now_datetime())
 	started_at = get_datetime(doc.actual_start_time)
 	if ended_at <= started_at:
@@ -1575,12 +2099,14 @@ def get_review_dashboard(
 			"Job Card Worker Assignment",
 			report.assignment,
 			[
+				"name",
 				"job_card",
 				"work_order",
 				"company",
 				"operation",
 				"operation_id",
 				"job_card_qty",
+				"assigned_qty",
 				"employee",
 				"supervisor",
 				"status",
@@ -1657,6 +2183,33 @@ def get_review_dashboard(
 				code="ASSIGNMENT_SNAPSHOT_CHANGED",
 				message=_("Job Card identity or quantity changed after worker assignment."),
 			)
+		from process_simplification.production_reporting.assignment_movement import (
+			assignment_effective_qty,
+		)
+
+		if not block and flt(
+			_assignment_reported_qty(snapshot.name), precision
+		) > flt(assignment_effective_qty(snapshot), precision):
+			block = frappe._dict(
+				code="ASSIGNMENT_QUANTITY_CONFLICT",
+				message=_("This worker's pending and approved quantity exceeds their allocation."),
+			)
+		if not block:
+			from process_simplification.production_exceptions.service import (
+				assignment_material_output_capacity,
+			)
+
+			personal_capacity = assignment_material_output_capacity(jc, snapshot)
+			if personal_capacity is not None and flt(
+				_assignment_reported_qty(snapshot.name), precision
+			) > flt(personal_capacity, precision):
+				block = frappe._dict(
+					code="ASSIGNMENT_MATERIAL_CONFLICT",
+					message=_(
+						"This worker's returned material reduces their reportable quantity; "
+						"reject the report or replenish material."
+					),
+				)
 		report.can_approve = not block
 		report.approve_block_code = block.code if block else None
 		report.approve_block_message = block.message if block else None
@@ -1672,11 +2225,17 @@ def get_review_dashboard(
 	assignments, assignment_pagination = _review_page(
 		"Job Card Worker Assignment",
 		filters=assignment_filters,
-		fields=["name", "job_card", "work_order", "operation", "employee", "supervisor", "notes", "assigned_at"],
+		fields=["name", "job_card", "work_order", "operation", "employee", "supervisor", "assigned_qty", "notes", "assigned_at"],
 		order_by="assigned_at desc",
 		page=assignment_page,
 		page_length=page_length,
 	)
+	from process_simplification.production_reporting.assignment_movement import (
+		assignment_effective_qty,
+		movement_totals,
+	)
+
+	assignment_movements = movement_totals([row.name for row in assignments])
 	for assignment in assignments:
 		active_session = frappe.db.get_value(
 			"Job Card Work Report",
@@ -1687,13 +2246,40 @@ def get_review_dashboard(
 		assignment.active_report = active_session.name if active_session else None
 		assignment.active_started_at = active_session.actual_start_time if active_session else None
 		assignment.can_cancel_session = bool(active_session)
-		assignment.can_unassign = not frappe.db.exists(
-			"Job Card Work Report", {"assignment": assignment.name}
+		movement = assignment_movements.get(assignment.name) or frappe._dict()
+		assignment.original_assigned_qty = flt(assignment.assigned_qty)
+		assignment.released_qty = flt(movement.get("released_qty"))
+		assignment.redispatched_qty = flt(movement.get("redispatched_qty"))
+		assignment.effective_assigned_qty = assignment_effective_qty(
+			assignment,
+			totals=assignment_movements,
 		)
+		assignment.completed_qty = _assignment_status_qty(assignment.name, ("Approved",))
+		assignment.pending_qty = _assignment_status_qty(
+			assignment.name, ("Pending Approval",)
+		)
+		assignment.remaining_qty = flt(
+			max(
+				assignment.effective_assigned_qty
+				- assignment.completed_qty
+				- assignment.pending_qty,
+				0,
+			),
+			job_card_qty_precision(),
+		)
+		has_report_history = bool(
+			frappe.db.exists("Job Card Work Report", {"assignment": assignment.name})
+		)
+		assignment.plan_size = frappe.db.count(
+			"Job Card Worker Assignment", {"job_card": assignment.job_card}
+		)
+		assignment.can_unassign = not has_report_history and assignment.plan_size == 1
 		assignment.unassign_block_message = (
 			None
 			if assignment.can_unassign
 			else _("This assignment has report history and cannot be removed.")
+			if has_report_history
+			else _("Adjust a multi-worker dispatch plan as a complete quantity-balanced plan.")
 		)
 	processed_filters = {
 		**base_filters,
@@ -1825,6 +2411,7 @@ def _lock_report_for_review(
 			"operation",
 			"operation_id",
 			"job_card_qty",
+			"assigned_qty",
 			"employee",
 			"supervisor",
 			"status",
@@ -1858,6 +2445,39 @@ def _lock_report_for_review(
 			jc.for_quantity, job_card_qty_precision()
 		):
 			frappe.throw(_("Job Card quantity changed after worker assignment; approval is blocked."))
+		from process_simplification.production_reporting.assignment_movement import (
+			assignment_effective_qty,
+		)
+
+		if flt(
+			_assignment_reported_qty(assignment.name, for_update=True),
+			job_card_qty_precision(),
+		) > flt(
+			assignment_effective_qty(assignment, for_update=True),
+			job_card_qty_precision(),
+		):
+			frappe.throw(
+				_("This worker's pending and approved quantity exceeds their allocation.")
+			)
+		from process_simplification.production_exceptions.service import (
+			assignment_material_output_capacity,
+		)
+
+		personal_capacity = assignment_material_output_capacity(
+			jc,
+			assignment,
+			for_update=True,
+		)
+		if personal_capacity is not None and flt(
+			_assignment_reported_qty(assignment.name, for_update=True),
+			job_card_qty_precision(),
+		) > flt(personal_capacity, job_card_qty_precision()):
+			frappe.throw(
+				_(
+					"This worker's BOM material allocation currently covers at most {0}; "
+					"reject the report or replenish material."
+				).format(flt(personal_capacity, job_card_qty_precision()))
+			)
 	return jc, assignment, doc
 
 
@@ -2083,6 +2703,11 @@ def get_work_order_assignment_context(work_order: str):
 	if not work_order_row:
 		frappe.throw(_("Work Order does not exist."))
 	_assert_supervisor_company(frappe.session.user, work_order_row.company)
+	from process_simplification.production_workflow.service import (
+		get_work_order_dispatch_state,
+	)
+
+	dispatch_state = get_work_order_dispatch_state(work_order)
 
 	job_card_rows = frappe.get_all(
 		"Job Card",
@@ -2094,18 +2719,26 @@ def get_work_order_assignment_context(work_order: str):
 	all_assignments = frappe.get_all(
 		"Job Card Worker Assignment",
 		filters={"work_order": work_order},
-		fields=["name", "job_card", "employee", "supervisor", "status", "assigned_at"],
+		fields=["name", "job_card", "employee", "supervisor", "status", "assigned_qty", "notes", "assigned_at"],
 		order_by="assigned_at asc, creation asc",
 		limit=0,
 	)
 	assignment_names = [row.name for row in all_assignments]
+	from process_simplification.production_reporting.assignment_movement import (
+		assignment_effective_qty,
+		movement_totals,
+		redispatchable_qty,
+		released_pool_qty,
+	)
+
+	assignment_movements = movement_totals(assignment_names)
 	latest_reports = (
 		frappe.get_all(
 			"Job Card Work Report",
 			filters={
 				"assignment": ["in", assignment_names],
 			},
-			fields=["assignment", "status", "modified"],
+			fields=["assignment", "status", "completed_qty", "modified"],
 			order_by="modified desc",
 			limit=0,
 		)
@@ -2113,8 +2746,21 @@ def get_work_order_assignment_context(work_order: str):
 		else []
 	)
 	report_status_by_assignment = {}
+	approved_qty_by_assignment = {}
+	pending_qty_by_assignment = {}
 	for report in latest_reports:
 		report_status_by_assignment.setdefault(report.assignment, report.status)
+		if report.status == "Approved":
+			approved_qty_by_assignment[report.assignment] = (
+				approved_qty_by_assignment.get(report.assignment, 0.0)
+				+ flt(report.completed_qty)
+			)
+		elif report.status == "Pending Approval":
+			pending_qty_by_assignment[report.assignment] = (
+				pending_qty_by_assignment.get(report.assignment, 0.0)
+				+ flt(report.completed_qty)
+			)
+	report_assignment_names = {report.assignment for report in latest_reports}
 
 	employee_names = {
 		row.name: row.employee_name
@@ -2136,6 +2782,12 @@ def get_work_order_assignment_context(work_order: str):
 			block = frappe._dict(
 				code="NO_REMAINING_QTY",
 				message=_("The Job Card has no remaining reportable quantity."),
+			)
+		if not block and not dispatch_state.can_dispatch:
+			block = frappe._dict(
+				code=dispatch_state.block_code or "MATERIAL_NOT_READY",
+				message=dispatch_state.block_message
+				or _("Materials are not ready for formal worker assignment."),
 			)
 		if job_card and not block:
 			today = getdate(nowdate())
@@ -2169,6 +2821,39 @@ def get_work_order_assignment_context(work_order: str):
 
 		job_assignments = [row for row in all_assignments if row.job_card == job_card_row.name]
 		active_job_assignments = [row for row in job_assignments if row.status == "Active"]
+		effective_qty_by_assignment = {
+			row.name: assignment_effective_qty(row, totals=assignment_movements)
+			for row in job_assignments
+		}
+		pool_qty = released_pool_qty(job_card_row.name)
+		available_redispatch_qty = redispatchable_qty(job_card) if job_card else 0
+		assignment_plan_locked = any(
+			row.name in report_assignment_names for row in job_assignments
+		)
+		if not block and assignment_plan_locked:
+			remaining_plan_qty = sum(
+				max(
+					flt(effective_qty_by_assignment.get(row.name))
+					- flt(approved_qty_by_assignment.get(row.name))
+					- flt(pending_qty_by_assignment.get(row.name)),
+					0,
+				)
+				for row in active_job_assignments
+			)
+			block = frappe._dict(
+				code="ASSIGNMENT_PLAN_LOCKED",
+				message=(
+					_("原派工与报工历史已锁定；已有 {0} 件从原工人释放，现可重新派工 {1} 件。")
+					.format(
+						flt(pool_qty, job_card_qty_precision()),
+						flt(available_redispatch_qty, job_card_qty_precision()),
+					)
+					if pool_qty
+					else _(
+						"原派工与报工历史已锁定，尚有 {0} 件留在原分配中；不能重做整单派工。"
+					).format(flt(remaining_plan_qty, job_card_qty_precision()))
+				),
+			)
 		visible_assignments = [
 			row
 			for row in job_assignments
@@ -2206,6 +2891,13 @@ def get_work_order_assignment_context(work_order: str):
 				code="OTHER_SUPERVISOR",
 				message=_("This Job Card is already managed by another production supervisor."),
 			)
+		can_redispatch = bool(
+			assignment_plan_locked
+			and available_redispatch_qty > 0
+			and len(assignment_supervisors) == 1
+			and (admin_reviewer or not other_supervisor)
+			and (not block or block.code == "ASSIGNMENT_PLAN_LOCKED")
+		)
 		material_capacity = work_order_material_capacity(job_card) if job_card else 0
 		available_reportable_qty = material_reportable_qty(job_card) if job_card else 0
 		if remaining_qty <= 0:
@@ -2231,17 +2923,61 @@ def get_work_order_assignment_context(work_order: str):
 				"material_status": material_status,
 				"material_status_label": material_status_label,
 				"can_assign": not block,
+				"can_redispatch": can_redispatch,
+				"released_pool_qty": flt(pool_qty, job_card_qty_precision()),
+				"redispatchable_qty": flt(
+					available_redispatch_qty,
+					job_card_qty_precision(),
+				),
 				"block_code": block.code if block else None,
 				"block_message": block.message if block else None,
 				"assignment_supervisor": action_supervisor,
 				"display_supervisor": display_supervisor,
 				"can_choose_supervisor": admin_reviewer and not assignment_supervisors,
+				"assigned_total_qty": flt(
+					sum(row.assigned_qty for row in job_assignments),
+					job_card_qty_precision(),
+				),
+				"effective_assigned_total_qty": flt(
+					sum(effective_qty_by_assignment.values()),
+					job_card_qty_precision(),
+				),
+				"assignment_plan_locked": assignment_plan_locked,
 				"assignments": [
 					{
 						"name": row.name,
 						"employee": row.employee,
 						"employee_name": employee_names.get(row.employee) or row.employee,
 						"supervisor": row.supervisor,
+						"assigned_qty": flt(effective_qty_by_assignment.get(row.name)),
+						"original_assigned_qty": flt(row.assigned_qty),
+						"released_qty": flt(
+							assignment_movements.get(row.name, {}).get("released_qty")
+						),
+						"redispatched_qty": flt(
+							assignment_movements.get(row.name, {}).get("redispatched_qty")
+						),
+						"effective_assigned_qty": flt(
+							effective_qty_by_assignment.get(row.name)
+						),
+						"completed_qty": flt(
+							approved_qty_by_assignment.get(row.name),
+							job_card_qty_precision(),
+						),
+						"pending_qty": flt(
+							pending_qty_by_assignment.get(row.name),
+							job_card_qty_precision(),
+						),
+						"remaining_qty": flt(
+							max(
+								flt(effective_qty_by_assignment.get(row.name))
+								- flt(approved_qty_by_assignment.get(row.name))
+								- flt(pending_qty_by_assignment.get(row.name)),
+								0,
+							),
+							job_card_qty_precision(),
+						),
+						"notes": row.notes,
 						"assignment_status": row.status,
 						"report_status": report_status_by_assignment.get(row.name),
 					}
@@ -2253,6 +2989,7 @@ def get_work_order_assignment_context(work_order: str):
 	default_job_card = next((row for row in job_cards if row["can_assign"]), None)
 	return {
 		"work_order": dict(work_order_row),
+		"dispatch_state": dict(dispatch_state),
 		"job_cards": job_cards,
 		"assignment_supervisor": (
 			default_job_card["assignment_supervisor"]
@@ -2261,6 +2998,7 @@ def get_work_order_assignment_context(work_order: str):
 		),
 		"can_choose_supervisor": admin_reviewer,
 		"can_assign": any(row["can_assign"] for row in job_cards),
+		"can_redispatch": any(row["can_redispatch"] for row in job_cards),
 	}
 
 
@@ -2416,7 +3154,13 @@ def search_assignment_supervisors(
 	)
 
 
-def search_workers(job_card: str, txt: str = "", start: int = 0, page_len: int = 20):
+def search_workers(
+	job_card: str,
+	txt: str = "",
+	start: int = 0,
+	page_len: int = 20,
+	include_assigned: bool = False,
+):
 	require_reviewer()
 	job_card_row = job_card_values(job_card)
 	if not job_card_row:
@@ -2431,8 +3175,19 @@ def search_workers(job_card: str, txt: str = "", start: int = 0, page_len: int =
 		"page_len": min(50, int(page_len)),
 		"incompatible_roles": tuple(sorted(WORKER_INCOMPATIBLE_ROLES)),
 	}
-	return frappe.db.sql(
+	existing_assignment_condition = (
+		""
+		if cint(include_assigned)
+		else """
+		  and not exists (
+			select 1 from `tabJob Card Worker Assignment` existing_assignment
+			where existing_assignment.job_card = %(job_card)s
+			  and existing_assignment.employee = employee.name
+		  )
 		"""
+	)
+	return frappe.db.sql(
+		f"""
 		select employee.name, employee.employee_name, employee.user_id
 		from `tabEmployee` employee
 		inner join `tabUser` worker_user on worker_user.name = employee.user_id and worker_user.enabled = 1
@@ -2449,11 +3204,7 @@ def search_workers(job_card: str, txt: str = "", start: int = 0, page_len: int =
 			where incompatible_role.parent = employee.user_id
 			  and incompatible_role.role in %(incompatible_roles)s
 		  )
-		  and not exists (
-			select 1 from `tabJob Card Worker Assignment` existing_assignment
-			where existing_assignment.job_card = %(job_card)s
-			  and existing_assignment.employee = employee.name
-		  )
+		  {existing_assignment_condition}
 		  and (employee.name like %(txt)s or ifnull(employee.employee_name, '') like %(txt)s)
 		order by employee.employee_name, employee.name
 		limit %(start)s, %(page_len)s

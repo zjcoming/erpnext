@@ -141,6 +141,7 @@ test("material exception choices show the name first and the item code on the de
 	assert.equal(option.value, "route-key");
 	assert.match(option.description, /^物料编码：301008201014/);
 	assert.match(option.description, /在制品仓 - 恒 → 原材料仓 - 恒/);
+	assert.match(option.description, /个人可申请 1/);
 	assert.doesNotMatch(option.label, /301008201014/);
 });
 
@@ -364,6 +365,36 @@ test("review UI prefers employee names and exposes bounded pagination controls",
 	assert.match(html, /data-page="3"/);
 });
 
+test("review history month filters cover the complete calendar month", () => {
+	assert.deepEqual(reviewPage.reviewMonthRange("2026-02"), {
+		from_date: "2026-02-01",
+		to_date: "2026-02-28",
+	});
+	assert.deepEqual(reviewPage.reviewMonthRange("2024-02"), {
+		from_date: "2024-02-01",
+		to_date: "2024-02-29",
+	});
+	assert.deepEqual(exceptionReviewPage.exceptionMonthRange("2026-09"), {
+		from_date: "2026-09-01",
+		to_date: "2026-09-30",
+	});
+	assert.deepEqual(exceptionReviewPage.exceptionMonthRange("not-a-month"), {
+		from_date: null,
+		to_date: null,
+	});
+});
+
+test("exception history exposes bounded pagination controls", () => {
+	const html = exceptionReviewPage.exceptionPaginationHtml(
+		{ page: 2, page_length: 50, total_count: 75, total_pages: 2, has_prev: true, has_next: false },
+		{ translate: (message) => message, escapeHtml: (value) => String(value) }
+	);
+	assert.match(html, /第\s*2\s*\/\s*2\s*页/);
+	assert.match(html, /共\s*75\s*条/);
+	assert.match(html, /data-page="1"/);
+	assert.match(html, /value="50" selected/);
+});
+
 test("review detail shows linked production documents and escapes audit facts", () => {
 	const html = reviewPage.reviewDetailsHtml(
 		{
@@ -413,6 +444,13 @@ test("supervisor assignment action exposes orphaned active-session cleanup", () 
 		label: "取消派工",
 		message: "",
 	});
+	assert.equal(
+		reviewPage.reviewAssignmentActionState({
+			can_unassign: false,
+			unassign_block_message: "多人派工必须整体调整。",
+		}).message,
+		"多人派工必须整体调整。"
+	);
 });
 
 test("contextual assignment chooses the first eligible operation and keeps role scope explicit", () => {
@@ -431,6 +469,58 @@ test("contextual assignment chooses the first eligible operation and keeps role 
 	assert.equal(workerAssignment.canManageWorkerAssignments("worker@example.com", ["Production Worker"]), false);
 });
 
+test("multi-worker dispatch plans require unique workers and an exact task total", () => {
+	assert.equal(
+		Object.values(workerAssignment.WORKER_ASSIGNMENT_GRID_COLUMNS).reduce(
+			(total, columns) => total + columns,
+			0
+		),
+		10,
+		"Frappe editable grids reserve at most 10 columns for business fields"
+	);
+	assert.equal(
+		workerAssignment.workerRedispatchPlanError(
+			[{ employee: "EMP-003", assigned_qty: 1 }],
+			1
+		),
+		""
+	);
+	assert.match(
+		workerAssignment.workerRedispatchPlanError(
+			[{ employee: "EMP-003", assigned_qty: 2 }],
+			1
+		),
+		/最多只能分配 1.*当前合计 2/
+	);
+	assert.deepEqual(workerAssignment.workerAssignmentPlanRows(null), []);
+	const rows = [
+		{ employee: "EMP-001", assigned_qty: 40, notes: "A区" },
+		{ employee: "EMP-002", assigned_qty: 60, notes: "B区" },
+	];
+	assert.equal(workerAssignment.workerAssignmentPlanTotal(rows), 100);
+	assert.equal(workerAssignment.workerAssignmentPlanError(rows, 100), "");
+	assert.match(workerAssignment.workerAssignmentPlanError(rows, 99), /100.*99/);
+	assert.match(
+		workerAssignment.workerAssignmentPlanError(
+			[
+				{ employee: "EMP-001", assigned_qty: 40 },
+				{ employee: "EMP-001", assigned_qty: 60 },
+			],
+			100
+		),
+		/不能重复/
+	);
+	assert.deepEqual(
+		workerAssignment.workerAssignmentPlanRows({
+			assignments: [
+				{ employee: "EMP-001", assigned_qty: 40, notes: "A区", assignment_status: "Active" },
+				{ employee: "EMP-OLD", assigned_qty: 10, assignment_status: "Completed" },
+			],
+		}),
+		[{ employee: "EMP-001", assigned_qty: 40, notes: "A区" }]
+	);
+});
+
 test("contextual assignment renders stable Chinese material state labels", () => {
 	assert.deepEqual(workerAssignment.workerAssignmentMaterialStatusMeta("READY_TO_REPORT"), {
 		label: "可报工",
@@ -443,6 +533,10 @@ test("contextual assignment renders stable Chinese material state labels", () =>
 });
 
 test("completed assignment context is read-only, retains history, and explains the terminal state in Chinese", () => {
+	assert.equal(
+		workerAssignment.workerAssignmentWorkOrderStatusLabel("In Process"),
+		"生产中"
+	);
 	assert.deepEqual(workerAssignment.workerAssignmentStatusMeta("Completed"), {
 		label: "已完成",
 		indicator: "green",
@@ -456,6 +550,27 @@ test("completed assignment context is read-only, retains history, and explains t
 	);
 	assert.equal(workerAssignment.assignmentDialogCanSubmit({ can_assign: false }), false);
 	assert.equal(workerAssignment.assignmentDialogCanSubmit({ can_assign: true }), true);
+	assert.equal(
+		workerAssignment.assignmentDialogCanSubmit({ can_assign: true }, "history"),
+		false
+	);
+	assert.equal(
+		workerAssignment.workerAssignmentBlockMessage({
+			block_code: "MATERIAL_NOT_FULLY_ISSUED",
+		}),
+		"物料尚未全部发到在制品仓，当前只能查看派工记录。"
+	);
+	assert.equal(
+		workerAssignment.workerAssignmentBlockMessage({ block_code: "ASSIGNMENT_PLAN_LOCKED" }),
+		"已有报工记录，不能重做整单派工；退料释放的未完成数量需由主管重新派工。"
+	);
+	assert.equal(
+		workerAssignment.workerAssignmentBlockMessage({
+			block_code: "ASSIGNMENT_PLAN_LOCKED",
+			block_message: "原派工仍有效，还剩 1 件。",
+		}),
+		"原派工仍有效，还剩 1 件。"
+	);
 
 	const html = workerAssignment.workOrderAssignmentContextHtml(
 		{
@@ -475,6 +590,7 @@ test("completed assignment context is read-only, retains history, and explains t
 				completed_qty: 1,
 				remaining_qty: 0,
 				available_reportable_qty: 0,
+				assigned_total_qty: 1,
 				material_status: "COMPLETED",
 				can_assign: false,
 				block_code: "JOB_CARD_NOT_DRAFT",
@@ -482,6 +598,10 @@ test("completed assignment context is read-only, retains history, and explains t
 				display_supervisor: "supervisor@example.com",
 				assignments: [{
 					employee_name: "李四",
+					assigned_qty: 1,
+					completed_qty: 1,
+					pending_qty: 0,
+					remaining_qty: 0,
 					supervisor: "supervisor@example.com",
 					assignment_status: "Completed",
 				}],
@@ -498,11 +618,68 @@ test("completed assignment context is read-only, retains history, and explains t
 		}
 	);
 	assert.match(html, /李四/);
+	assert.match(html, /原派合计.*1\.00/);
+	assert.match(html, /当前分配.*1\.00/);
+	assert.match(html, /已报.*1\.00.*剩余.*0\.00/);
 	assert.match(html, /已完成/);
 	assert.match(html, /审核主管.*supervisor@example\.com/);
 	assert.match(html, /生产任务单已提交或完成，不能再派工/);
-	assert.match(html, /仅显示已有状态和历史记录/);
+	assert.match(html, /当前不能新增或重做整单派工/);
+	assert.match(html, /已有有效分配仍可继续报工/);
 	assert.doesNotMatch(html, /未派工/);
+});
+
+test("released unfinished quantity is explicit and offers a bounded redispatch action", () => {
+	const html = workerAssignment.workOrderAssignmentContextHtml(
+		{
+			can_assign: false,
+			can_redispatch: true,
+			work_order: { name: "WO-098", status: "In Process", qty: 99, produced_qty: 0 },
+			job_cards: [{
+				name: "JC-098",
+				operation: "注塑外形",
+				for_quantity: 99,
+				completed_qty: 98,
+				remaining_qty: 1,
+				available_reportable_qty: 1,
+				assigned_total_qty: 99,
+				effective_assigned_total_qty: 98,
+				released_pool_qty: 1,
+				redispatchable_qty: 1,
+				material_status: "READY_TO_REPORT",
+				can_assign: false,
+				can_redispatch: true,
+				block_code: "ASSIGNMENT_PLAN_LOCKED",
+				block_message: "原派工历史已锁定；已有 1 件待重新派工。",
+				assignments: [{
+					employee_name: "李四",
+					original_assigned_qty: 89,
+					released_qty: 1,
+					redispatched_qty: 0,
+					effective_assigned_qty: 88,
+					assigned_qty: 88,
+					completed_qty: 88,
+					remaining_qty: 0,
+					assignment_status: "Active",
+				}],
+			}],
+		},
+		{
+			translate: (message) => message,
+			escapeHtml: (value) => String(value ?? "")
+				.replaceAll("&", "&amp;")
+				.replaceAll("<", "&lt;")
+				.replaceAll(">", "&gt;")
+				.replaceAll('"', "&quot;"),
+			formatNumber: (value) => Number(value || 0).toFixed(2),
+		}
+	);
+	assert.match(html, /原派.*89\.00/);
+	assert.match(html, /释放.*1\.00/);
+	assert.match(html, /当前分配.*88\.00/);
+	assert.match(html, /待重新派工.*1\.00/);
+	assert.match(html, /重新派工剩余 1\.00 件/);
+	assert.match(html, /只对已释放且补料覆盖的未完成数量重新派工/);
 });
 
 test("contextual assignment HTML exposes material and assignment state without trusting labels", () => {

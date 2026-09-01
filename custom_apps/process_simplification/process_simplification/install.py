@@ -19,6 +19,7 @@ from process_simplification.patches.v0_0.group_process_simplification_navigation
 	execute as group_process_simplification_navigation,
 )
 from process_simplification.production_reporting.setup import setup_worker_reporting
+from process_simplification.production_workflow.setup import ensure_production_workflow_fields
 
 
 def set_default_language(language: str = "zh"):
@@ -35,6 +36,7 @@ def after_install():
 	set_default_language()
 	configure_company_manufacturing_defaults()
 	setup_worker_reporting()
+	ensure_production_workflow_fields()
 	ensure_management_access()
 	migrate_legacy_production_supervisor_roles()
 	migrate_management_users_to_role_profiles()
@@ -46,6 +48,7 @@ def after_install():
 
 def after_migrate():
 	setup_worker_reporting()
+	ensure_production_workflow_fields()
 	ensure_management_access()
 	migrate_legacy_production_supervisor_roles()
 	migrate_management_users_to_role_profiles()

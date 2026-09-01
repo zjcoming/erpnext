@@ -23,6 +23,142 @@ class TestProductionPlanSubassemblyAdapter(UnitTestCase):
 
 		return production_plan_adapter
 
+	@patch(
+		"erpnext.manufacturing.doctype.production_plan.production_plan.get_items_for_material_requests"
+	)
+	def test_replenishment_plan_populates_raw_material_rows_for_real_reservation(self, get_items):
+		adapter = self._adapter()
+		get_items.return_value = [
+			frappe._dict(
+				item_code="RM-001",
+				warehouse="Stores - TC",
+				required_bom_qty=12,
+				quantity=12,
+			)
+		]
+
+		class FakePP:
+			def __init__(self):
+				self.mr_items = [frappe._dict(item_code="STALE")]
+				self.for_warehouse = None
+
+			def set(self, fieldname, value):
+				setattr(self, fieldname, value)
+
+			def append(self, table, row):
+				getattr(self, table).append(frappe._dict(row))
+
+			def as_dict(self):
+				return frappe._dict(
+					for_warehouse=self.for_warehouse,
+					mr_items=list(self.mr_items),
+					po_items=[frappe._dict(item_code="FG-001")],
+				)
+
+		plan = FakePP()
+		adapter._populate_raw_material_reservation_rows(plan, "Stores - TC")
+
+		self.assertEqual(plan.for_warehouse, "Stores - TC")
+		self.assertEqual(len(plan.mr_items), 1)
+		self.assertEqual(plan.mr_items[0].required_bom_qty, 12)
+		self.assertEqual(get_items.call_args.args[0].for_warehouse, "Stores - TC")
+
+	@patch(
+		"erpnext.manufacturing.doctype.production_plan.production_plan.get_items_for_material_requests"
+	)
+	def test_replenishment_adapter_populates_reservations_before_plan_submit(self, get_items):
+		adapter = self._adapter()
+		events = []
+		get_items.return_value = [
+			frappe._dict(
+				item_code="RM-001",
+				warehouse="Stores - TC",
+				required_bom_qty=8,
+				quantity=8,
+			)
+		]
+
+		class FakePP:
+			def __init__(self):
+				self.name = None
+				self.po_items = []
+				self.material_requests = []
+				self.sub_assembly_items = []
+				self.mr_items = []
+
+			def append(self, table, row):
+				child = frappe._dict(row)
+				getattr(self, table).append(child)
+				return child
+
+			def set(self, fieldname, value):
+				setattr(self, fieldname, value)
+
+			def as_dict(self):
+				return frappe._dict(self.__dict__)
+
+			def get_items(self):
+				self.po_items = [frappe._dict(item_code="SEMI-001")]
+
+			def insert(self):
+				self.name = "PP-SUPPLY"
+				events.append("plan-insert")
+
+			def get_sub_assembly_items(self):
+				events.append("plan-expand")
+
+			def save(self):
+				events.append("plan-save")
+
+			def submit(self):
+				self.asserted_raw_rows = len(self.mr_items)
+				events.append("plan-submit")
+
+			def make_work_order(self):
+				events.append("work-order-generate")
+
+		class FakeWO:
+			def __init__(self):
+				self.name = "WO-SUPPLY"
+				self.material_request = "MR-SUPPLY"
+				self.source_warehouse = None
+
+			def get(self, fieldname):
+				return getattr(self, fieldname, None)
+
+			def set_required_items(self, *, reset_source_warehouse=False):
+				events.append(("required-items", reset_source_warehouse, self.source_warehouse))
+
+			def save(self):
+				events.append(("work-order-save", self.source_warehouse))
+
+			def submit(self):
+				events.append(("work-order-submit", self.source_warehouse))
+
+		plan = FakePP()
+		work_order = FakeWO()
+		with (
+			patch.object(adapter.frappe, "new_doc", return_value=plan),
+			patch.object(adapter.frappe.db, "get_value", return_value="2026-09-01"),
+			patch.object(adapter.frappe.db, "savepoint"),
+			patch.object(adapter, "_work_orders_for_plan", return_value=[work_order.name]),
+			patch.object(adapter.frappe, "get_doc", return_value=work_order),
+		):
+			result = adapter.create_replenishment_work_orders_via_production_plan(
+				material_request="MR-SUPPLY",
+				company="Factory",
+				source_warehouse="Stores - TC",
+				sub_assembly_warehouse="Stores - TC",
+				target_work_order="WO-TARGET",
+				target_work_order_item="WOI-TARGET",
+			)
+
+		self.assertEqual(plan.asserted_raw_rows, 1)
+		self.assertEqual(plan.for_warehouse, "Stores - TC")
+		self.assertLess(events.index("plan-expand"), events.index("plan-submit"))
+		self.assertEqual(result["replenishment_work_order"], "WO-SUPPLY")
+		self.assertEqual(work_order.custom_replenishes_work_order, "WO-TARGET")
+
 	def test_adapter_builds_po_item_with_delivery_priority_net_qty_and_so_link(self):
 		adapter = self._adapter()
 

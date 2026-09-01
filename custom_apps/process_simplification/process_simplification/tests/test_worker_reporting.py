@@ -184,6 +184,24 @@ class TestWorkerReporting(IntegrationTestCase):
 
 	def setUp(self):
 		super().setUp()
+		# Material readiness belongs to the production-workflow suite. Keep this
+		# suite focused on reporting/approval, then override the read-only state in
+		# the dedicated assignment-history regression below.
+		self.enterContext(
+			patch(
+				"process_simplification.production_workflow.service.assert_work_order_dispatch_ready"
+			)
+		)
+		self.enterContext(
+			patch(
+				"process_simplification.production_workflow.service.get_work_order_dispatch_state",
+				return_value=frappe._dict(
+					can_dispatch=True,
+					block_code=None,
+					block_message=None,
+				),
+			)
+		)
 		# secondary_connection() intentionally leaves its connection active after
 		# first initialization; every test fixture belongs on the primary transaction.
 		frappe.local.db = self._primary_connection
@@ -267,7 +285,7 @@ class TestWorkerReporting(IntegrationTestCase):
 		self._make_employee(email)
 		return email
 
-	def _make_job_card(self, qty=100):
+	def _make_job_card(self, qty=100, raw_material_qty_per_unit=1):
 		original_default_bom = frappe.db.get_value(
 			"Item", self.TEST_FINISHED_GOOD, "default_bom"
 		)
@@ -287,6 +305,8 @@ class TestWorkerReporting(IntegrationTestCase):
 		bom.is_default = 0
 		bom.items[0].uom = "Nos"
 		bom.items[0].conversion_factor = 1
+		bom.items[0].qty = raw_material_qty_per_unit
+		bom.items[0].stock_qty = raw_material_qty_per_unit
 		bom.insert()
 		# Capacity scheduling is unrelated to worker-reporting invariants and can
 		# exhaust the shared test workstation after committed concurrency fixtures.
@@ -478,6 +498,11 @@ class TestWorkerReporting(IntegrationTestCase):
 				)
 			)
 		self._delete_test_rows_and_children("Job Card Work Report", reports)
+		if frappe.db.table_exists("Job Card Assignment Movement"):
+			frappe.db.delete(
+				"Job Card Assignment Movement",
+				{"job_card": ["in", job_cards]},
+			)
 		self._delete_test_rows_and_children("Job Card Worker Assignment", assignments)
 		frappe.db.set_value(
 			"Work Order",
@@ -799,6 +824,290 @@ class TestWorkerReporting(IntegrationTestCase):
 		job_card.reload()
 		self.assertEqual(service.material_reportable_qty(job_card), 2)
 
+	def test_multi_worker_return_releases_whole_units_then_requires_redispatch(self):
+		notification_switch = patch(
+			"process_simplification.notifications.process_notifications_enabled",
+			return_value=False,
+		)
+		notification_switch.start()
+		self.addCleanup(notification_switch.stop)
+		from erpnext.manufacturing.doctype.work_order.work_order import (
+			make_stock_entry as make_work_order_stock_entry,
+		)
+		from erpnext.stock.doctype.stock_entry.stock_entry_utils import make_stock_entry
+		job_card = self._make_job_card(qty=10, raw_material_qty_per_unit=2)
+		self._make_rate(job_card)
+		second_user = self._make_worker()
+		second_employee = frappe.db.get_value(
+			"Employee", {"user_id": second_user}, "name"
+		)
+		with self.set_user(self.supervisor):
+			assignments = service.assign_workers(
+				job_card.name,
+				[
+					{"employee": self.worker, "assigned_qty": 8},
+					{"employee": second_employee, "assigned_qty": 2},
+				],
+			)
+		first = next(row for row in assignments if row.employee == self.worker)
+		second = next(row for row in assignments if row.employee == second_employee)
+
+		with self.set_user("Administrator"):
+			make_stock_entry(
+				item_code=self.TEST_RAW_MATERIAL,
+				to_warehouse=self.source_warehouse,
+				company=self.TEST_COMPANY,
+				qty=20,
+				basic_rate=1,
+			)
+			frappe.db.set_value(
+				"Work Order",
+				job_card.work_order,
+				{
+					"skip_transfer": 0,
+					"source_warehouse": self.source_warehouse,
+					"wip_warehouse": self.wip_warehouse,
+					"scrap_warehouse": self.scrap_warehouse,
+				},
+				update_modified=False,
+			)
+			transfer = frappe.get_doc(
+				make_work_order_stock_entry(
+					job_card.work_order,
+					"Material Transfer for Manufacture",
+					qty=10,
+				)
+			)
+			transfer.from_warehouse = self.source_warehouse
+			transfer.to_warehouse = self.wip_warehouse
+			for item in transfer.items:
+				item.s_warehouse = self.source_warehouse
+				item.t_warehouse = self.wip_warehouse
+			transfer.insert(ignore_permissions=True)
+			transfer.submit()
+
+		with self.set_user(self.worker_user):
+			material = exception_service.get_exception_options(first.name)["materials"][0]
+			self.assertEqual(material.assignment_allocated_qty, 16)
+			self.assertEqual(material.requestable_qty, 16)
+			with self.assertRaisesRegex(frappe.ValidationError, "BOM allocation.*16"):
+				exception_service.submit_exception(
+					assignment=first.name,
+					request_type=MATERIAL_RETURN,
+					qty=17,
+					cause="Material Defect",
+					reason="不能退超过个人物料份额",
+					request_key="personal-return-over-" + random_string(12),
+					material_key=material.key,
+				)
+			request = exception_service.submit_exception(
+				assignment=first.name,
+				request_type=MATERIAL_RETURN,
+				qty=1,
+				cause="Material Defect",
+				reason="退一件后按 BOM 向下取整",
+				request_key="personal-return-" + random_string(12),
+				material_key=material.key,
+			)
+			first_dashboard = next(
+				row
+				for row in service.get_worker_dashboard()["assignments"]
+				if row.name == first.name
+			)
+			self.assertEqual(first_dashboard.reportable_qty, 7)
+			self.assertEqual(
+				exception_service.get_exception_options(first.name)["materials"][0].requestable_qty,
+				15,
+			)
+
+		with self.set_user(second_user):
+			second_material = exception_service.get_exception_options(second.name)["materials"][0]
+			self.assertEqual(second_material.assignment_allocated_qty, 4)
+			self.assertEqual(second_material.requestable_qty, 4)
+			second_dashboard = next(
+				row
+				for row in service.get_worker_dashboard()["assignments"]
+				if row.name == second.name
+			)
+			self.assertEqual(second_dashboard.reportable_qty, 2)
+
+		with self.set_user(self.supervisor):
+			exception_service.reject_exception(request.name, "验证驳回释放个人额度")
+		with self.set_user(self.worker_user):
+			first_dashboard = next(
+				row
+				for row in service.get_worker_dashboard()["assignments"]
+				if row.name == first.name
+			)
+			self.assertEqual(first_dashboard.reportable_qty, 8)
+			material = exception_service.get_exception_options(first.name)["materials"][0]
+			request = exception_service.submit_exception(
+				assignment=first.name,
+				request_type=MATERIAL_RETURN,
+				qty=1,
+				cause="Material Defect",
+				reason="验证过账后仍按个人份额扣减",
+				request_key="personal-return-posted-" + random_string(12),
+				material_key=material.key,
+			)
+		with self.set_user(self.supervisor):
+			exception_service.approve_exception(request.name)
+		request.reload()
+		with self.set_user("Administrator"):
+			frappe.get_doc("Stock Entry", request.stock_entry).submit()
+		from process_simplification.production_reporting.assignment_movement import (
+			assignment_effective_qty,
+			redispatchable_qty,
+			released_pool_qty,
+		)
+
+		self.assertEqual(
+			exception_service.assignment_material_output_capacity(job_card, first),
+			7,
+		)
+		self.assertEqual(assignment_effective_qty(first), 7)
+		self.assertEqual(released_pool_qty(job_card.name), 1)
+		self.assertEqual(redispatchable_qty(job_card.name), 0)
+
+		with self.set_user("Administrator"):
+			replacement = frappe.new_doc("Stock Entry")
+			replacement.company = self.TEST_COMPANY
+			replacement.purpose = "Material Transfer for Manufacture"
+			replacement.work_order = job_card.work_order
+			replacement.is_additional_transfer_entry = 1
+			replacement.custom_process_workflow_action = "Material Issue Request"
+			replacement.custom_process_requested_by = "Administrator"
+			replacement.custom_process_coverage_qty = 0.5
+			replacement.fg_completed_qty = 0
+			replacement.process_loss_qty = 0
+			replacement.from_warehouse = self.source_warehouse
+			replacement.to_warehouse = self.wip_warehouse
+			replacement.append(
+				"items",
+				{
+					"item_code": self.TEST_RAW_MATERIAL,
+					"qty": 1,
+					"uom": "Nos",
+					"stock_uom": "Nos",
+					"conversion_factor": 1,
+					"s_warehouse": self.source_warehouse,
+					"t_warehouse": self.wip_warehouse,
+					"original_item": self.TEST_RAW_MATERIAL,
+				},
+			)
+			replacement.set_stock_entry_type()
+			replacement.insert(ignore_permissions=True)
+			with patch(
+				"process_simplification.production_workflow.service.validate_guided_stock_entry_before_submit"
+			):
+				replacement.submit()
+		self.assertEqual(
+			exception_service.assignment_material_output_capacity(job_card, first),
+			8,
+		)
+		self.assertEqual(
+			assignment_effective_qty(first),
+			7,
+			"replacement material must not silently restore the original worker allocation",
+		)
+		self.assertEqual(redispatchable_qty(job_card.name), 1)
+		with self.set_user(self.worker_user):
+			first_dashboard = next(
+				row
+				for row in service.get_worker_dashboard()["assignments"]
+				if row.name == first.name
+			)
+			self.assertEqual(first_dashboard.effective_assigned_qty, 7)
+			self.assertEqual(first_dashboard.reportable_qty, 7)
+
+		third_user = self._make_worker()
+		third_employee = frappe.db.get_value(
+			"Employee", {"user_id": third_user}, "name"
+		)
+		redispatch_request_id = "redispatch-returned-unit-" + random_string(12)
+		with self.set_user(self.supervisor):
+			result = service.redispatch_remaining(
+				job_card.name,
+				[{"employee": third_employee, "assigned_qty": 1}],
+				request_id=redispatch_request_id,
+				reason="补料后重新派给第三名工人",
+			)
+			retried = service.redispatch_remaining(
+				job_card.name,
+				[{"employee": third_employee, "assigned_qty": 1}],
+				request_id=redispatch_request_id,
+				reason="重复请求必须幂等",
+			)
+		self.assertEqual(result["redispatched_qty"], 1)
+		self.assertEqual(retried["movements"], result["movements"])
+		self.assertEqual(
+			frappe.db.count(
+				"Job Card Assignment Movement",
+				{"request_key": redispatch_request_id},
+			),
+			1,
+		)
+		third_assignment = frappe.db.get_value(
+			"Job Card Worker Assignment",
+			{"job_card": job_card.name, "employee": third_employee},
+			["name", "assigned_qty", "job_card", "work_order"],
+			as_dict=True,
+		)
+		self.assertIsNotNone(third_assignment)
+		self.assertEqual(third_assignment.assigned_qty, 0)
+		self.assertEqual(assignment_effective_qty(third_assignment), 1)
+		self.assertEqual(released_pool_qty(job_card.name), 0)
+		with self.set_user(third_user):
+			third_dashboard = next(
+				row
+				for row in service.get_worker_dashboard()["assignments"]
+				if row.name == third_assignment.name
+			)
+			self.assertEqual(third_dashboard.effective_assigned_qty, 1)
+			self.assertEqual(third_dashboard.reportable_qty, 1)
+
+	def test_partial_replenishment_restores_one_worker_without_proportional_rounding(self):
+		requirement = frappe._dict(
+			work_order="WO-TEST",
+			key="material-route",
+			required_qty=100,
+			transferred_qty=101,
+			returned_qty=2,
+		)
+		requests = [
+			frappe._dict(
+				name="PER-OLD",
+				assignment="ASSIGNMENT-A",
+				status=COMPLETED,
+				qty=1,
+				requested_at="2026-09-01 08:00:00",
+			),
+			frappe._dict(
+				name="PER-NEW",
+				assignment="ASSIGNMENT-B",
+				status=COMPLETED,
+				qty=1,
+				requested_at="2026-09-01 09:00:00",
+			),
+		]
+		with patch.object(
+			exception_service,
+			"_material_request_rows",
+			return_value=requests,
+		):
+			self.assertEqual(
+				exception_service._assignment_outstanding_material_qty(
+					requirement, "ASSIGNMENT-A"
+				),
+				0,
+			)
+			self.assertEqual(
+				exception_service._assignment_outstanding_material_qty(
+					requirement, "ASSIGNMENT-B"
+				),
+				1,
+			)
+
 	def test_fixture_uses_an_explicit_nondefault_bom(self):
 		original_default = frappe.db.get_value(
 			"Item", self.TEST_FINISHED_GOOD, "default_bom"
@@ -859,6 +1168,26 @@ class TestWorkerReporting(IntegrationTestCase):
 		self.assertFalse(work_order_marker.allow_on_submit)
 		self.assertTrue(work_order_marker.no_copy)
 		self.assertFalse(frappe.get_meta("Job Card Worker Assignment").get_field("job_card").unique)
+		assigned_qty_field = frappe.get_meta("Job Card Worker Assignment").get_field(
+			"assigned_qty"
+		)
+		self.assertEqual(assigned_qty_field.fieldtype, "Float")
+		self.assertTrue(assigned_qty_field.in_list_view)
+		movement_meta = frappe.get_meta("Job Card Assignment Movement")
+		self.assertTrue(movement_meta.get_field("movement_key").unique)
+		self.assertEqual(
+			movement_meta.get_field("movement_type").options.splitlines(),
+			["Release", "Redispatch"],
+		)
+		self.assertEqual(
+			movement_meta.get_field("source_movement").options,
+			"Job Card Assignment Movement",
+		)
+		for permission in movement_meta.permissions:
+			self.assertTrue(permission.read)
+			self.assertFalse(permission.create)
+			self.assertFalse(permission.write)
+			self.assertFalse(permission.delete)
 		self.assertTrue(report_meta.get_field("request_key").unique)
 		self.assertTrue(report_meta.get_field("completion_request_key").unique)
 		self.assertIn("In Progress", report_meta.get_field("status").options.splitlines())
@@ -911,6 +1240,17 @@ class TestWorkerReporting(IntegrationTestCase):
 			for row in frappe.db.sql("show index from `tabJob Card Worker Assignment`", as_dict=True)
 		}
 		self.assertIn("jcwa_work_order_status", assignment_indexes)
+		movement_indexes = {
+			row.Key_name
+			for row in frappe.db.sql(
+				"show index from `tabJob Card Assignment Movement`", as_dict=True
+			)
+		}
+		self.assertTrue(
+			{"jcam_job_type_name", "jcam_release_consumption", "jcam_request_type_name"}.issubset(
+				movement_indexes
+			)
+		)
 		exception_meta = frappe.get_meta("Production Exception Request")
 		self.assertFalse(
 			any(row.role == "Production Worker" for row in exception_meta.permissions)
@@ -961,27 +1301,61 @@ class TestWorkerReporting(IntegrationTestCase):
 		)
 
 	def test_multiple_workers_can_share_one_job_card_and_complete_it_together(self):
-		job_card, first_assignment = self._setup_flow(qty=100)
+		job_card = self._make_job_card(100)
+		self._make_rate(job_card)
 		second_user = self._make_worker()
 		second_employee = frappe.db.get_value("Employee", {"user_id": second_user}, "name")
 		with self.set_user(self.supervisor):
-			available_workers = {row[0] for row in service.search_workers(job_card.name)}
-		self.assertNotIn(self.worker, available_workers)
-		self.assertIn(second_employee, available_workers)
-		second_assignment = self._assign(job_card, second_employee)
+			assignments = service.assign_workers(
+				job_card.name,
+				[
+					{"employee": self.worker, "assigned_qty": 40, "notes": "A区"},
+					{"employee": second_employee, "assigned_qty": 60, "notes": "B区"},
+				],
+			)
+		by_employee = {assignment.employee: assignment for assignment in assignments}
+		first_assignment = by_employee[self.worker]
+		second_assignment = by_employee[second_employee]
 		self.assertEqual(
 			frappe.db.count("Job Card Worker Assignment", {"job_card": job_card.name}),
 			2,
 		)
+		self.assertEqual(first_assignment.assigned_qty, 40)
+		self.assertEqual(second_assignment.assigned_qty, 60)
 		with self.set_user(self.supervisor):
 			available_workers = {row[0] for row in service.search_workers(job_card.name)}
+		self.assertNotIn(self.worker, available_workers)
 		self.assertNotIn(second_employee, available_workers)
+
+		with self.set_user(self.worker_user):
+			active = service.start_work_session(first_assignment.name, "first-over-start")
+			with self.assertRaisesRegex(frappe.ValidationError, "at most 40"):
+				service.finish_work_session(
+					active.name,
+					41,
+					"first-over-finish",
+					reported_minutes=1,
+					ended_at=get_datetime(active.actual_start_time) + timedelta(minutes=1),
+				)
+			service.cancel_work_session(active.name)
 		first = self._submit_as(first_assignment, self.worker_user, 40)
+		with self.set_user(self.supervisor):
+			with self.assertRaisesRegex(frappe.ValidationError, "cannot change"):
+				service.assign_workers(
+					job_card.name,
+					[
+						{"employee": self.worker, "assigned_qty": 30, "notes": "A区"},
+						{"employee": second_employee, "assigned_qty": 70, "notes": "B区"},
+					],
+				)
 		second = self._submit_as(second_assignment, second_user, 60)
 		self._approve(first)
 		job_card.reload()
 		self.assertEqual(job_card.docstatus, 0)
 		self.assertEqual(job_card.total_completed_qty, 40)
+		with self.set_user(self.worker_user):
+			with self.assertRaisesRegex(frappe.ValidationError, "assigned quantity is fully reported"):
+				service.start_work_session(first_assignment.name, "first-extra-start")
 		self._approve(second)
 		job_card.reload()
 		first_assignment.reload()
@@ -991,6 +1365,142 @@ class TestWorkerReporting(IntegrationTestCase):
 		self.assertEqual({row.employee for row in job_card.time_logs}, {self.worker, second_employee})
 		self.assertEqual(first_assignment.status, "Completed")
 		self.assertEqual(second_assignment.status, "Completed")
+
+	def test_multi_worker_dispatch_plan_requires_unique_workers_and_exact_total(self):
+		job_card = self._make_job_card(100)
+		self._make_rate(job_card)
+		second_user = self._make_worker()
+		second_employee = frappe.db.get_value("Employee", {"user_id": second_user}, "name")
+		with self.set_user(self.supervisor):
+			with self.assertRaisesRegex(frappe.ValidationError, "must equal"):
+				service.assign_workers(
+					job_card.name,
+					[
+						{"employee": self.worker, "assigned_qty": 40},
+						{"employee": second_employee, "assigned_qty": 50},
+					],
+				)
+			with self.assertRaisesRegex(frappe.ValidationError, "appears more than once"):
+				service.assign_workers(
+					job_card.name,
+					[
+						{"employee": self.worker, "assigned_qty": 40},
+						{"employee": self.worker, "assigned_qty": 60},
+					],
+				)
+		self.assertFalse(
+			frappe.db.exists("Job Card Worker Assignment", {"job_card": job_card.name})
+		)
+
+	def test_replacing_dispatch_plan_notifies_only_the_removed_worker(self):
+		job_card = self._make_job_card(100)
+		self._make_rate(job_card)
+		second_user = self._make_worker()
+		second_employee = frappe.db.get_value(
+			"Employee", {"user_id": second_user}, "name"
+		)
+		third_user = self._make_worker()
+		third_employee = frappe.db.get_value(
+			"Employee", {"user_id": third_user}, "name"
+		)
+		with self.set_user(self.supervisor):
+			initial = service.assign_workers(
+				job_card.name,
+				[
+					{"employee": self.worker, "assigned_qty": 40},
+					{"employee": second_employee, "assigned_qty": 60},
+				],
+			)
+			service.assign_workers(
+				job_card.name,
+				[
+					{"employee": second_employee, "assigned_qty": 60},
+					{"employee": third_employee, "assigned_qty": 40},
+				],
+			)
+
+		initial_by_employee = {row.employee: row for row in initial}
+		removed = initial_by_employee[self.worker]
+		retained = initial_by_employee[second_employee]
+		self.assertTrue(
+			frappe.db.exists(
+				"Notification Log",
+				{
+					"for_user": self.worker_user,
+					"document_type": "Job Card Worker Assignment",
+					"document_name": removed.name,
+					"subject": "派工已取消：{0}".format(removed.operation),
+				},
+			)
+		)
+		self.assertFalse(
+			frappe.db.exists(
+				"Notification Log",
+				{
+					"for_user": second_user,
+					"document_type": "Job Card Worker Assignment",
+					"document_name": retained.name,
+					"subject": "派工已取消：{0}".format(retained.operation),
+				},
+			)
+		)
+		self.assertTrue(
+			frappe.db.exists(
+				"Job Card Worker Assignment",
+				{"job_card": job_card.name, "employee": third_employee},
+			)
+		)
+
+	def test_locked_multi_worker_plan_keeps_original_remaining_assignment_actionable(self):
+		notification_switch = patch(
+			"process_simplification.notifications.process_notifications_enabled",
+			return_value=False,
+		)
+		notification_switch.start()
+		self.addCleanup(notification_switch.stop)
+		job_card = self._make_job_card(99)
+		self._make_rate(job_card)
+		second_user = self._make_worker()
+		second_employee = frappe.db.get_value(
+			"Employee", {"user_id": second_user}, "name"
+		)
+		with self.set_user(self.supervisor):
+			assignments = service.assign_workers(
+				job_card.name,
+				[
+					{"employee": self.worker, "assigned_qty": 89},
+					{"employee": second_employee, "assigned_qty": 10},
+				],
+			)
+		by_employee = {row.employee: row for row in assignments}
+		first = self._submit_as(by_employee[self.worker], self.worker_user, 88)
+		second = self._submit_as(by_employee[second_employee], second_user, 10)
+		self._approve(first)
+		self._approve(second)
+		job_card.reload()
+		self.assertEqual(job_card.total_completed_qty, 98)
+		self.assertEqual(job_card.docstatus, 0)
+
+		with self.set_user(self.supervisor):
+			context = service.get_work_order_assignment_context(job_card.work_order)
+		row = next(item for item in context["job_cards"] if item["name"] == job_card.name)
+		self.assertFalse(row["can_assign"])
+		self.assertEqual(row["block_code"], "ASSIGNMENT_PLAN_LOCKED")
+		self.assertIn("1", row["block_message"])
+		assignment_rows = {item["employee"]: item for item in row["assignments"]}
+		self.assertEqual(assignment_rows[self.worker]["completed_qty"], 88)
+		self.assertEqual(assignment_rows[self.worker]["remaining_qty"], 1)
+		self.assertEqual(assignment_rows[second_employee]["completed_qty"], 10)
+		self.assertEqual(assignment_rows[second_employee]["remaining_qty"], 0)
+
+		with self.set_user(self.worker_user):
+			dashboard_row = next(
+				item
+				for item in service.get_worker_dashboard()["assignments"]
+				if item.name == by_employee[self.worker].name
+			)
+		self.assertTrue(dashboard_row.can_start)
+		self.assertEqual(dashboard_row.reportable_qty, 1)
 
 	def test_worker_can_cancel_only_an_active_session(self):
 		_, assignment = self._setup_flow(qty=10)
@@ -1414,12 +1924,40 @@ class TestWorkerReporting(IntegrationTestCase):
 		self.assertEqual(frappe.db.get_value("Job Card", job_card.name, "total_completed_qty"), 0)
 
 	def test_managed_job_card_cannot_be_discarded_with_assignment_or_report_history(self):
+		from process_simplification.notifications import notify_worker_assignment_cancelled
+
 		assigned_job_card, assignment = self._setup_flow(qty=100)
 		with self.set_user("Administrator"):
 			with self.assertRaises(frappe.ValidationError):
 				assigned_job_card.discard()
-		with self.set_user(self.supervisor):
+		cancel_results = []
+
+		def capture_cancel_notification(doc):
+			result = notify_worker_assignment_cancelled(doc)
+			cancel_results.append(result)
+			return result
+
+		with (
+			self.set_user(self.supervisor),
+			patch(
+				"process_simplification.notifications.notify_worker_assignment_cancelled",
+				side_effect=capture_cancel_notification,
+			) as notify_cancelled,
+		):
 			service.unassign_worker(assignment.name)
+		self.assertEqual(notify_cancelled.call_count, 1)
+		self.assertIn(self.worker_user, cancel_results[0])
+		self.assertTrue(
+			frappe.db.exists(
+				"Notification Log",
+				{
+					"for_user": self.worker_user,
+					"document_type": "Job Card Worker Assignment",
+					"document_name": assignment.name,
+					"subject": "派工已取消：{0}".format(assignment.operation),
+				},
+			)
+		)
 		self.assertFalse(
 			frappe.db.get_value(
 				"Work Order", assigned_job_card.work_order, "custom_worker_reporting_enabled"
@@ -1957,6 +2495,33 @@ class TestWorkerReporting(IntegrationTestCase):
 				for item in row["assignments"]
 			],
 			[(assignment.name, self.worker, "Completed", "Approved")],
+		)
+
+	def test_material_blocked_assignment_context_keeps_history_but_disables_new_assignment(self):
+		job_card = self._make_job_card(10)
+		self._make_rate(job_card)
+		assignment = self._assign(job_card)
+		with (
+			patch(
+				"process_simplification.production_workflow.service.get_work_order_dispatch_state",
+				return_value=frappe._dict(
+					can_dispatch=False,
+					block_code="MATERIAL_NOT_FULLY_ISSUED",
+					block_message="Materials must be fully issued before assignment.",
+				),
+			),
+			self.set_user(self.supervisor),
+		):
+			context = service.get_work_order_assignment_context(job_card.work_order)
+
+		row = next(row for row in context["job_cards"] if row["name"] == job_card.name)
+		self.assertFalse(context["can_assign"])
+		self.assertFalse(context["dispatch_state"]["can_dispatch"])
+		self.assertFalse(row["can_assign"])
+		self.assertEqual(row["block_code"], "MATERIAL_NOT_FULLY_ISSUED")
+		self.assertEqual(
+			[(item["name"], item["employee"]) for item in row["assignments"]],
+			[(assignment.name, self.worker)],
 		)
 
 	def test_work_order_cannot_close_while_managed_job_card_is_still_draft(self):

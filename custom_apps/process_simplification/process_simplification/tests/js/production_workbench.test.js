@@ -187,6 +187,84 @@ test("production chain shows readable item names before labeled trace codes", ()
 	assert.ok(html.indexOf("PA6德尔隆") < html.indexOf("物料编码：204001004"));
 });
 
+test("material rows show authoritative net issue instead of repeated gross child quantity", () => {
+	const issuedDemand = demand("NET-ISSUE");
+	issuedDemand.work_orders[0] = {
+		...issuedDemand.work_orders[0],
+		issue_state: { code: "partial" },
+		required_items: [
+			{
+				item_code: "RM-001",
+				item_name: "原料 001",
+				stock_uom: "Nos",
+				original_required_qty: 10,
+				required_qty: 4,
+				transferred_qty: 10,
+				returned_qty: 4,
+				net_transferred_qty: 6,
+				available_qty: 4,
+				current_gap_qty: 0,
+				status: "ready_now",
+				supply_type: "purchased",
+			},
+		],
+	};
+
+	const html = productionWorkbench.productionDemandHtml(issuedDemand, helpers);
+
+	assert.match(html, /data-label="净发料">6\.00/);
+	assert.doesNotMatch(html, /data-label="净发料">10\.00/);
+
+	issuedDemand.work_orders[0].issue_state = { code: "not_required" };
+	issuedDemand.work_orders[0].required_items[0].consumed_qty = 10;
+	issuedDemand.work_orders[0].required_items[0].net_transferred_qty = 6;
+	const directHtml = productionWorkbench.productionDemandHtml(issuedDemand, helpers);
+	assert.match(directHtml, /data-label="已消耗">6\.00/);
+	assert.doesNotMatch(directHtml, /data-label="已消耗">10\.00/);
+});
+
+test("completed child work orders are shown as supply history instead of missing", () => {
+	const suppliedDemand = demand("COMPLETED-CHILD");
+	const material = {
+		item_code: "SA-001",
+		item_name: "半成品 001",
+		stock_uom: "Nos",
+		original_required_qty: 99,
+		required_qty: 0,
+		net_transferred_qty: 99,
+		available_qty: 0,
+		current_gap_qty: 0,
+		status: "ready_now",
+		supply_type: "manufactured",
+		child_work_order: null,
+		completed_child_work_orders: ["WO-CHILD-COMPLETED"],
+	};
+	suppliedDemand.work_orders[0] = {
+		...suppliedDemand.work_orders[0],
+		issue_state: { code: "issued" },
+		required_items: [material],
+	};
+
+	const suppliedHtml = productionWorkbench.productionDemandHtml(suppliedDemand, helpers);
+	assert.match(suppliedHtml, /下级工单已完成，已发料/);
+	assert.ok(suppliedHtml.includes("/app/work-order/WO-CHILD-COMPLETED"));
+	assert.doesNotMatch(suppliedHtml, /缺少下级工单/);
+
+	material.required_qty = 99;
+	material.net_transferred_qty = 0;
+	material.available_qty = 99;
+	const readyHtml = productionWorkbench.productionDemandHtml(suppliedDemand, helpers);
+	assert.match(readyHtml, /下级工单已完成，可发料/);
+	assert.doesNotMatch(readyHtml, /缺少下级工单/);
+
+	material.required_qty = 1;
+	material.available_qty = 0;
+	material.current_gap_qty = 1;
+	const shortageHtml = productionWorkbench.productionDemandHtml(suppliedDemand, helpers);
+	assert.match(shortageHtml, /原下级工单已完成，待补产/);
+	assert.doesNotMatch(shortageHtml, /缺少下级工单/);
+});
+
 test("production demand HTML escapes server values and exposes complete labelled details", () => {
 	const unsafe = demand("UNSAFE", {
 		customer_name: '<img src=x onerror="alert(1)">',
@@ -227,29 +305,180 @@ test("production demand HTML escapes server values and exposes complete labelled
 	assert.match(html, /\/app\/work-order\/WO-001/);
 });
 
-test("Work Order assignment actions follow executable and pre-dispatch readiness", () => {
+test("ready material requests issue and never exposes formal or fake assignment", () => {
 	const readyDemand = demand("ASSIGN");
 	readyDemand.work_orders[0].readiness_status = "ready_now";
 	const html = productionWorkbench.productionDemandHtml(
 		readyDemand,
 		{ ...helpers, canManageAssignments: true }
 	);
-	assert.match(html, /class="btn btn-xs btn-primary production-assignment-action"/);
-	assert.match(html, /data-work-order="WO-001"/);
-	assert.match(html, />派工<\/button>/);
+	assert.match(html, /class="btn btn-xs btn-primary production-work-order-action"/);
+	assert.match(html, /data-action="request_material_issue"/);
+	assert.match(html, />申请发料<\/button>/);
+	assert.doesNotMatch(html, /production-assignment-action/);
 	const preAssignDemand = demand("PRE-ASSIGN");
 	preAssignDemand.work_orders[0].readiness_status = "waiting_subassembly";
-	assert.match(
-		productionWorkbench.productionDemandHtml(preAssignDemand, {
-			...helpers,
-			canManageAssignments: true,
-		}),
-		/class="btn btn-xs btn-default production-assignment-action"[^>]*>预派工<\/button>/
-	);
+	const waitingHtml = productionWorkbench.productionDemandHtml(preAssignDemand, {
+		...helpers,
+		canManageAssignments: true,
+	});
+	assert.doesNotMatch(waitingHtml, /production-assignment-action/);
+	assert.doesNotMatch(waitingHtml, />预派工<\/button>/);
 	assert.doesNotMatch(
 		productionWorkbench.productionDemandHtml(demand("NO-ASSIGN"), helpers),
 		/production-assignment-action/
 	);
+});
+
+test("submitted material transfer is the formal dispatch gate", () => {
+	assert.equal(
+		productionWorkbench.workOrderAssignmentActionMeta(
+			{ name: "WO-READY", readiness_status: "ready_now", can_dispatch: false },
+			true,
+			helpers.translate
+		),
+		null
+	);
+	assert.deepEqual(
+		productionWorkbench.workOrderAssignmentActionMeta(
+			{ name: "WO-ISSUED", readiness_status: "materials_transferred", can_dispatch: true },
+			true,
+			helpers.translate
+		),
+		{ label: "派工", primary: true, mode: "assign" }
+	);
+});
+
+test("operation receipt and issue states remain visibly separate", () => {
+	const stateDemand = demand("FLOW-STATES");
+	stateDemand.work_orders[0] = {
+		...stateDemand.work_orders[0],
+		readiness_status: "in_progress",
+		operation_state: { code: "completed" },
+		receipt_state: { code: "requestable", remaining_qty: 10 },
+		issue_state: { code: "not_required" },
+	};
+	const html = productionWorkbench.productionDemandHtml(stateDemand, {
+		...helpers,
+		canManageAssignments: true,
+	});
+	assert.match(html, /所有工序已完成/);
+	assert.match(html, /待申请入库/);
+	assert.match(html, /无需发料/);
+	assert.match(html, /data-action="request_manufacture"/);
+	assert.match(html, />申请入库<\/button>/);
+});
+
+test("existing stock drafts open instead of creating duplicates", () => {
+	assert.deepEqual(
+		productionWorkbench.workOrderNextActionMeta(
+			{
+				name: "WO-RECEIPT",
+				status: "In Process",
+				receipt_state: { code: "draft_pending", draft_entry: { name: "STE-RECEIPT" } },
+			},
+			helpers.translate
+		),
+		{
+			label: "查看入库申请",
+			action: "open_stock_entry",
+			document: "STE-RECEIPT",
+			withdrawalDocument: "STE-RECEIPT",
+		}
+	);
+	assert.deepEqual(
+		productionWorkbench.workOrderNextActionMeta(
+			{
+				name: "WO-ISSUE",
+				status: "Not Started",
+				receipt_state: { code: "not_ready" },
+				issue_state: { code: "draft_pending", draft_entry: { name: "STE-ISSUE" } },
+			},
+			helpers.translate
+		),
+		{
+			label: "查看发料申请",
+			action: "open_stock_entry",
+			document: "STE-ISSUE",
+			withdrawalDocument: "STE-ISSUE",
+		}
+	);
+	const draftDemand = demand("WITHDRAW");
+	draftDemand.work_orders[0].receipt_state = {
+		code: "draft_pending",
+		draft_entry: { name: "STE-WITHDRAW" },
+	};
+	const html = productionWorkbench.productionDemandHtml(draftDemand, {
+		...helpers,
+		canManageAssignments: true,
+	});
+	assert.match(html, /data-action="withdraw_stock_request"/);
+	assert.match(html, />撤回申请<\/button>/);
+});
+
+test("workflow confirmations explain when inventory and worker notifications change", () => {
+	assert.match(
+		productionWorkbench.workOrderActionConfirmation("request_manufacture", {}, helpers.translate),
+		/库房提交入库单后增加/
+	);
+	assert.match(
+		productionWorkbench.workOrderActionConfirmation("request_material_issue", {}, helpers.translate),
+		/库房完成发料前不会通知工人/
+	);
+	assert.match(
+		productionWorkbench.workOrderActionConfirmation("create_replenishment", {}, helpers.translate),
+		/不会重新打开已经完成的原工单/
+	);
+	assert.match(
+		productionWorkbench.workOrderActionConfirmation("request_material_issue_override", {}, helpers.translate),
+		/硬预留仍不会被抢用/
+	);
+	assert.match(
+		productionWorkbench.workOrderActionConfirmation("withdraw_stock_request", {}, helpers.translate),
+		/硬预留会立即释放/
+	);
+});
+
+test("returned material allocated to an urgent order exposes reissue and replenishment choices", () => {
+	const conflictDemand = demand("ALLOCATION-CONFLICT");
+	conflictDemand.work_orders[0] = {
+		...conflictDemand.work_orders[0],
+		name: "WO-CURRENT",
+		readiness_status: "waiting_subassembly",
+		issue_state: { code: "partially_issued", additional_issueable_qty: 0 },
+		required_items: [
+			{
+				name: "WOI-CURRENT",
+				item_code: "SEMI",
+				item_name: "半成品",
+				required_qty: 10,
+				returned_qty: 1,
+				remaining_issue_qty: 1,
+				current_gap_qty: 4,
+				status: "waiting_subassembly",
+				supply_type: "manufactured",
+				replenishment_required: true,
+				allocation_conflict: {
+					sources: [{
+						source_type: "priority_allocation",
+						work_order: '<WO-URGENT onmouseover="x">',
+						impact_qty: 4,
+					}],
+				},
+			},
+		],
+	};
+	const html = productionWorkbench.productionDemandHtml(conflictDemand, {
+		...helpers,
+		canManageAssignments: true,
+	});
+	assert.match(html, /优先分配影响/);
+	assert.match(html, /&lt;WO-URGENT/);
+	assert.doesNotMatch(html, /<WO-URGENT/);
+	assert.match(html, /data-action="request_material_issue_override"/);
+	assert.match(html, />调整优先级并申请补发<\/button>/);
+	assert.match(html, /data-action="create_replenishment"/);
+	assert.match(html, />保留优先分配并生成补产任务<\/button>/);
 });
 
 test("terminal, blocked, missing-task, unknown, and legacy Work Orders expose no assignment action", () => {
@@ -318,6 +547,44 @@ test("terminal Work Orders with visible history expose a read-only assignment re
 		worker_assignment_history_count: 1,
 	};
 	const html = productionWorkbench.productionDemandHtml(completedDemand, {
+		...helpers,
+		canManageAssignments: true,
+	});
+	assert.match(html, /data-assignment-mode="history"/);
+	assert.match(html, />查看派工记录<\/button>/);
+});
+
+test("active Work Orders keep assignment history visible while material dispatch is blocked", () => {
+	const blockedWithHistory = {
+		name: "WO-PARTIAL-ISSUE",
+		status: "In Process",
+		readiness_status: "in_progress",
+		can_dispatch: false,
+		worker_assignment_history_count: 1,
+	};
+	assert.deepEqual(
+		productionWorkbench.workOrderAssignmentActionMeta(
+			blockedWithHistory,
+			true,
+			helpers.translate
+		),
+		{ label: "查看派工记录", primary: false, mode: "history" }
+	);
+	assert.deepEqual(
+		productionWorkbench.workOrderAssignmentActionMeta(
+			blockedWithHistory,
+			false,
+			helpers.translate
+		),
+		{ label: "查看派工记录", primary: false, mode: "history" }
+	);
+
+	const activeDemand = demand("ACTIVE-HISTORY");
+	activeDemand.work_orders[0] = {
+		...activeDemand.work_orders[0],
+		...blockedWithHistory,
+	};
+	const html = productionWorkbench.productionDemandHtml(activeDemand, {
 		...helpers,
 		canManageAssignments: true,
 	});
@@ -527,7 +794,7 @@ test("planned demand HTML shows Production Plan priority and Work Order readines
 	assert.match(html, /物料优先依据.*2026-08-10/);
 	assert.match(html, /订单行交付日期/);
 	assert.doesNotMatch(html, /计划优先日期/);
-	assert.match(html, /当前可开工/);
+	assert.match(html, /物料已齐，待发料/);
 	assert.match(html, /等待半成品/);
 	assert.match(html, /生产执行链/);
 	assert.match(html, /第 1 步/);

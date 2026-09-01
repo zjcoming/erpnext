@@ -10,3 +10,14 @@ Approved,已通过
 Rejected,已驳回
 Process Simplification Settings,简化流程总设置
 Job Card Work Report Time Segment,报工有效计时段
+Materials must be fully issued to WIP before formal worker assignment. Create and submit the material issue request first.,物料必须全部发到在制品仓后才能正式派工，请先创建并提交补发申请。
+Direct-consumption materials are no longer sufficient for this Work Order. Replenish or reserve the missing material before formal worker assignment.,当前工单的直耗料已不足，补料或锁定缺料后才能正式派工。
+Add at least one worker allocation.,请至少添加一名工人并填写派工数量。
+Every worker allocation requires an Employee.,每一行派工都必须选择工人。
+The assigned quantity for employee {0} must be greater than zero.,工人 {0} 的派工数量必须大于 0。
+Employee {0} appears more than once in the dispatch plan.,工人 {0} 在派工方案中重复出现。
+Worker allocation total must equal the Job Card quantity: {0} != {1}.,所有工人的派工总数必须等于任务量：{0} ≠ {1}。
+The dispatch plan cannot change after any worker has started or submitted work.,已有工人开始或提交报工，派工方案不能再调整。
+This worker's assigned quantity is fully reported.,本人的派工数量已经报完。
+This worker assignment currently allows at most {0}.,本次最多只能申报本人剩余派工数量 {0}。
+A multi-worker dispatch plan must be adjusted as a complete quantity-balanced plan.,多人派工必须整体调整，并保持派工总数等于任务量。

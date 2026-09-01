@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+from math import ceil, floor
 
 import frappe
 from frappe import _
 from frappe.query_builder.functions import Sum
-from frappe.utils import flt, now_datetime
+from frappe.utils import cint, flt, getdate, now_datetime
 
 from process_simplification.management_access import WAREHOUSE_OPERATOR_ROLE, user_company_scope
 from process_simplification.production_exceptions.constants import (
@@ -29,6 +30,7 @@ from process_simplification.production_reporting.constants import (
 	REVIEW_ROLES,
 )
 from process_simplification.production_reporting.domain import (
+	assignment_reported_qty,
 	assert_supported_job_card,
 	employee_for_user,
 	job_card_qty_precision,
@@ -41,6 +43,15 @@ from process_simplification.production_reporting.domain import (
 
 
 STOCK_VIEW_ROLES = {WAREHOUSE_OPERATOR_ROLE, "Stock User", "Stock Manager", "System Manager"}
+DEFAULT_EXCEPTION_HISTORY_PAGE_LENGTH = 20
+MAX_EXCEPTION_HISTORY_PAGE_LENGTH = 100
+EXCEPTION_HISTORY_STATUSES = {APPLIED, COMPLETED, REJECTED}
+ASSIGNMENT_MATERIAL_STATUSES = {
+	PENDING_APPROVAL,
+	APPROVED,
+	AWAITING_STOCK_ENTRY,
+	COMPLETED,
+}
 IMMUTABLE_FIELDS = (
 	"request_key",
 	"request_type",
@@ -186,6 +197,8 @@ def _lock_worker_assignment(assignment_name: str):
 			"company",
 			"operation",
 			"operation_id",
+			"job_card_qty",
+			"assigned_qty",
 			"employee",
 			"employee_user",
 			"supervisor",
@@ -231,18 +244,171 @@ def _open_material_qty(
 	return sum(flt(row.qty) for row in query.run(as_dict=True))
 
 
-def _native_material_rows(work_order: str, *, exclude_request: str | None = None, for_update=False):
-	from erpnext.stock.doctype.stock_entry.stock_entry import get_available_materials
-
+def _work_order_material_requirements(work_order: str, *, for_update: bool = False):
 	work_order_values = frappe.db.get_value(
 		"Work Order",
 		work_order,
-		["name", "company", "wip_warehouse", "scrap_warehouse"],
+		[
+			"name",
+			"company",
+			"qty",
+			"skip_transfer",
+			"source_warehouse",
+			"wip_warehouse",
+			"scrap_warehouse",
+		],
 		as_dict=True,
 		for_update=for_update,
 	)
 	if not work_order_values:
 		frappe.throw(_("Work Order does not exist."))
+	item = frappe.qb.DocType("Work Order Item")
+	query = (
+		frappe.qb.from_(item)
+		.select(
+			item.name,
+			item.item_code,
+			item.source_warehouse,
+			item.required_qty,
+			item.transferred_qty,
+			item.returned_qty,
+			item.include_item_in_manufacturing,
+		)
+		.where((item.parent == work_order) & (item.required_qty > 0))
+	)
+	if for_update:
+		query = query.for_update()
+	routes = {}
+	for row in query.run(as_dict=True):
+		if not row.include_item_in_manufacturing:
+			continue
+		return_warehouse = row.source_warehouse or work_order_values.source_warehouse
+		key = _material_key(
+			row.item_code,
+			work_order_values.wip_warehouse,
+			return_warehouse,
+		)
+		route = routes.setdefault(
+			key,
+			frappe._dict(
+				key=key,
+				item_code=row.item_code,
+				source_warehouse=work_order_values.wip_warehouse,
+				return_warehouse=return_warehouse,
+				required_qty=0.0,
+				transferred_qty=0.0,
+				returned_qty=0.0,
+			),
+		)
+		route.required_qty += flt(row.required_qty)
+		# Native Work Order rows may repeat the item aggregate on matching rows.
+		route.transferred_qty = max(route.transferred_qty, flt(row.transferred_qty))
+		route.returned_qty = max(route.returned_qty, flt(row.returned_qty))
+	return work_order_values, list(routes.values())
+
+
+def _material_request_rows(
+	work_order: str,
+	material_key: str,
+	*,
+	exclude_request: str | None = None,
+	for_update: bool = False,
+):
+	if not frappe.db.table_exists("Production Exception Request"):
+		return []
+	request = frappe.qb.DocType("Production Exception Request")
+	condition = (
+		(request.work_order == work_order)
+		& (request.material_key == material_key)
+		& (request.request_type.isin(sorted(MATERIAL_REQUEST_TYPES)))
+		& (request.status.isin(sorted(ASSIGNMENT_MATERIAL_STATUSES)))
+	)
+	if exclude_request:
+		condition &= request.name != exclude_request
+	query = (
+		frappe.qb.from_(request)
+		.select(
+			request.name,
+			request.assignment,
+			request.status,
+			request.qty,
+			request.requested_at,
+		)
+		.where(condition)
+	)
+	if for_update:
+		query = query.for_update()
+	return query.run(as_dict=True)
+
+
+def _assignment_outstanding_material_qty(
+	requirement,
+	assignment: str,
+	*,
+	exclude_request: str | None = None,
+	for_update: bool = False,
+) -> float:
+	"""Attribute the still-unreplenished material gap to its worker requests."""
+	requests = _material_request_rows(
+		requirement.work_order,
+		requirement.key,
+		exclude_request=exclude_request,
+		for_update=for_update,
+	)
+	if not requests:
+		return 0.0
+	managed_qty = sum(flt(row.qty) for row in requests)
+	if managed_qty <= 0:
+		return 0.0
+	open_qty = sum(
+		flt(row.qty) for row in requests if row.status != COMPLETED
+	)
+	projected_net_transferred = max(
+		flt(requirement.transferred_qty)
+		- flt(requirement.returned_qty)
+		- open_qty,
+		0,
+	)
+	projected_gap = max(
+		flt(requirement.required_qty) - projected_net_transferred,
+		0,
+	)
+	# Replacement issues have no worker link. Restore the oldest requests first;
+	# leaving the newest requests outstanding avoids proportional fractions that
+	# could round down several workers for a one-unit global material gap.
+	remaining_gap = min(projected_gap, managed_qty)
+	owned_outstanding = 0.0
+	ordered_requests = sorted(
+		requests,
+		key=lambda row: (str(row.requested_at or ""), row.name or ""),
+		reverse=True,
+	)
+	for row in ordered_requests:
+		if remaining_gap <= 0:
+			break
+		outstanding_qty = min(flt(row.qty), remaining_gap)
+		if row.assignment == assignment:
+			owned_outstanding += outstanding_qty
+		remaining_gap -= outstanding_qty
+	return owned_outstanding
+
+
+def _native_material_rows(work_order: str, *, exclude_request: str | None = None, for_update=False):
+	from erpnext.stock.doctype.stock_entry.stock_entry import get_available_materials
+
+	work_order_values, requirement_rows = _work_order_material_requirements(
+		work_order,
+		for_update=for_update,
+	)
+	for requirement in requirement_rows:
+		requirement.work_order = work_order
+	requirements_by_key = {row.key: row for row in requirement_rows}
+	requirements_by_item = {}
+	for requirement in requirement_rows:
+		requirements_by_item[requirement.item_code] = (
+			requirements_by_item.get(requirement.item_code, 0.0)
+			+ flt(requirement.required_qty)
+		)
 	stock_entry = frappe.qb.DocType("Stock Entry")
 	stock_entry_detail = frappe.qb.DocType("Stock Entry Detail")
 	returned_rows = (
@@ -309,6 +475,7 @@ def _native_material_rows(work_order: str, *, exclude_request: str | None = None
 		)
 		requestable_qty = max(qty - reserved, 0)
 		key = _material_key(item.item_code, source_warehouse, return_warehouse)
+		requirement = requirements_by_key.get(key)
 		rows.append(
 			frappe._dict(
 				key=key,
@@ -321,6 +488,14 @@ def _native_material_rows(work_order: str, *, exclude_request: str | None = None
 				native_available_qty=qty,
 				reserved_request_qty=reserved,
 				requestable_qty=requestable_qty,
+				required_qty=(
+					flt(requirement.required_qty)
+					if requirement
+					else flt(requirements_by_item.get(item.item_code))
+				),
+				transferred_qty=flt(requirement.transferred_qty) if requirement else 0,
+				returned_qty=flt(requirement.returned_qty) if requirement else 0,
+				work_order_qty=flt(work_order_values.qty),
 			)
 		)
 	return rows
@@ -345,6 +520,294 @@ def _material_row(
 	if len(matches) != 1:
 		frappe.throw(_("The selected material is no longer uniquely returnable from WIP."))
 	return matches[0]
+
+
+def _assignment_snapshot(assignment, *, for_update: bool = False):
+	if isinstance(assignment, str):
+		return frappe.db.get_value(
+			"Job Card Worker Assignment",
+			assignment,
+			["name", "job_card", "work_order", "assigned_qty"],
+			as_dict=True,
+			for_update=for_update,
+		)
+	as_dict = getattr(assignment, "as_dict", None)
+	if callable(as_dict):
+		assignment = as_dict()
+	return frappe._dict(assignment or {})
+
+
+def _apply_assignment_material_limit(
+	row,
+	assignment,
+	job_card,
+	*,
+	exclude_request: str | None = None,
+	for_update: bool = False,
+):
+	assignment = _assignment_snapshot(assignment, for_update=for_update)
+	if (
+		not assignment
+		or assignment.job_card != job_card.name
+		or assignment.work_order != job_card.work_order
+	):
+		frappe.throw(_("Worker assignment no longer matches its Job Card."))
+	work_order_qty = flt(row.work_order_qty)
+	required_qty = flt(row.required_qty)
+	if work_order_qty <= 0 or required_qty <= 0:
+		row.assignment_allocated_qty = 0.0
+		row.assignment_outstanding_qty = 0.0
+		row.assignment_reported_material_qty = 0.0
+		row.requestable_qty = 0.0
+		return row
+	per_finished_qty = required_qty / work_order_qty
+	requirement = frappe._dict(
+		work_order=job_card.work_order,
+		key=row.key,
+		required_qty=required_qty,
+		transferred_qty=row.transferred_qty,
+		returned_qty=row.returned_qty,
+	)
+	outstanding = _assignment_outstanding_material_qty(
+		requirement,
+		assignment.name,
+		exclude_request=exclude_request,
+		for_update=for_update,
+	)
+	reported_qty = assignment_reported_qty(
+		assignment.name,
+		for_update=for_update,
+	)
+	from process_simplification.production_reporting.assignment_movement import (
+		assignment_effective_qty,
+		assignment_material_allocation_qty,
+	)
+
+	allocated_output_qty = assignment_material_allocation_qty(
+		assignment,
+		for_update=for_update,
+	)
+	effective_output_qty = assignment_effective_qty(
+		assignment,
+		for_update=for_update,
+	)
+	allocated_qty = allocated_output_qty * per_finished_qty
+	reported_material_qty = reported_qty * per_finished_qty
+	personal_requestable = max(
+		allocated_qty - reported_material_qty - outstanding,
+		0,
+	)
+	personal_requestable = min(
+		personal_requestable,
+		max(effective_output_qty - reported_qty, 0) * per_finished_qty,
+	)
+	precision = frappe.get_precision("Stock Entry Detail", "transfer_qty") or 6
+	row.assignment_allocated_qty = flt(allocated_qty, precision)
+	row.assignment_outstanding_qty = flt(outstanding, precision)
+	row.assignment_reported_material_qty = flt(reported_material_qty, precision)
+	row.requestable_qty = flt(
+		min(flt(row.requestable_qty), personal_requestable),
+		precision,
+	)
+	return row
+
+
+def _assignment_material_row(
+	assignment,
+	job_card,
+	material_key: str,
+	*,
+	exclude_request: str | None = None,
+	for_update: bool = False,
+):
+	row = _material_row(
+		job_card.work_order,
+		material_key,
+		exclude_request=exclude_request,
+		for_update=for_update,
+	)
+	return _apply_assignment_material_limit(
+		row,
+		assignment,
+		job_card,
+		exclude_request=exclude_request,
+		for_update=for_update,
+	)
+
+
+def assignment_material_output_capacity(
+	job_card,
+	assignment,
+	*,
+	exclude_request: str | None = None,
+	for_update: bool = False,
+) -> float | None:
+	"""Return this worker's whole finished-unit capacity after their material requests."""
+	if isinstance(job_card, str):
+		job_card = job_card_values(job_card, for_update=for_update)
+	else:
+		as_dict = getattr(job_card, "as_dict", None)
+		if callable(as_dict):
+			job_card = as_dict()
+		job_card = frappe._dict(job_card or {})
+	assignment = _assignment_snapshot(assignment, for_update=for_update)
+	if not job_card or not assignment:
+		return 0.0
+	if assignment.job_card != job_card.name or assignment.work_order != job_card.work_order:
+		frappe.throw(_("Worker assignment no longer matches its Job Card."))
+	work_order, requirements = _work_order_material_requirements(
+		job_card.work_order,
+		for_update=for_update,
+	)
+	if work_order.skip_transfer or not requirements:
+		return None
+	if flt(work_order.qty) <= 0:
+		return 0.0
+	from process_simplification.production_reporting.assignment_movement import (
+		assignment_material_allocation_qty,
+	)
+
+	allocated_output_qty = assignment_material_allocation_qty(
+		assignment,
+		for_update=for_update,
+	)
+	capacities = []
+	for requirement in requirements:
+		requirement.work_order = job_card.work_order
+		per_finished_qty = flt(requirement.required_qty) / flt(work_order.qty)
+		if per_finished_qty <= 0:
+			continue
+		outstanding = _assignment_outstanding_material_qty(
+			requirement,
+			assignment.name,
+			exclude_request=exclude_request,
+			for_update=for_update,
+		)
+		allocated_qty = allocated_output_qty * per_finished_qty
+		remaining_material = max(allocated_qty - outstanding, 0)
+		capacities.append(floor((remaining_material / per_finished_qty) + 1e-9))
+	if not capacities:
+		return None
+	return float(
+		max(
+			0,
+			min(
+				floor(flt(allocated_output_qty) + 1e-9),
+				*capacities,
+			),
+		)
+	)
+
+
+def _completed_assignment_material_qty(
+	assignment: str,
+	material_key: str,
+	*,
+	for_update: bool = False,
+) -> float:
+	request = frappe.qb.DocType("Production Exception Request")
+	query = (
+		frappe.qb.from_(request)
+		.select(request.name, request.qty)
+		.where(
+			(request.assignment == assignment)
+			& (request.material_key == material_key)
+			& (request.request_type.isin(sorted(MATERIAL_REQUEST_TYPES)))
+			& (request.status == COMPLETED)
+		)
+	)
+	if for_update:
+		query = query.for_update()
+	return sum(flt(row.qty) for row in query.run(as_dict=True))
+
+
+def assignment_completed_material_output_loss(
+	job_card,
+	assignment,
+	*,
+	for_update: bool = False,
+) -> float:
+	"""Return whole output units permanently released by posted worker returns."""
+	if isinstance(job_card, str):
+		job_card = job_card_values(job_card, for_update=for_update)
+	else:
+		as_dict = getattr(job_card, "as_dict", None)
+		if callable(as_dict):
+			job_card = as_dict()
+		job_card = frappe._dict(job_card or {})
+	assignment = _assignment_snapshot(assignment, for_update=for_update)
+	if not job_card or not assignment:
+		return 0.0
+	from process_simplification.production_reporting.assignment_movement import (
+		assignment_material_allocation_qty,
+	)
+
+	allocated_output_qty = assignment_material_allocation_qty(
+		assignment,
+		for_update=for_update,
+	)
+	work_order, requirements = _work_order_material_requirements(
+		job_card.work_order,
+		for_update=for_update,
+	)
+	if work_order.skip_transfer or not requirements or flt(work_order.qty) <= 0:
+		return 0.0
+	capacities = []
+	for requirement in requirements:
+		per_finished_qty = flt(requirement.required_qty) / flt(work_order.qty)
+		if per_finished_qty <= 0:
+			continue
+		completed_return_qty = _completed_assignment_material_qty(
+			assignment.name,
+			requirement.key,
+			for_update=for_update,
+		)
+		allocated_material = allocated_output_qty * per_finished_qty
+		capacities.append(
+			floor(
+				(max(allocated_material - completed_return_qty, 0) / per_finished_qty)
+				+ 1e-9
+			)
+		)
+	if not capacities:
+		return 0.0
+	supported_output = max(
+		0,
+		min(floor(flt(allocated_output_qty) + 1e-9), *capacities),
+	)
+	return float(max(floor(flt(allocated_output_qty) + 1e-9) - supported_output, 0))
+
+
+def ensure_completed_material_release(request, *, for_update: bool = False):
+	"""Persist newly lost whole units; replacement stock does not reclaim them."""
+	if request.request_type not in MATERIAL_REQUEST_TYPES or request.status != COMPLETED:
+		return None
+	from process_simplification.production_reporting.assignment_movement import (
+		assignment_effective_qty,
+		create_release_movement,
+		released_qty,
+	)
+
+	job_card = job_card_values(request.job_card, for_update=for_update)
+	assignment = _assignment_snapshot(request.assignment, for_update=for_update)
+	if not job_card or not assignment:
+		return None
+	desired_release = assignment_completed_material_output_loss(
+		job_card,
+		assignment,
+		for_update=for_update,
+	)
+	existing_release = released_qty(assignment.name, for_update=for_update)
+	reported_qty = assignment_reported_qty(assignment.name, for_update=for_update)
+	releasable_qty = max(
+		assignment_effective_qty(assignment, for_update=for_update) - reported_qty,
+		0,
+	)
+	delta = flt(
+		min(max(desired_release - existing_release, 0), releasable_qty),
+		job_card_qty_precision(),
+	)
+	return create_release_movement(request, delta) if delta > 0 else None
 
 
 def _pending_process_loss(job_card: str, *, exclude_request: str | None = None, for_update=False) -> float:
@@ -416,7 +879,10 @@ def _process_loss_capacity(job_card, *, exclude_request=None, for_update=False) 
 
 def get_exception_options(assignment: str):
 	assignment_values, job_card = _lock_worker_assignment(assignment)
-	materials = _native_material_rows(job_card.work_order)
+	materials = [
+		_apply_assignment_material_limit(row, assignment_values, job_card)
+		for row in _native_material_rows(job_card.work_order)
+	]
 	return {
 		"assignment": assignment_values.name,
 		"job_card": job_card.name,
@@ -485,9 +951,18 @@ def submit_exception(
 	assignment_values, job_card = _lock_worker_assignment(assignment)
 	values = {}
 	if request_type in MATERIAL_REQUEST_TYPES:
-		row = _material_row(job_card.work_order, material_key, for_update=True)
+		row = _assignment_material_row(
+			assignment_values,
+			job_card,
+			material_key,
+			for_update=True,
+		)
 		if qty > flt(row.requestable_qty, precision):
-			frappe.throw(_("This material currently allows at most {0} to be requested.").format(row.requestable_qty))
+			frappe.throw(
+				_("This worker's BOM allocation currently allows at most {0} to be requested.").format(
+					row.requestable_qty
+				)
+			)
 		target_warehouse = row.return_warehouse
 		if request_type == MATERIAL_SCRAP:
 			target_warehouse = row.scrap_warehouse
@@ -601,6 +1076,113 @@ def get_review_dashboard(limit=200):
 	}
 
 
+def _exception_history_pagination(
+	page=1,
+	page_length=DEFAULT_EXCEPTION_HISTORY_PAGE_LENGTH,
+	total_count=0,
+):
+	page = max(cint(page) or 1, 1)
+	page_length = min(
+		max(cint(page_length) or DEFAULT_EXCEPTION_HISTORY_PAGE_LENGTH, 1),
+		MAX_EXCEPTION_HISTORY_PAGE_LENGTH,
+	)
+	total_count = cint(total_count)
+	total_pages = ceil(total_count / page_length) if total_count else 0
+	if total_pages:
+		page = min(page, total_pages)
+	return {
+		"page": page,
+		"page_length": page_length,
+		"total_count": total_count,
+		"total_pages": total_pages,
+		"has_next": bool(total_pages and page < total_pages),
+		"has_prev": bool(total_count and page > 1),
+	}
+
+
+def get_review_history(
+	page=1,
+	page_length=DEFAULT_EXCEPTION_HISTORY_PAGE_LENGTH,
+	status=None,
+	request_type=None,
+	employee=None,
+	work_order=None,
+	job_card=None,
+	from_date=None,
+	to_date=None,
+):
+	"""Return permission-scoped, processed exception history with server pagination."""
+	require_exception_viewer()
+	if status and status not in EXCEPTION_HISTORY_STATUSES:
+		frappe.throw(_("Historical exception status must be applied, completed, or rejected."))
+	if request_type and request_type not in REQUEST_TYPES:
+		frappe.throw(_("Invalid production exception type."))
+
+	roles = user_roles()
+	can_review = bool(roles.intersection(ADMIN_REVIEW_ROLES))
+	can_view_stock = bool(roles.intersection(STOCK_VIEW_ROLES))
+	filters = {}
+	companies = user_company_scope()
+	if companies is not None:
+		filters["company"] = ("in", sorted(companies))
+
+	if can_review:
+		filters["status"] = status or ("in", sorted(EXCEPTION_HISTORY_STATUSES))
+	elif can_view_stock:
+		# Warehouse-only users can only trace material requests whose stock move
+		# has completed; supervisor rejection and process loss remain out of scope.
+		if status and status != COMPLETED:
+			filters["name"] = "__not_accessible__"
+		else:
+			filters["status"] = COMPLETED
+		filters["request_type"] = request_type or ("in", sorted(MATERIAL_REQUEST_TYPES))
+
+	if request_type and "request_type" not in filters:
+		filters["request_type"] = request_type
+	if employee:
+		filters["employee"] = employee
+	if work_order:
+		filters["work_order"] = work_order
+	if job_card:
+		filters["job_card"] = job_card
+
+	start_date = getdate(from_date) if from_date else None
+	end_date = getdate(to_date) if to_date else None
+	if start_date and end_date and start_date > end_date:
+		frappe.throw(_("The exception review start date cannot be later than the end date."))
+	if start_date and end_date:
+		filters["reviewed_at"] = (
+			"between",
+			[f"{start_date} 00:00:00", f"{end_date} 23:59:59.999999"],
+		)
+	elif start_date:
+		filters["reviewed_at"] = (">=", f"{start_date} 00:00:00")
+	elif end_date:
+		filters["reviewed_at"] = ("<=", f"{end_date} 23:59:59.999999")
+
+	pagination = _exception_history_pagination(
+		page=page,
+		page_length=page_length,
+		total_count=frappe.db.count("Production Exception Request", filters=filters),
+	)
+	rows = frappe.get_all(
+		"Production Exception Request",
+		filters=filters,
+		fields=_request_fields(),
+		order_by="reviewed_at desc, modified desc, name desc",
+		offset=(pagination["page"] - 1) * pagination["page_length"],
+		limit=pagination["page_length"],
+	)
+	for row in rows:
+		row.can_approve = False
+		row.can_reject = False
+		row.can_open_stock_entry = bool(
+			row.stock_entry
+			and frappe.has_permission("Stock Entry", ptype="read", doc=row.stock_entry)
+		)
+	return {"rows": rows, "pagination": pagination}
+
+
 def _lock_request_for_review(name: str):
 	initial = frappe.db.get_value(
 		"Production Exception Request",
@@ -645,8 +1227,10 @@ def _make_material_stock_entry(doc):
 			return frappe.get_doc("Stock Entry", doc.stock_entry)
 		doc.stock_entry = None
 
-	row = _material_row(
-		doc.work_order,
+	job_card = job_card_values(doc.job_card, for_update=True)
+	row = _assignment_material_row(
+		doc.assignment,
+		job_card,
 		doc.material_key,
 		exclude_request=doc.name,
 		for_update=True,
@@ -808,15 +1392,23 @@ def validate_linked_stock_entry(stock_entry):
 	initial = frappe.db.get_value(
 		"Production Exception Request",
 		request_name,
-		["name", "work_order"],
+		["name", "job_card", "work_order", "assignment"],
 		as_dict=True,
 	)
 	if not initial:
 		frappe.throw(_("The linked production exception no longer exists."))
-	# Keep the common lock order Work Order -> request.  This avoids reversing
-	# the supervisor approval path when a draft is submitted concurrently.
+	# Keep the reporting/exception lock order Job Card -> Work Order -> assignment
+	# -> request so a stock operator cannot race a worker's report or return limit.
+	job_card = job_card_values(initial.job_card, for_update=True)
 	if initial.work_order:
 		frappe.db.get_value("Work Order", initial.work_order, "name", for_update=True)
+	if initial.assignment:
+		frappe.db.get_value(
+			"Job Card Worker Assignment",
+			initial.assignment,
+			"name",
+			for_update=True,
+		)
 	doc = frappe.get_doc("Production Exception Request", request_name, for_update=True)
 	if (
 		doc.request_type not in MATERIAL_REQUEST_TYPES
@@ -843,8 +1435,9 @@ def validate_linked_stock_entry(stock_entry):
 		or row_qty != flt(doc.qty, precision)
 	):
 		frappe.throw(_("The Stock Entry item or quantity differs from the approved production exception."))
-	available = _material_row(
-		doc.work_order,
+	available = _assignment_material_row(
+		doc.assignment,
+		job_card,
 		doc.material_key,
 		exclude_request=doc.name,
 		for_update=True,
@@ -874,6 +1467,7 @@ def complete_linked_stock_entry(stock_entry):
 	doc.processed_by = frappe.session.user
 	doc.processed_at = now_datetime()
 	_save_request(doc)
+	ensure_completed_material_release(doc, for_update=True)
 	from process_simplification.notifications import notify_stock_entry_completed
 
 	notify_stock_entry_completed(doc)

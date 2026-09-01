@@ -213,6 +213,411 @@ class TestProductionPlanGraph(UnitTestCase):
 		self.assertEqual(serialized["material_priority_date"], "2026-08-10")
 
 
+class TestWorkOrderExecutionFacts(UnitTestCase):
+	def test_allocation_conflict_caps_priority_sources_at_the_actual_gap(self):
+		from process_simplification.api.production_readiness import build_allocation_conflict
+
+		conflict = build_allocation_conflict(
+			current_gap_qty=4,
+			gap_without_priority_qty=1,
+			other_hard_reserved_qty=5,
+			prior_allocations=[
+				frappe._dict(
+					work_order="WO-EARLY-A", sales_order="SO-A",
+					delivery_date="2026-08-10", allocated_qty=2,
+				),
+				frappe._dict(
+					work_order="WO-EARLY-B", sales_order="SO-B",
+					delivery_date="2026-08-11", allocated_qty=5,
+				),
+			],
+		)
+
+		self.assertEqual(conflict.priority_impact_qty, 3)
+		self.assertEqual(conflict.hard_reserved_impact_qty, 1)
+		self.assertEqual(
+			[(row["work_order"], row["allocated_qty"], row["impact_qty"]) for row in conflict.sources],
+			[("WO-EARLY-A", 2, 2), ("WO-EARLY-B", 5, 1)],
+		)
+		self.assertEqual(sum(row["impact_qty"] for row in conflict.sources), 3)
+		self.assertLessEqual(
+			conflict.priority_impact_qty + conflict.hard_reserved_impact_qty,
+			4,
+		)
+
+	def test_attaches_active_replenishment_to_exact_work_order_item(self):
+		from process_simplification.api.production_readiness import (
+			attach_replenishment_work_orders,
+		)
+
+		items = [
+			frappe._dict(name="WOI-TARGET", parent="WO-PARENT", item_code="SA"),
+			frappe._dict(name="WOI-OTHER", parent="WO-PARENT", item_code="RM"),
+		]
+		attach_replenishment_work_orders(
+			items,
+			[
+				frappe._dict(
+					name="WO-REPLENISH",
+					production_item="SA",
+					custom_replenishes_work_order="WO-PARENT",
+					custom_replenishes_work_order_item="WOI-TARGET",
+				)
+			],
+		)
+
+		self.assertEqual(items[0].supply_work_orders, ["WO-REPLENISH"])
+		self.assertTrue(items[0].replenishment_in_progress)
+		self.assertEqual(items[1].supply_work_orders, [])
+
+	def test_source_reservation_uses_exact_detail_item_and_warehouse(self):
+		from process_simplification.api.production_readiness import (
+			attach_work_order_source_reservations,
+		)
+
+		items = [
+			frappe._dict(
+				name="WOI-RM", parent="WO-001", item_code="RM-001",
+				source_warehouse="Stores - TC", stock_reserved_qty=20,
+			),
+			frappe._dict(
+				name="WOI-WIP", parent="WO-SKIP", item_code="RM-WIP",
+				source_warehouse="Stores - TC", issue_warehouse="WIP - TC",
+			),
+		]
+		attach_work_order_source_reservations(
+			items,
+			[
+				frappe._dict(
+					voucher_detail_no="WOI-RM", item_code="RM-001",
+					warehouse="Stores - TC", reserved_qty=8,
+					delivered_qty=1, transferred_qty=2, consumed_qty=1,
+				),
+				frappe._dict(
+					voucher_detail_no="WOI-RM", item_code="RM-001",
+					warehouse="Stores - TC", reserved_qty=3,
+					delivered_qty=0, transferred_qty=0, consumed_qty=0,
+				),
+				# The aggregate child-row field includes this WIP reservation,
+				# but it is no longer stock that can be issued from Stores.
+				frappe._dict(
+					voucher_detail_no="WOI-RM", item_code="RM-001",
+					warehouse="Work In Progress - TC", reserved_qty=10,
+					delivered_qty=0, transferred_qty=0, consumed_qty=0,
+				),
+				frappe._dict(
+					voucher_detail_no="WOI-OTHER", item_code="RM-001",
+					warehouse="Stores - TC", reserved_qty=7,
+				),
+				frappe._dict(
+					voucher_detail_no="WOI-RM", item_code="RM-OTHER",
+					warehouse="Stores - TC", reserved_qty=11,
+				),
+				frappe._dict(
+					voucher_detail_no="WOI-WIP", item_code="RM-WIP",
+					warehouse="WIP - TC", reserved_qty=4, transferred_qty=1,
+				),
+			],
+		)
+
+		self.assertEqual(items[0].source_reserved_qty, 7)
+		self.assertEqual(items[0].stock_reserved_qty, 20)
+		self.assertEqual(items[1].source_reserved_qty, 3)
+
+	def test_attaches_job_card_progress_and_matching_draft_stock_entries(self):
+		from process_simplification.api.production_readiness import (
+			attach_work_order_execution_facts,
+		)
+
+		work_orders = [frappe._dict(name="WO-001")]
+		attach_work_order_execution_facts(
+			work_orders,
+			job_cards=[
+				frappe._dict(
+					name="JC-002", work_order="WO-001", status="Open",
+					creation="2026-08-01 09:00:02",
+				),
+				frappe._dict(
+					name="JC-001", work_order="WO-001", status="Completed", docstatus=1,
+					creation="2026-08-01 09:00:01",
+				),
+			],
+			draft_stock_entries=[
+				frappe._dict(
+					name="STE-ISSUE", work_order="WO-001",
+					purpose="Material Transfer for Manufacture",
+				),
+				frappe._dict(
+					name="STE-RECEIPT", work_order="WO-001", purpose="Manufacture",
+				),
+			],
+		)
+
+		work_order = work_orders[0]
+		self.assertEqual(work_order.job_card_count, 2)
+		self.assertEqual(work_order.completed_job_card_count, 1)
+		self.assertEqual(work_order.job_card_names, ["JC-001", "JC-002"])
+		self.assertEqual(work_order.incomplete_job_card_names, ["JC-002"])
+		self.assertEqual(work_order.draft_issue_stock_entry, "STE-ISSUE")
+		self.assertEqual(work_order.draft_receipt_stock_entry, "STE-RECEIPT")
+
+	def test_ready_stock_requires_issue_before_dispatch(self):
+		from process_simplification.api.production_readiness import derive_work_order_flow_state
+
+		state = derive_work_order_flow_state(
+			frappe._dict(
+				name="WO-READY",
+				status="Not Started",
+				qty=5,
+				produced_qty=0,
+				process_loss_qty=0,
+				readiness_status="ready_now",
+				job_card_count=1,
+				completed_job_card_count=0,
+				required_items=[
+					frappe._dict(
+						original_required_qty=10,
+						remaining_issue_qty=10,
+						net_transferred_qty=0,
+						available_qty=10,
+						current_gap_qty=0,
+						status="ready_now",
+					)
+				],
+			)
+		)
+
+		self.assertEqual(state["issue_state"]["code"], "ready")
+		self.assertEqual(state["issue_state"]["additional_issueable_qty"], 5)
+		self.assertEqual(state["flow_status"], "ready_for_issue")
+		self.assertTrue(state["can_request_issue"])
+		self.assertFalse(state["can_dispatch"])
+		self.assertEqual(state["receipt_state"]["code"], "not_ready")
+
+	def test_partial_material_coverage_is_an_explicit_partial_issue_action(self):
+		from process_simplification.api.production_readiness import derive_work_order_flow_state
+
+		state = derive_work_order_flow_state(
+			frappe._dict(
+				name="WO-PARTIAL",
+				status="Not Started",
+				qty=5,
+				readiness_status="purchase_shortage",
+				required_items=[
+					frappe._dict(
+						original_required_qty=10,
+						remaining_issue_qty=10,
+						net_transferred_qty=0,
+						available_qty=4,
+						current_gap_qty=6,
+					)
+				],
+			)
+		)
+
+		self.assertEqual(state["issue_state"]["code"], "partially_ready")
+		self.assertAlmostEqual(state["issue_state"]["issueable_fraction"], 0.4)
+		self.assertAlmostEqual(state["issue_state"]["additional_issueable_qty"], 2)
+		self.assertEqual(state["flow_status"], "partially_ready_for_issue")
+		self.assertTrue(state["can_request_issue"])
+		self.assertFalse(state["can_dispatch"])
+
+	def test_remaining_finished_issue_qty_uses_the_limiting_net_material_coverage(self):
+		from process_simplification.api.production_readiness import derive_work_order_flow_state
+
+		state = derive_work_order_flow_state(
+			frappe._dict(
+				status="Not Started",
+				qty=10,
+				# This aggregate can be stale after returns and must not drive the result.
+				material_transferred_for_manufacturing=10,
+				required_items=[
+					frappe._dict(
+						original_required_qty=20,
+						remaining_issue_qty=10,
+						net_transferred_qty=10,
+						available_qty=10,
+					),
+					frappe._dict(
+						original_required_qty=5,
+						remaining_issue_qty=0,
+						net_transferred_qty=5,
+						available_qty=0,
+					),
+				],
+			)
+		)
+
+		self.assertAlmostEqual(state["issue_state"]["net_transfer_coverage_fraction"], 0.5)
+		self.assertAlmostEqual(state["issue_state"]["additional_issueable_qty"], 5)
+		self.assertFalse(state["can_dispatch"])
+
+	def test_operation_split_rows_count_aggregate_transfer_only_once(self):
+		from process_simplification.api.production_readiness import derive_work_order_flow_state
+
+		state = derive_work_order_flow_state(
+			frappe._dict(
+				status="Not Started",
+				qty=10,
+				material_transferred_for_manufacturing=6,
+				required_items=[
+					frappe._dict(
+						item_code="RM-SPLIT", source_warehouse="Stores - TC",
+						original_required_qty=5, net_transferred_qty=6, available_qty=2,
+					),
+					frappe._dict(
+						item_code="RM-SPLIT", source_warehouse="Stores - TC",
+						original_required_qty=5, net_transferred_qty=6, available_qty=2,
+					),
+				],
+			)
+		)
+
+		self.assertEqual(state["net_issued_qty"], 6)
+		self.assertEqual(state["remaining_issue_qty"], 4)
+		self.assertAlmostEqual(state["issue_state"]["net_transfer_coverage_fraction"], 0.6)
+		self.assertAlmostEqual(state["issue_state"]["issueable_fraction"], 1)
+		self.assertAlmostEqual(state["issue_state"]["additional_issueable_qty"], 4)
+		self.assertFalse(state["can_dispatch"])
+
+	def test_operation_split_skip_transfer_rows_count_consumption_only_once(self):
+		from process_simplification.api.production_readiness import derive_work_order_flow_state
+
+		state = derive_work_order_flow_state(
+			frappe._dict(
+				status="Not Started",
+				qty=10,
+				skip_transfer=1,
+				operation_count=1,
+				job_card_count=1,
+				readiness_status="purchase_shortage",
+				required_items=[
+					frappe._dict(
+						item_code="RM-DIRECT", source_warehouse="Stores - TC",
+						original_required_qty=5, consumed_qty=6, available_qty=0,
+					),
+					frappe._dict(
+						item_code="RM-DIRECT", source_warehouse="Stores - TC",
+						original_required_qty=5, consumed_qty=6, available_qty=0,
+					),
+				],
+			)
+		)
+
+		self.assertEqual(state["issue_state"]["code"], "not_required")
+		self.assertEqual(state["net_issued_qty"], 6)
+		self.assertEqual(state["remaining_issue_qty"], 4)
+		self.assertFalse(state["can_dispatch"])
+		self.assertNotEqual(state["flow_status"], "issued_waiting_dispatch")
+
+	def test_completed_job_cards_and_net_issue_make_receipt_requestable(self):
+		from process_simplification.api.production_readiness import derive_work_order_flow_state
+
+		state = derive_work_order_flow_state(
+			frappe._dict(
+				name="WO-DONE",
+				status="In Process",
+				qty=5,
+				produced_qty=0,
+				process_loss_qty=0,
+				material_transferred_for_manufacturing=5,
+				readiness_status="in_progress",
+				job_card_count=2,
+				completed_job_card_count=2,
+				required_items=[
+					frappe._dict(
+						original_required_qty=10,
+						remaining_issue_qty=0,
+						net_transferred_qty=10,
+						current_gap_qty=0,
+					)
+				],
+			)
+		)
+
+		self.assertEqual(state["operation_state"]["code"], "completed")
+		self.assertEqual(state["issue_state"]["code"], "issued")
+		self.assertEqual(state["receipt_state"]["code"], "requestable")
+		self.assertEqual(state["flow_status"], "awaiting_receipt_request")
+		self.assertTrue(state["can_dispatch"])
+		self.assertTrue(state["can_request_receipt"])
+
+	def test_receipt_capacity_uses_net_bom_coverage_after_return_and_reissue(self):
+		from process_simplification.api.production_readiness import derive_work_order_flow_state
+
+		state = derive_work_order_flow_state(
+			frappe._dict(
+				name="WO-RETURN-REISSUE",
+				status="In Process",
+				qty=100,
+				produced_qty=40,
+				process_loss_qty=0,
+				# ERPNext's header is gross: issue 100, return 20, issue 20.
+				material_transferred_for_manufacturing=120,
+				job_card_count=1,
+				completed_job_card_count=1,
+				required_items=[
+					frappe._dict(
+						item_code="RM-001", source_warehouse="Stores - TC",
+						original_required_qty=100, transferred_qty=120, returned_qty=20,
+					)
+				],
+			)
+		)
+
+		self.assertEqual(state["issue_state"]["net_issued_qty"], 100)
+		self.assertEqual(state["issue_state"]["net_transfer_coverage_fraction"], 1)
+		self.assertEqual(state["receipt_state"]["remaining_qty"], 60)
+		self.assertEqual(state["production_remaining_qty"], 60)
+		self.assertEqual(state["receipt_state"]["code"], "requestable")
+		self.assertTrue(state["can_request_receipt"])
+
+	def test_matching_drafts_are_pending_and_disable_duplicate_requests(self):
+		from process_simplification.api.production_readiness import derive_work_order_flow_state
+
+		base = frappe._dict(
+			status="In Process",
+			qty=5,
+			produced_qty=0,
+			process_loss_qty=0,
+			material_transferred_for_manufacturing=5,
+			job_card_count=1,
+			completed_job_card_count=1,
+			required_items=[
+				frappe._dict(
+					original_required_qty=10,
+					remaining_issue_qty=0,
+					net_transferred_qty=10,
+					current_gap_qty=0,
+				)
+			],
+		)
+		receipt_pending = derive_work_order_flow_state(
+			frappe._dict(base, draft_receipt_stock_entry="STE-RECEIPT")
+		)
+		issue_pending = derive_work_order_flow_state(
+			frappe._dict(
+				base,
+				draft_receipt_stock_entry=None,
+				draft_issue_stock_entry="STE-ISSUE",
+				required_items=[
+					frappe._dict(
+						original_required_qty=10,
+						remaining_issue_qty=10,
+						net_transferred_qty=0,
+						current_gap_qty=0,
+						status="ready_now",
+					)
+				],
+			)
+		)
+
+		self.assertEqual(receipt_pending["receipt_state"]["code"], "draft_pending")
+		self.assertFalse(receipt_pending["can_request_receipt"])
+		self.assertEqual(issue_pending["issue_state"]["code"], "draft_pending")
+		self.assertFalse(issue_pending["can_request_issue"])
+
+
 class TestWorkOrderReadiness(UnitTestCase):
 	def _graph(self, *, plan_name, planned_date, creation, work_orders, required_items, sub_assemblies=None, active_bom_items=None):
 		from process_simplification.api.production_readiness import build_work_order_graph
@@ -229,6 +634,180 @@ class TestWorkOrderReadiness(UnitTestCase):
 			sub_assemblies or [],
 			active_bom_items=active_bom_items or set(),
 		)
+
+	def test_operation_split_uses_submitted_group_fact_once_during_allocation(self):
+		from process_simplification.api.production_readiness import (
+			allocate_work_order_readiness,
+			attach_work_order_item_issue_warehouses,
+			attach_work_order_stock_facts,
+		)
+
+		work_orders = [
+			frappe._dict(
+				name="WO-SPLIT", production_item="FG", production_plan_item="PPI-1",
+				status="Not Started", qty=10, skip_transfer=0,
+			)
+		]
+		required_items = [
+			frappe._dict(
+				name="WOI-1", parent="WO-SPLIT", idx=1, item_code="RM",
+				source_warehouse="Stores", required_qty=5, transferred_qty=10,
+			),
+			frappe._dict(
+				name="WOI-2", parent="WO-SPLIT", idx=2, item_code="RM",
+				source_warehouse="Stores", required_qty=5, transferred_qty=10,
+			),
+		]
+		attach_work_order_item_issue_warehouses(work_orders, required_items)
+		attach_work_order_stock_facts(
+			work_orders,
+			required_items,
+			{
+				("WO-SPLIT", "RM", "Stores"): frappe._dict(
+					gross_issued_qty=6, returned_qty=0, net_issued_qty=6,
+				)
+			},
+		)
+		graph = self._graph(
+			plan_name="PP-001",
+			planned_date="2026-08-20",
+			creation="2026-08-01 09:00:00",
+			work_orders=work_orders,
+			required_items=required_items,
+			active_bom_items={"FG"},
+		)
+
+		work_order = allocate_work_order_readiness(
+			[graph],
+			{("RM", "Stores"): {"actual_qty": 4, "available_qty": 4}},
+		)[0].work_orders_by_name["WO-SPLIT"]
+
+		self.assertEqual(sum(item.required_qty for item in work_order.required_items), 4)
+		self.assertEqual(sum(item.net_transferred_qty for item in work_order.required_items), 6)
+		self.assertEqual(work_order.readiness_status, "ready_now")
+		self.assertNotEqual(work_order.readiness_status, "materials_transferred")
+		self.assertEqual(work_order.net_issued_qty, 6)
+		self.assertEqual(work_order.remaining_issue_qty, 4)
+		self.assertAlmostEqual(work_order.issue_state.net_transfer_coverage_fraction, 0.6)
+		self.assertFalse(work_order.can_dispatch)
+
+	def test_submitted_issue_for_one_source_does_not_cover_the_other_source(self):
+		from process_simplification.api.production_readiness import (
+			allocate_work_order_readiness,
+			attach_work_order_item_issue_warehouses,
+			attach_work_order_stock_facts,
+		)
+
+		work_orders = [
+			frappe._dict(
+				name="WO-TWO-SOURCES", production_item="FG", production_plan_item="PPI-1",
+				status="Not Started", qty=10, skip_transfer=0,
+			)
+		]
+		required_items = [
+			frappe._dict(
+				name="WOI-A", parent="WO-TWO-SOURCES", item_code="RM",
+				source_warehouse="Stores-A", required_qty=5, transferred_qty=5,
+			),
+			frappe._dict(
+				name="WOI-B", parent="WO-TWO-SOURCES", item_code="RM",
+				source_warehouse="Stores-B", required_qty=5, transferred_qty=5,
+			),
+		]
+		attach_work_order_item_issue_warehouses(work_orders, required_items)
+		attach_work_order_stock_facts(
+			work_orders,
+			required_items,
+			{
+				("WO-TWO-SOURCES", "RM", "Stores-A"): frappe._dict(
+					gross_issued_qty=5, returned_qty=0, net_issued_qty=5,
+				)
+			},
+		)
+		graph = self._graph(
+			plan_name="PP-001",
+			planned_date="2026-08-20",
+			creation="2026-08-01 09:00:00",
+			work_orders=work_orders,
+			required_items=required_items,
+			active_bom_items={"FG"},
+		)
+
+		work_order = allocate_work_order_readiness(
+			[graph],
+			{
+				("RM", "Stores-A"): {"actual_qty": 0, "available_qty": 0},
+				("RM", "Stores-B"): {"actual_qty": 0, "available_qty": 0},
+			},
+		)[0].work_orders_by_name["WO-TWO-SOURCES"]
+
+		by_warehouse = {
+			item.issue_warehouse: item for item in work_order.required_items
+		}
+		self.assertEqual(by_warehouse["Stores-A"].required_qty, 0)
+		self.assertEqual(by_warehouse["Stores-B"].required_qty, 5)
+		self.assertEqual(work_order.readiness_status, "purchase_shortage")
+		self.assertEqual(work_order.net_issued_qty, 5)
+		self.assertEqual(work_order.remaining_issue_qty, 5)
+
+	def test_split_direct_consumption_uses_wip_fact_once(self):
+		from process_simplification.api.production_readiness import (
+			allocate_work_order_readiness,
+			attach_work_order_item_issue_warehouses,
+			attach_work_order_stock_facts,
+		)
+
+		work_orders = [
+			frappe._dict(
+				name="WO-DIRECT", production_item="FG", production_plan_item="PPI-1",
+				status="Not Started", qty=10, skip_transfer=1,
+				from_wip_warehouse=1, wip_warehouse="WIP",
+			)
+		]
+		required_items = [
+			frappe._dict(
+				name="WOI-D1", parent="WO-DIRECT", idx=1, item_code="RM",
+				source_warehouse="Stores", required_qty=5, consumed_qty=10,
+			),
+			frappe._dict(
+				name="WOI-D2", parent="WO-DIRECT", idx=2, item_code="RM",
+				source_warehouse="Stores", required_qty=5, consumed_qty=10,
+			),
+		]
+		attach_work_order_item_issue_warehouses(work_orders, required_items)
+		attach_work_order_stock_facts(
+			work_orders,
+			required_items,
+			{
+				("WO-DIRECT", "RM", "WIP"): frappe._dict(
+					consumed_qty=6, gross_issued_qty=0, returned_qty=0,
+					net_issued_qty=0,
+				)
+			},
+		)
+		graph = self._graph(
+			plan_name="PP-001",
+			planned_date="2026-08-20",
+			creation="2026-08-01 09:00:00",
+			work_orders=work_orders,
+			required_items=required_items,
+			active_bom_items={"FG"},
+		)
+
+		work_order = allocate_work_order_readiness(
+			[graph],
+			{
+				("RM", "WIP"): {"actual_qty": 4, "available_qty": 4},
+				("RM", "Stores"): {"actual_qty": 0, "available_qty": 0},
+			},
+		)[0].work_orders_by_name["WO-DIRECT"]
+
+		self.assertEqual(sum(item.required_qty for item in work_order.required_items), 4)
+		self.assertEqual(sum(item.net_transferred_qty for item in work_order.required_items), 6)
+		self.assertTrue(all(item.issue_warehouse == "WIP" for item in work_order.required_items))
+		self.assertEqual(work_order.remaining_issue_qty, 4)
+		self.assertEqual(work_order.issue_state.code, "not_required")
+		self.assertTrue(work_order.can_dispatch)
 
 	def test_only_deepest_work_order_is_ready_when_parent_waits_for_its_output(self):
 		from process_simplification.api.production_readiness import allocate_work_order_readiness
@@ -289,6 +868,72 @@ class TestWorkOrderReadiness(UnitTestCase):
 		self.assertEqual(by_name["WO-FG"].readiness_status, "waiting_subassembly")
 		self.assertEqual(by_name["WO-FG"].required_items[0].supply_type, "manufactured")
 		self.assertEqual(by_name["WO-FG"].required_items[0].child_work_order, "WO-SA")
+
+	def test_completed_child_with_remaining_gap_requires_a_replenishment_task(self):
+		from process_simplification.api.production_readiness import allocate_work_order_readiness
+
+		graph = self._graph(
+			plan_name="PP-REPLENISH",
+			planned_date="2026-08-20",
+			creation="2026-08-01 09:00:00",
+			work_orders=[
+				{
+					"name": "WO-FG", "production_item": "FG", "production_plan_item": "PPI-1",
+					"status": "Not Started",
+				},
+				{
+					"name": "WO-SA", "production_item": "SA",
+					"production_plan_sub_assembly_item": "PPSA-1", "status": "Completed",
+				},
+			],
+			required_items=[{
+				"name": "WOI-SA", "parent": "WO-FG", "item_code": "SA",
+				"source_warehouse": "Stores - TC", "required_qty": 5, "transferred_qty": 0,
+			}],
+			sub_assemblies=[{
+				"name": "PPSA-1", "production_item": "SA", "parent_item_code": "FG",
+				"bom_level": 0, "schedule_date": "2026-08-20",
+			}],
+			active_bom_items={"FG", "SA"},
+		)
+
+		parent = allocate_work_order_readiness(
+			[graph], {("SA", "Stores - TC"): {"actual_qty": 0, "available_qty": 0}},
+		)[0].work_orders_by_name["WO-FG"]
+		item = parent.required_items[0]
+
+		self.assertIsNone(item.child_work_order)
+		self.assertEqual(item.completed_child_work_orders, ["WO-SA"])
+		self.assertTrue(item.replenishment_required)
+		self.assertEqual(parent.readiness_status, "replenishment_required")
+
+	def test_active_replenishment_keeps_manufactured_gap_waiting(self):
+		from process_simplification.api.production_readiness import allocate_work_order_readiness
+
+		graph = self._graph(
+			plan_name="PP-REPLENISH-ACTIVE",
+			planned_date="2026-08-20",
+			creation="2026-08-01 09:00:00",
+			work_orders=[{
+				"name": "WO-FG", "production_item": "FG", "production_plan_item": "PPI-1",
+				"status": "Not Started",
+			}],
+			required_items=[{
+				"name": "WOI-SA", "parent": "WO-FG", "item_code": "SA",
+				"source_warehouse": "Stores - TC", "required_qty": 5, "transferred_qty": 0,
+				"supply_work_orders": ["WO-REPLENISH"], "replenishment_in_progress": True,
+			}],
+			active_bom_items={"FG", "SA"},
+		)
+
+		parent = allocate_work_order_readiness(
+			[graph], {("SA", "Stores - TC"): {"actual_qty": 0, "available_qty": 0}},
+		)[0].work_orders_by_name["WO-FG"]
+
+		self.assertEqual(parent.required_items[0].supply_work_orders, ["WO-REPLENISH"])
+		self.assertTrue(parent.required_items[0].replenishment_in_progress)
+		self.assertFalse(parent.required_items[0].replenishment_required)
+		self.assertEqual(parent.readiness_status, "waiting_subassembly")
 
 	def test_earlier_order_delivery_consumes_shared_raw_material_despite_later_plan_date(self):
 		from process_simplification.api.production_readiness import allocate_work_order_readiness
@@ -351,6 +996,22 @@ class TestWorkOrderReadiness(UnitTestCase):
 		self.assertEqual(late_work_order.readiness_status, "purchase_shortage")
 		self.assertEqual(late_work_order.required_items[0].available_qty, 3)
 		self.assertEqual(late_work_order.required_items[0].current_gap_qty, 4)
+		conflict = late_work_order.required_items[0].allocation_conflict
+		self.assertEqual(conflict.priority_impact_qty, 4)
+		self.assertEqual(conflict.hard_reserved_impact_qty, 0)
+		self.assertEqual(
+			conflict.sources,
+			[
+				{
+					"source_type": "priority_allocation",
+					"work_order": "WO-EARLY-DELIVERY",
+					"sales_order": "SO-EARLY-DELIVERY",
+					"delivery_date": "2026-08-10",
+					"allocated_qty": 7,
+					"impact_qty": 4,
+				}
+			],
+		)
 
 	def test_supply_deadline_uses_order_delivery_instead_of_plan_date(self):
 		from process_simplification.api.production_readiness import allocate_work_order_readiness
@@ -416,6 +1077,50 @@ class TestWorkOrderReadiness(UnitTestCase):
 		self.assertFalse(later_item.supply_documents[0].is_late)
 		self.assertEqual(later_item.shortage_qty, 0)
 
+	def test_wip_reservation_does_not_make_source_stock_issueable(self):
+		from process_simplification.api.production_readiness import (
+			allocate_work_order_readiness,
+			attach_work_order_source_reservations,
+		)
+
+		required_items = [
+			frappe._dict(
+				name="WOI-RM", parent="WO-WIP", item_code="RM-WIP",
+				source_warehouse="Stores - TC", required_qty=10,
+				transferred_qty=4, stock_reserved_qty=4,
+			)
+		]
+		attach_work_order_source_reservations(
+			required_items,
+			[
+				frappe._dict(
+					voucher_detail_no="WOI-RM", item_code="RM-WIP",
+					warehouse="Work In Progress - TC", reserved_qty=4,
+				)
+			],
+		)
+		graph = self._graph(
+			plan_name="PP-WIP",
+			planned_date="2026-08-10",
+			creation="2026-08-01 08:00:00",
+			work_orders=[{
+				"name": "WO-WIP", "production_item": "FG-WIP",
+				"production_plan_item": "PPI-WIP", "status": "Not Started",
+			}],
+			required_items=required_items,
+			active_bom_items={"FG-WIP"},
+		)
+
+		item = allocate_work_order_readiness(
+			[graph],
+			{("RM-WIP", "Stores - TC"): {"actual_qty": 0, "available_qty": 0}},
+		)[0].work_orders_by_name["WO-WIP"].required_items[0]
+
+		self.assertEqual(item.source_reserved_qty, 0)
+		self.assertEqual(item.available_qty, 0)
+		self.assertEqual(item.current_gap_qty, 6)
+		self.assertEqual(item.shortage_qty, 6)
+
 	def test_work_order_reservation_is_not_reassigned_to_an_earlier_order(self):
 		from process_simplification.api.production_readiness import allocate_work_order_readiness
 
@@ -456,6 +1161,9 @@ class TestWorkOrderReadiness(UnitTestCase):
 
 		self.assertEqual(early.available_qty, 0)
 		self.assertEqual(early.shortage_qty, 10)
+		self.assertEqual(early.allocation_conflict.priority_impact_qty, 0)
+		self.assertEqual(early.allocation_conflict.hard_reserved_impact_qty, 10)
+		self.assertEqual(early.allocation_conflict.sources, [])
 		self.assertEqual(late.available_qty, 10)
 		self.assertEqual(late.shortage_qty, 0)
 
@@ -710,6 +1418,108 @@ class TestWorkOrderReadiness(UnitTestCase):
 		self.assertEqual(item.available_qty, 4)
 		self.assertEqual(item.shortage_qty, 0)
 
+	def test_skip_transfer_shortage_is_not_dispatchable_without_on_site_coverage(self):
+		from process_simplification.api.production_readiness import allocate_work_order_readiness
+
+		graph = self._graph(
+			plan_name="PP-SKIP-SHORT",
+			planned_date="2026-08-10",
+			creation="2026-08-01 08:00:00",
+			work_orders=[{
+				"name": "WO-SKIP-SHORT", "production_item": "FG-SKIP",
+				"production_plan_item": "PPI-SKIP", "status": "Not Started",
+				"skip_transfer": 1, "qty": 5, "operation_count": 1,
+				"job_card_count": 1, "completed_job_card_count": 0,
+			}],
+			required_items=[{
+				"parent": "WO-SKIP-SHORT", "item_code": "RM-SKIP",
+				"source_warehouse": "Stores - TC", "required_qty": 10,
+				"consumed_qty": 0,
+			}],
+			active_bom_items={"FG-SKIP"},
+		)
+
+		work_order = allocate_work_order_readiness(
+			[graph], {("RM-SKIP", "Stores - TC"): {"actual_qty": 4, "available_qty": 4}},
+		)[0].work_orders_by_name["WO-SKIP-SHORT"]
+
+		self.assertEqual(work_order.readiness_status, "purchase_shortage")
+		self.assertEqual(work_order.issue_state.code, "not_required")
+		self.assertFalse(work_order.can_dispatch)
+		self.assertNotEqual(work_order.flow_status, "issued_waiting_dispatch")
+
+	def test_skip_transfer_from_wip_uses_wip_stock_for_dispatch(self):
+		from process_simplification.api.production_readiness import allocate_work_order_readiness
+
+		graph = self._graph(
+			plan_name="PP-SKIP-WIP",
+			planned_date="2026-08-10",
+			creation="2026-08-01 08:00:00",
+			work_orders=[{
+				"name": "WO-SKIP-WIP", "production_item": "FG-SKIP",
+				"production_plan_item": "PPI-SKIP", "status": "Not Started",
+				"skip_transfer": 1, "from_wip_warehouse": 1,
+				"wip_warehouse": "WIP - TC", "qty": 5,
+				"operation_count": 1, "job_card_count": 1,
+			}],
+			required_items=[{
+				"parent": "WO-SKIP-WIP", "item_code": "RM-SKIP",
+				"source_warehouse": "Stores - TC", "required_qty": 10,
+				"consumed_qty": 0,
+			}],
+			active_bom_items={"FG-SKIP"},
+		)
+		stock = {
+			("RM-SKIP", "Stores - TC"): {"actual_qty": 10, "available_qty": 10},
+			("RM-SKIP", "WIP - TC"): {"actual_qty": 0, "available_qty": 0},
+		}
+		blocked = allocate_work_order_readiness([graph], stock)[0].work_orders_by_name[
+			"WO-SKIP-WIP"
+		]
+
+		self.assertEqual(blocked.required_items[0].source_warehouse, "Stores - TC")
+		self.assertEqual(blocked.required_items[0].issue_warehouse, "WIP - TC")
+		self.assertEqual(blocked.required_items[0].available_qty, 0)
+		self.assertFalse(blocked.can_dispatch)
+
+		stock[("RM-SKIP", "Stores - TC")] = {"actual_qty": 0, "available_qty": 0}
+		stock[("RM-SKIP", "WIP - TC")] = {"actual_qty": 10, "available_qty": 10}
+		ready = allocate_work_order_readiness([graph], stock)[0].work_orders_by_name[
+			"WO-SKIP-WIP"
+		]
+		self.assertEqual(ready.required_items[0].available_qty, 10)
+		self.assertTrue(ready.can_dispatch)
+
+	def test_skip_transfer_ready_stock_can_dispatch_without_claiming_it_was_issued(self):
+		from process_simplification.api.production_readiness import allocate_work_order_readiness
+
+		graph = self._graph(
+			plan_name="PP-SKIP-READY",
+			planned_date="2026-08-10",
+			creation="2026-08-01 08:00:00",
+			work_orders=[{
+				"name": "WO-SKIP-READY", "production_item": "FG-SKIP",
+				"production_plan_item": "PPI-SKIP", "status": "Not Started",
+				"skip_transfer": 1, "qty": 5, "operation_count": 1,
+				"job_card_count": 1, "completed_job_card_count": 0,
+			}],
+			required_items=[{
+				"parent": "WO-SKIP-READY", "item_code": "RM-SKIP",
+				"source_warehouse": "Stores - TC", "required_qty": 10,
+				"consumed_qty": 0,
+			}],
+			active_bom_items={"FG-SKIP"},
+		)
+
+		work_order = allocate_work_order_readiness(
+			[graph], {("RM-SKIP", "Stores - TC"): {"actual_qty": 10, "available_qty": 10}},
+		)[0].work_orders_by_name["WO-SKIP-READY"]
+
+		self.assertEqual(work_order.readiness_status, "ready_now")
+		self.assertEqual(work_order.issue_state.code, "not_required")
+		self.assertTrue(work_order.can_dispatch)
+		self.assertEqual(work_order.flow_status, "materials_ready_waiting_dispatch")
+
 	def test_missing_source_warehouse_blocks_readiness_instead_of_creating_purchase_shortage(self):
 		from process_simplification.api.production_readiness import allocate_work_order_readiness
 
@@ -880,6 +1690,40 @@ class TestWorkOrderReadiness(UnitTestCase):
 		self.assertEqual(work_order.readiness_status, "materials_transferred")
 		self.assertEqual(work_order.required_items[0].required_qty, 0)
 
+	def test_returned_material_is_removed_from_net_issue_and_must_be_issued_again(self):
+		from process_simplification.api.production_readiness import allocate_work_order_readiness
+
+		graph = self._graph(
+			plan_name="PP-RETURN",
+			planned_date="2026-08-20",
+			creation="2026-08-01 09:00:00",
+			work_orders=[{
+				"name": "WO-RETURN", "production_item": "FG", "production_plan_item": "PPI-1",
+				"status": "Not Started", "qty": 5, "produced_qty": 0,
+				"material_transferred_for_manufacturing": 5,
+				"job_card_count": 1, "completed_job_card_count": 0,
+			}],
+			required_items=[{
+				"parent": "WO-RETURN", "item_code": "RM", "source_warehouse": "Stores - TC",
+				"required_qty": 10, "transferred_qty": 10, "returned_qty": 4,
+			}],
+			active_bom_items={"FG"},
+		)
+
+		work_order = allocate_work_order_readiness(
+			[graph], {("RM", "Stores - TC"): {"actual_qty": 4, "available_qty": 4}},
+		)[0].work_orders_by_name["WO-RETURN"]
+		item = work_order.required_items[0]
+
+		self.assertEqual(item.required_qty, 4)
+		self.assertEqual(item.net_transferred_qty, 6)
+		self.assertEqual(work_order.readiness_status, "ready_now")
+		self.assertEqual(work_order.issue_state.code, "ready")
+		self.assertAlmostEqual(work_order.issue_state.net_transfer_coverage_fraction, 0.6)
+		self.assertAlmostEqual(work_order.issue_state.additional_issueable_qty, 2)
+		self.assertTrue(work_order.can_request_issue)
+		self.assertFalse(work_order.can_dispatch)
+
 
 class TestProductionReadinessLoading(UnitTestCase):
 	def test_loads_plan_work_orders_and_current_stock_as_one_order_item_snapshot(self):
@@ -887,6 +1731,8 @@ class TestProductionReadinessLoading(UnitTestCase):
 
 		work_order_field_queries = []
 		work_order_filter_queries = []
+		execution_fact_queries = []
+		reservation_queries = []
 
 		rows = {
 			"Work Order": [
@@ -924,8 +1770,36 @@ class TestProductionReadinessLoading(UnitTestCase):
 				),
 			],
 			"Work Order Item": [
-				frappe._dict(parent="WO-FG", item_code="SA", item_name="半成品", stock_uom="Nos", source_warehouse="Stores - TC", required_qty=5, transferred_qty=0, consumed_qty=0),
-				frappe._dict(parent="WO-SA", item_code="RM", item_name="原料", stock_uom="Nos", source_warehouse="Stores - TC", required_qty=10, transferred_qty=0, consumed_qty=0),
+				frappe._dict(name="WOI-FG-SA", parent="WO-FG", item_code="SA", item_name="半成品", stock_uom="Nos", source_warehouse="Stores - TC", required_qty=5, transferred_qty=0, consumed_qty=0),
+				frappe._dict(name="WOI-SA-RM", parent="WO-SA", item_code="RM", item_name="原料", stock_uom="Nos", source_warehouse="Stores - TC", required_qty=10, transferred_qty=0, consumed_qty=0, stock_reserved_qty=10),
+			],
+			"Stock Reservation Entry": [
+				frappe._dict(
+					voucher_no="WO-SA", voucher_detail_no="WOI-SA-RM",
+					item_code="RM", warehouse="Stores - TC", reserved_qty=4,
+					delivered_qty=1, transferred_qty=1, consumed_qty=0,
+				),
+				frappe._dict(
+					voucher_no="WO-SA", voucher_detail_no="WOI-SA-RM",
+					item_code="RM", warehouse="Work In Progress - TC", reserved_qty=8,
+					delivered_qty=0, transferred_qty=0, consumed_qty=0,
+				),
+			],
+			"Job Card": [
+				frappe._dict(
+					name="JC-SA", work_order="WO-SA", status="Completed", docstatus=1,
+					creation="2026-08-20 10:00:00",
+				),
+			],
+			"Work Order Operation": [
+				frappe._dict(name="WOO-SA", parent="WO-SA", idx=1),
+			],
+			"Stock Entry": [
+				frappe._dict(
+					name="STE-SA-ISSUE", work_order="WO-SA",
+					purpose="Material Transfer for Manufacture", docstatus=0,
+					creation="2026-08-20 11:00:00",
+				),
 			],
 			"Production Plan": [frappe._dict(name="PP-001", company="_Test Company", posting_date="2026-08-16", creation="2026-08-01 09:00:00", status="In Process")],
 			"Production Plan Item": [frappe._dict(name="PPI-1", parent="PP-001", item_code="FG", planned_start_date="2026-08-20 08:00:00", sales_order_item="SOI-001")],
@@ -938,6 +1812,10 @@ class TestProductionReadinessLoading(UnitTestCase):
 		def get_all(doctype, **kwargs):
 			if doctype == "BOM":
 				return ["FG", "SA"]
+			if doctype == "Stock Reservation Entry":
+				reservation_queries.append(kwargs)
+			if doctype in {"Job Card", "Work Order Operation", "Stock Entry"}:
+				execution_fact_queries.append((doctype, kwargs.get("filters") or {}))
 			if doctype == "Work Order":
 				work_order_field_queries.append(kwargs.get("fields") or [])
 				work_order_filter_queries.append(kwargs.get("filters") or {})
@@ -951,6 +1829,18 @@ class TestProductionReadinessLoading(UnitTestCase):
 		with (
 			patch.object(production_readiness.frappe, "get_list", side_effect=get_all),
 			patch.object(production_readiness.frappe, "get_all", side_effect=get_all),
+			patch.object(
+				production_readiness,
+				"load_work_order_stock_facts",
+				return_value={
+					("WO-SA", "RM", "Stores - TC"): frappe._dict(
+						gross_issued_qty=4,
+						returned_qty=0,
+						net_issued_qty=4,
+					)
+				},
+			) as load_stock_facts,
+			patch.object(production_readiness, "_load_active_replenishment_work_orders", return_value=[]),
 			patch("process_simplification.api.shortage.get_material_stock_snapshot", side_effect=stock),
 			patch("process_simplification.api.shortage._mr_documents", return_value=[]),
 			patch("process_simplification.api.shortage._po_documents", return_value=[]),
@@ -968,13 +1858,50 @@ class TestProductionReadinessLoading(UnitTestCase):
 		self.assertEqual([row["name"] for row in plans[0]["work_orders"]], ["WO-SA", "WO-FG"])
 		self.assertEqual([row["bom_no"] for row in plans[0]["work_orders"]], ["BOM-SA-001", "BOM-FG-001"])
 		self.assertEqual(plans[0]["work_orders"][0]["readiness_status"], "ready_now")
+		self.assertEqual(plans[0]["work_orders"][0]["operation_state"]["code"], "completed")
+		self.assertEqual(plans[0]["work_orders"][0]["issue_state"]["code"], "draft_pending")
+		self.assertEqual(plans[0]["work_orders"][0]["draft_issue_stock_entry"], "STE-SA-ISSUE")
+		self.assertEqual(plans[0]["work_orders"][0]["required_items"][0]["required_qty"], 6)
+		self.assertEqual(
+			plans[0]["work_orders"][0]["required_items"][0]["net_transferred_qty"],
+			4,
+		)
 		self.assertEqual(plans[0]["work_orders"][0]["required_items"][0]["committed_qty"], 2)
+		self.assertEqual(
+			plans[0]["work_orders"][0]["required_items"][0]["source_reserved_qty"],
+			2,
+		)
 		self.assertEqual(plans[0]["work_orders"][1]["readiness_status"], "waiting_subassembly")
 		self.assertEqual(plans[0]["summary"]["ready_work_order_count"], 1)
 		self.assertEqual(len(work_order_field_queries), 1)
 		self.assertTrue(all("bom_no" in fields for fields in work_order_field_queries))
 		self.assertTrue(all("skip_transfer" in fields for fields in work_order_field_queries))
+		self.assertTrue(all("from_wip_warehouse" in fields for fields in work_order_field_queries))
 		self.assertTrue(all("sales_order_item" not in filters for filters in work_order_filter_queries))
+		self.assertEqual(len(reservation_queries), 1)
+		load_stock_facts.assert_called_once_with(["WO-FG", "WO-SA"])
+		self.assertEqual(
+			reservation_queries[0]["filters"],
+			{
+				"docstatus": 1,
+				"voucher_type": "Work Order",
+				"voucher_no": ["in", ["WO-FG", "WO-SA"]],
+			},
+		)
+		self.assertEqual(reservation_queries[0]["limit"], 0)
+		self.assertTrue(
+			{
+				"voucher_detail_no", "item_code", "warehouse", "reserved_qty",
+				"delivered_qty", "transferred_qty", "consumed_qty",
+			}.issubset(reservation_queries[0]["fields"])
+		)
+		self.assertEqual(
+			[doctype for doctype, _filters in execution_fact_queries],
+			["Job Card", "Work Order Operation", "Stock Entry"],
+		)
+		for doctype, filters in execution_fact_queries:
+			link_field = "parent" if doctype == "Work Order Operation" else "work_order"
+			self.assertEqual(filters[link_field], ["in", ["WO-FG", "WO-SA"]])
 
 	def test_selected_order_items_are_filtered_only_after_company_wide_allocation(self):
 		from process_simplification.api import production_readiness
@@ -1026,6 +1953,8 @@ class TestProductionReadinessLoading(UnitTestCase):
 		with (
 			patch.object(production_readiness.frappe, "get_list", side_effect=get_all),
 			patch.object(production_readiness.frappe, "get_all", side_effect=get_all),
+			patch.object(production_readiness, "load_work_order_stock_facts", return_value={}),
+			patch.object(production_readiness, "_load_active_replenishment_work_orders", return_value=[]),
 			patch("process_simplification.api.shortage.get_material_stock_snapshot", return_value=frappe._dict(actual_qty=7, committed_qty=0, available_qty=7)),
 			patch("process_simplification.api.shortage._mr_documents", return_value=[]),
 			patch("process_simplification.api.shortage._po_documents", return_value=[]),
@@ -1082,6 +2011,8 @@ class TestProductionReadinessLoading(UnitTestCase):
 		with (
 			patch.object(production_readiness.frappe, "get_list", side_effect=get_list),
 			patch.object(production_readiness.frappe, "get_all", side_effect=get_all),
+			patch.object(production_readiness, "load_work_order_stock_facts", return_value={}),
+			patch.object(production_readiness, "_load_active_replenishment_work_orders", return_value=[]),
 			patch("process_simplification.api.shortage.get_material_stock_snapshot", return_value=frappe._dict(actual_qty=0, available_qty=0)),
 			patch("process_simplification.api.shortage._mr_documents", return_value=[]),
 			patch("process_simplification.api.shortage._po_documents", return_value=[]),
