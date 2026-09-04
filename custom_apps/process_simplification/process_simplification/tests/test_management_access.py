@@ -364,6 +364,18 @@ class TestManagementAccess(IntegrationTestCase):
 			or warehouse_stock_settings.amend
 		)
 
+		warehouse_prepared_report = permission("Prepared Report", WAREHOUSE_OPERATOR_ROLE)
+		self.assertTrue(warehouse_prepared_report.read and warehouse_prepared_report.select)
+		self.assertFalse(
+			warehouse_prepared_report.create
+			or warehouse_prepared_report.write
+			or warehouse_prepared_report.submit
+			or warehouse_prepared_report.cancel
+			or warehouse_prepared_report.delete
+			or warehouse_prepared_report.amend
+			or warehouse_prepared_report.report
+		)
+
 		for reference_doctype in ("Account", "Price List", "Supplier Group"):
 			warehouse_reference = permission(reference_doctype, WAREHOUSE_OPERATOR_ROLE)
 			self.assertTrue(warehouse_reference.read and warehouse_reference.select)
@@ -404,4 +416,38 @@ class TestManagementAccess(IntegrationTestCase):
 		self.assertEqual(
 			frappe.get_doc("Stock Entry Type", "Material Transfer").purpose,
 			"Material Transfer",
+		)
+
+	def test_warehouse_operator_can_read_only_prepared_reports_it_may_run(self):
+		warehouse_user = self._make_user()
+		self._set_access(warehouse_user, [WAREHOUSE_OPERATOR_ROLE])
+		frappe.set_user(warehouse_user)
+
+		stock_balance = frappe.get_doc(
+			{
+				"doctype": "Prepared Report",
+				"report_name": "Stock Balance",
+				"status": "Completed",
+				"owner": warehouse_user,
+			}
+		)
+		inaccessible_report = frappe.get_doc(
+			{
+				"doctype": "Prepared Report",
+				"report_name": "General Ledger",
+				"status": "Completed",
+				"owner": warehouse_user,
+			}
+		)
+
+		self.assertTrue(
+			frappe.has_permission("Prepared Report", "read", doc=stock_balance, user=warehouse_user)
+		)
+		self.assertFalse(
+			frappe.has_permission(
+				"Prepared Report",
+				"read",
+				doc=inaccessible_report,
+				user=warehouse_user,
+			)
 		)

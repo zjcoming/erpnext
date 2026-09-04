@@ -229,6 +229,7 @@ WAREHOUSE_OPERATOR_PERMISSIONS = {
 	"Price List": {"read", "select"},
 	"Supplier Group": {"read", "select"},
 	"Stock Settings": {"read"},
+	"Prepared Report": {"read", "select"},
 	"Stock Entry Type": {"read", "select"},
 	"Stock Ledger Entry": {"read", "select", "report"},
 	"Stock Reservation Entry": {"read", "select", "create", "write", "submit"},
