@@ -229,6 +229,8 @@ WAREHOUSE_OPERATOR_PERMISSIONS = {
 	"Price List": {"read", "select"},
 	"Supplier Group": {"read", "select"},
 	"Stock Settings": {"read"},
+	"Stock Entry Type": {"read", "select"},
+	"Stock Ledger Entry": {"read", "select", "report"},
 	"Stock Reservation Entry": {"read", "select", "create", "write", "submit"},
 	"Stock Entry": {"read", "select", "create", "write", "submit"},
 	"Delivery Note": {"read", "select", "create", "write", "submit"},
@@ -300,6 +302,10 @@ NATIVE_PAGE_ROLES = {
 MANAGED_PAGE_ROLES = {
 	page_name: roles_for_capability(capability).union(NATIVE_PAGE_ROLES.get(page_name, set()))
 	for page_name, capability in PAGE_CAPABILITIES.items()
+}
+
+MANAGED_REPORT_ROLE_ADDITIONS = {
+	"Stock Balance": {OWNER_ROLE, WAREHOUSE_OPERATOR_ROLE},
 }
 
 DOCUMENT_PERMISSION_FIELDS = {
@@ -523,11 +529,34 @@ def ensure_management_page_roles():
 			page.save(ignore_permissions=True)
 
 
+def ensure_management_report_roles():
+	"""Add APP roles to standard reports without removing ERPNext's native roles."""
+	for report_name, app_roles in MANAGED_REPORT_ROLE_ADDITIONS.items():
+		if not frappe.db.exists("Report", report_name):
+			continue
+		report = frappe.get_doc("Report", report_name)
+		required_roles = {row.role for row in report.roles}.union(app_roles)
+		custom_role_name = frappe.db.get_value("Custom Role", {"report": report_name}, "name")
+		if custom_role_name:
+			custom_role = frappe.get_doc("Custom Role", custom_role_name)
+		else:
+			custom_role = frappe.new_doc("Custom Role")
+			custom_role.report = report_name
+		custom_role.ref_doctype = report.ref_doctype
+		if {row.role for row in custom_role.roles} != required_roles:
+			custom_role.set("roles", [{"role": role} for role in sorted(required_roles)])
+		if custom_role.is_new():
+			custom_role.insert(ignore_permissions=True)
+		elif custom_role.has_value_changed("ref_doctype") or custom_role.has_value_changed("roles"):
+			custom_role.save(ignore_permissions=True)
+
+
 def ensure_management_access():
 	ensure_management_roles()
 	ensure_management_role_profiles()
 	ensure_management_document_permissions()
 	ensure_management_page_roles()
+	ensure_management_report_roles()
 
 
 def migrate_legacy_production_supervisor_roles() -> list[str]:

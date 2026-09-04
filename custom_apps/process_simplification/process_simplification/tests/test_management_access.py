@@ -11,6 +11,7 @@ from process_simplification.management_access import (
 	APP_MANAGED_ROLE_PROFILES,
 	EMPLOYEE_ROLE_PROFILE,
 	MANAGED_PAGE_ROLES,
+	MANAGED_REPORT_ROLE_ADDITIONS,
 	OWNER_ROLE,
 	PRESERVED_PROFILE_PREFIX,
 	PRODUCTION_MANAGER_ROLE,
@@ -287,6 +288,18 @@ class TestManagementAccess(IntegrationTestCase):
 				self.assertEqual(roles, expected_roles)
 				self.assertNotIn(SUPERVISOR_ROLE, roles)
 
+	def test_report_roles_keep_native_access_and_add_required_app_roles(self):
+		for report_name, app_roles in MANAGED_REPORT_ROLE_ADDITIONS.items():
+			with self.subTest(report=report_name):
+				report = frappe.get_doc("Report", report_name)
+				native_roles = {row.role for row in report.roles}
+				custom_role = frappe.get_doc("Custom Role", {"report": report_name})
+				self.assertEqual(
+					{row.role for row in custom_role.roles},
+					native_roles.union(app_roles),
+				)
+				self.assertEqual(custom_role.ref_doctype, report.ref_doctype)
+
 	def test_owner_is_an_admin_reviewer_and_wage_manager(self):
 		from process_simplification.production_reporting.constants import (
 			ADMIN_REVIEW_ROLES,
@@ -301,7 +314,7 @@ class TestManagementAccess(IntegrationTestCase):
 			return frappe.db.get_value(
 				"Custom DocPerm",
 				{"parent": doctype, "role": role, "permlevel": 0, "if_owner": 0},
-				["read", "select", "create", "write", "submit", "cancel", "delete", "amend"],
+				["read", "select", "create", "write", "submit", "cancel", "delete", "amend", "report"],
 				as_dict=True,
 			)
 
@@ -312,6 +325,33 @@ class TestManagementAccess(IntegrationTestCase):
 		warehouse_stock = permission("Stock Entry", WAREHOUSE_OPERATOR_ROLE)
 		self.assertTrue(warehouse_stock.read and warehouse_stock.create and warehouse_stock.write and warehouse_stock.submit)
 		self.assertFalse(warehouse_stock.cancel or warehouse_stock.delete or warehouse_stock.amend)
+
+		warehouse_stock_entry_type = permission("Stock Entry Type", WAREHOUSE_OPERATOR_ROLE)
+		self.assertTrue(warehouse_stock_entry_type.read and warehouse_stock_entry_type.select)
+		self.assertFalse(
+			warehouse_stock_entry_type.create
+			or warehouse_stock_entry_type.write
+			or warehouse_stock_entry_type.submit
+			or warehouse_stock_entry_type.cancel
+			or warehouse_stock_entry_type.delete
+			or warehouse_stock_entry_type.amend
+			or warehouse_stock_entry_type.report
+		)
+
+		warehouse_stock_ledger = permission("Stock Ledger Entry", WAREHOUSE_OPERATOR_ROLE)
+		self.assertTrue(
+			warehouse_stock_ledger.read
+			and warehouse_stock_ledger.select
+			and warehouse_stock_ledger.report
+		)
+		self.assertFalse(
+			warehouse_stock_ledger.create
+			or warehouse_stock_ledger.write
+			or warehouse_stock_ledger.submit
+			or warehouse_stock_ledger.cancel
+			or warehouse_stock_ledger.delete
+			or warehouse_stock_ledger.amend
+		)
 
 		warehouse_stock_settings = permission("Stock Settings", WAREHOUSE_OPERATOR_ROLE)
 		self.assertTrue(warehouse_stock_settings.read)
@@ -350,3 +390,18 @@ class TestManagementAccess(IntegrationTestCase):
 
 		owner_purchase = permission("Purchase Order", OWNER_ROLE)
 		self.assertTrue(owner_purchase.read and owner_purchase.create and owner_purchase.write and owner_purchase.submit)
+
+	def test_warehouse_operator_can_open_stock_balance_and_read_material_transfer_type(self):
+		from frappe.desk.query_report import get_report_doc
+
+		warehouse_user = self._make_user()
+		self._set_access(warehouse_user, [WAREHOUSE_OPERATOR_ROLE])
+		frappe.set_user(warehouse_user)
+
+		self.assertEqual(get_report_doc("Stock Balance").ref_doctype, "Stock Ledger Entry")
+		self.assertTrue(frappe.has_permission("Stock Ledger Entry", "report"))
+		self.assertTrue(frappe.has_permission("Stock Entry Type", "read", "Material Transfer"))
+		self.assertEqual(
+			frappe.get_doc("Stock Entry Type", "Material Transfer").purpose,
+			"Material Transfer",
+		)
