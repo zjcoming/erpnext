@@ -1,0 +1,28 @@
+.process-pwa-banner {
+	position: fixed;
+	left: 12px;
+	right: 12px;
+	bottom: max(12px, env(safe-area-inset-bottom));
+	z-index: 1040;
+	max-width: 440px;
+	margin: 0 auto;
+	padding: 16px;
+	border: 1px solid var(--border-color, #e5e7eb);
+	border-radius: 12px;
+	background: var(--fg-color, #fff);
+	color: var(--text-color, #1f2937);
+	box-shadow: 0 6px 24px #0002;
+}
+.process-pwa-banner-heading { display: flex; align-items: center; gap: 12px; }
+.process-pwa-banner-heading img { width: 44px; height: 44px; border-radius: 10px; flex: none; }
+.process-pwa-banner-heading strong { font-size: 16px; overflow-wrap: anywhere; }
+.process-pwa-banner p { margin: 10px 0 14px; font-size: 14px; color: var(--text-muted, #6b7280); }
+.process-pwa-banner-actions { display: flex; gap: 12px; }
+.process-pwa-banner-actions .btn { min-height: 44px; flex: 1; }
+.process-pwa-guide { line-height: 1.8; overflow-wrap: anywhere; }
+.process-pwa-guide ol { padding-left: 22px; }
+.process-pwa-guide li { margin-bottom: 10px; }
+.process-pwa-guide .text-muted { font-size: 13px; }
+.process-pwa-status { padding: 14px; border: 1px solid var(--border-color, #e5e7eb); border-radius: 8px; }
+.process-pwa-status p { margin: 0 0 8px; overflow-wrap: anywhere; }
+.process-pwa-status p:last-child { margin-bottom: 0; }

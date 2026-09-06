@@ -3,7 +3,9 @@ const assert = require("node:assert/strict");
 
 const {
 	psExecutiveChangeMeta,
+	psExecutiveFormatAmount,
 	psExecutiveFormatCurrency,
+	psExecutiveFormatInteger,
 	psExecutiveInventoryChartData,
 	psExecutiveEscape,
 	psExecutiveShouldReloadCompany,
@@ -38,6 +40,17 @@ test("currency formatting returns plain text instead of Frappe HTML markup", () 
 	const formatted = psExecutiveFormatCurrency(20703, "CNY");
 	assert.match(formatted, /^CNY 20,703\.00$/);
 	assert.doesNotMatch(formatted, /<[^>]+>/);
+});
+
+test("headline order amount omits the currency code while keeping exact decimals", () => {
+	assert.equal(psExecutiveFormatAmount(999900), "999,900.00");
+	assert.equal(psExecutiveFormatAmount(Number.NaN), "0.00");
+});
+
+test("headline counts stay plain text and left aligned by the card", () => {
+	assert.equal(psExecutiveFormatInteger(1200), "1,200");
+	assert.equal(psExecutiveFormatInteger(Number.NaN), "0");
+	assert.doesNotMatch(psExecutiveFormatInteger(1), /<[^>]+>/);
 });
 
 test("company initialization does not trigger a duplicate dashboard reload", () => {

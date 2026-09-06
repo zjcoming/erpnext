@@ -23,6 +23,7 @@ from process_simplification.patches.v0_0.group_process_simplification_navigation
 )
 from process_simplification.production_reporting.setup import setup_worker_reporting
 from process_simplification.production_workflow.setup import ensure_production_workflow_fields
+from process_simplification.pwa import ensure_defaults as ensure_pwa_defaults
 
 
 def set_default_language(language: str = "zh"):
@@ -48,6 +49,7 @@ def after_install():
 	add_management_navigation()
 	group_process_simplification_navigation()
 	disable_standard_material_request_receipt_email()
+	ensure_pwa_defaults()
 
 
 def after_migrate():
@@ -61,3 +63,4 @@ def after_migrate():
 	add_management_navigation()
 	group_process_simplification_navigation()
 	disable_standard_material_request_receipt_email()
+	ensure_pwa_defaults()

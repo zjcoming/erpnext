@@ -52,6 +52,21 @@ function psExecutiveFormatCurrency(value, currency) {
 	}
 }
 
+function psExecutiveFormatAmount(value) {
+	const amount = Number(value || 0);
+	const safeAmount = Number.isFinite(amount) ? amount : 0;
+	return new Intl.NumberFormat("zh-CN", {
+		minimumFractionDigits: 2,
+		maximumFractionDigits: 2,
+	}).format(safeAmount);
+}
+
+function psExecutiveFormatInteger(value) {
+	const number = Number(value || 0);
+	const safeNumber = Number.isFinite(number) ? Math.trunc(number) : 0;
+	return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 0 }).format(safeNumber);
+}
+
 function psExecutiveShouldReloadCompany(settingCompany, loadedCompany, selectedCompany) {
 	return !settingCompany && String(selectedCompany || "") !== String(loadedCompany || "");
 }
@@ -134,7 +149,7 @@ class ProcessSimplificationExecutiveDashboard {
 					<div>
 						<div class="ps-exec-eyebrow">${__("经营数据")}</div>
 						<h2>${__("经营驾驶舱")}</h2>
-						<p>${__("订单、毛利、库存和交付风险集中在一个页面。金额仅向老板角色开放。")}</p>
+						<p>${__("订单、库存和交付风险集中在一个页面。金额仅向老板角色开放。")}</p>
 					</div>
 					<div class="ps-exec-updated" data-updated></div>
 				</section>
@@ -216,11 +231,14 @@ class ProcessSimplificationExecutiveDashboard {
 		return psExecutiveFormatCurrency(value, this.data.currency);
 	}
 
-	kpi_card({ label, value, detail, tone = "blue", change = null }) {
+	kpi_card({ label, value, detail, tone = "blue", change = null, value_title = null }) {
 		const changeMeta = change === null ? null : psExecutiveChangeMeta(change);
+		const valueAttributes = value_title
+			? ` title="${psExecutiveEscape(value_title)}" aria-label="${psExecutiveEscape(`${label} ${value_title}`)}" data-exact-value="${psExecutiveEscape(value_title)}" tabindex="0"`
+			: "";
 		return `<article class="ps-exec-kpi ps-exec-tone-${tone}">
 			<div class="ps-exec-kpi-label">${psExecutiveEscape(label)}</div>
-			<div class="ps-exec-kpi-value">${value}</div>
+			<div class="ps-exec-kpi-value"${valueAttributes}>${value}</div>
 			<div class="ps-exec-kpi-footer">
 				<span>${psExecutiveEscape(detail || "")}</span>
 				${changeMeta ? `<span class="ps-exec-change ps-exec-change-${changeMeta.tone}">${psExecutiveEscape(changeMeta.label)}</span>` : ""}
@@ -230,9 +248,9 @@ class ProcessSimplificationExecutiveDashboard {
 
 	render() {
 		const data = this.data;
-		const gross = data.gross_profit || {};
 		const ageing = data.stock_ageing || {};
 		const orderChange = data.orders.order_amount_change;
+		const orderAmount = psExecutiveFormatAmount(data.orders.order_amount);
 		const checkedAt = data.checked_at ? frappe.datetime.str_to_user(data.checked_at) : "";
 		this.root.find("[data-updated]").html(
 			`<span>${psExecutiveEscape(data.company)}</span><small>${__("更新时间")} ${psExecutiveEscape(checkedAt)}</small>`
@@ -240,22 +258,17 @@ class ProcessSimplificationExecutiveDashboard {
 		this.root.find("[data-kpis]").html([
 			this.kpi_card({
 				label: __("本期订单额"),
-				value: this.format_currency(data.orders.order_amount),
+				value: orderAmount,
+				value_title: orderAmount,
 				detail: `${data.orders.order_count} ${__("张已提交订单 · 含税")}`,
 				tone: "blue",
 				change: orderChange === null || orderChange === undefined ? null : orderChange,
 			}),
 			this.kpi_card({
 				label: __("本期订单数"),
-				value: frappe.format(data.orders.order_count, { fieldtype: "Int" }),
+				value: psExecutiveFormatInteger(data.orders.order_count),
 				detail: `${data.period.from_date} — ${data.period.to_date}`,
 				tone: "violet",
-			}),
-			this.kpi_card({
-				label: __("毛利率"),
-				value: gross.available ? `${Number(gross.gross_margin_percent || 0).toFixed(1)}%` : "—",
-				detail: gross.available ? __("按销售发票与库存估值") : gross.message,
-				tone: "emerald",
 			}),
 			this.kpi_card({
 				label: __("当前库存总值"),
@@ -265,7 +278,7 @@ class ProcessSimplificationExecutiveDashboard {
 			}),
 			this.kpi_card({
 				label: __("逾期订单"),
-				value: frappe.format(data.order_health.overdue_orders, { fieldtype: "Int" }),
+				value: psExecutiveFormatInteger(data.order_health.overdue_orders),
 				detail: `${__("待交付金额")} ${this.format_currency(data.order_health.pending_amount)}`,
 				tone: data.order_health.overdue_orders ? "red" : "emerald",
 			}),
@@ -372,7 +385,9 @@ if (typeof module !== "undefined" && module.exports) {
 		psExecutiveChangeMeta,
 		psExecutiveInventoryChartData,
 		psExecutiveEscape,
+		psExecutiveFormatAmount,
 		psExecutiveFormatCurrency,
+		psExecutiveFormatInteger,
 		psExecutiveShouldReloadCompany,
 		psExecutiveDestroyCharts,
 		psExecutiveChartOptions,

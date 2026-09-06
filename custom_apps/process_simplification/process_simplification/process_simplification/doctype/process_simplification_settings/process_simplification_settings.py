@@ -22,8 +22,17 @@ def _search_filters(filters):
 class ProcessSimplificationSettings(Document):
 	def validate(self):
 		from process_simplification.notifications import validate_notification_routes
+		from process_simplification.pwa import validate_settings
 
 		validate_notification_routes(self)
+		validate_settings(self)
+
+	def on_update(self):
+		from process_simplification.pwa import PWA_FIELDS
+
+		if any(self.has_value_changed(field) for field in PWA_FIELDS):
+			# Refresh cached boot configuration for other users without ending their sessions.
+			frappe.clear_cache()
 
 
 @frappe.whitelist()

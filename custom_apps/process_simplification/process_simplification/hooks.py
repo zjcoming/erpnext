@@ -10,13 +10,17 @@ required_apps = ["erpnext"]
 app_include_css = [
 	"/assets/process_simplification/css/process_simplification.css?v=18",
 	"/assets/process_simplification/css/process_ui.css?v=5",
+	"/assets/process_simplification/css/process_pwa.css?v=1",
 ]
 app_include_js = [
 	"/assets/process_simplification/js/item_identity.js?v=2",
 	"/assets/process_simplification/js/worker_assignment.js?v=12",
 	"/assets/process_simplification/js/worker_reporting.js?v=10",
 	"/assets/process_simplification/js/notification_sound.js?v=6",
+	"/assets/process_simplification/js/process_pwa.js?v=1",
 ]
+
+boot_session = "process_simplification.pwa.boot_session"
 
 after_install = "process_simplification.install.after_install"
 after_migrate = "process_simplification.install.after_migrate"
