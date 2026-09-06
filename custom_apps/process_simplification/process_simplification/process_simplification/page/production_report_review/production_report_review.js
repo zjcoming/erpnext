@@ -506,7 +506,6 @@ if (typeof frappe !== "undefined") {
 			if (workOrder && window.process_simplification?.open_worker_assignment_dialog) {
 				window.process_simplification.open_worker_assignment_dialog({
 					work_order: workOrder,
-					mode: "history",
 					on_success: load,
 				});
 			}

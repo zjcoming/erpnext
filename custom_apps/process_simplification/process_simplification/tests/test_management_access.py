@@ -231,6 +231,98 @@ class TestManagementAccess(IntegrationTestCase):
 		self.assertEqual(self._top_level_permissions(target, "Company"), {self.company})
 		self.assertEqual(self._top_level_permissions(target, "Warehouse"), set())
 
+	def test_worker_rejects_foreign_company_before_binding(self):
+		worker = self._make_user()
+		employee = self._make_employee()
+		profiles_before = [row.role_profile for row in frappe.get_doc("User", worker).role_profiles]
+		for companies in (["Foreign worker company"], [self.company, "Foreign worker company"]):
+			with self.subTest(companies=companies):
+				with self.assertRaisesRegex(frappe.ValidationError, "工人账号只能选择关联员工所属公司"):
+					set_user_access(worker, roles=[WORKER_ROLE], companies=companies, employee=employee.name)
+				self.assertFalse(frappe.db.get_value("Employee", employee.name, "user_id"))
+				self.assertEqual(self._top_level_permissions(worker, "Company"), set())
+				self.assertEqual(
+					[row.role_profile for row in frappe.get_doc("User", worker).role_profiles], profiles_before
+				)
+		result = self._set_access(worker, [WORKER_ROLE], employee=employee.name)
+		self.assertEqual(result["companies"], [self.company])
+		with self.assertRaisesRegex(frappe.ValidationError, "工人账号只能选择关联员工所属公司"):
+			set_user_access(worker, roles=[WORKER_ROLE], companies=["Foreign worker company"])
+		self.assertEqual(frappe.db.get_value("Employee", employee.name, "user_id"), worker)
+		self.assertEqual(self._top_level_permissions(worker, "Company"), {self.company})
+
+	def test_setup_validation_rejects_unreadable_company_defaults(self):
+		from unittest.mock import patch
+
+		from process_simplification.api.setup import validate_setup
+
+		other_company = frappe.db.get_value("Company", {"name": ["!=", self.company]}, "name")
+		if not other_company:
+			other_company = frappe.get_doc({
+				"doctype": "Company", "company_name": f"Access Other {random_string(8)}",
+				"abbr": random_string(5), "default_currency": "USD", "country": "United States",
+				"chart_of_accounts": "Standard",
+			}).insert().name
+		warehouses = frappe.get_all("Warehouse", filters={"company": self.company,
+			"disabled": 0, "is_group": 0}, pluck="name")
+		for role in sorted(SCOPED_TEST_ROLES):
+			with self.subTest(role=role):
+				frappe.set_user("Administrator")
+				target = self._make_user()
+				set_user_access(target, roles=[role], companies=[self.company],
+					warehouses=warehouses if role == WAREHOUSE_OPERATOR_ROLE else [])
+				frappe.set_user(target)
+				if role == WAGE_MANAGER_ROLE:
+					# This role can select its wage company, but cannot read Company settings.
+					with self.assertRaises(frappe.PermissionError):
+						validate_setup(company=self.company)
+				else:
+					self.assertEqual(validate_setup(company=self.company)["defaults"].company, self.company)
+				with self.assertRaises(frappe.PermissionError):
+					validate_setup(company=other_company)
+				with patch("process_simplification.api.setup.get_default_company", return_value=other_company):
+					with self.assertRaises(frappe.PermissionError):
+						validate_setup()
+
+	def test_stock_entry_list_checks_every_child_warehouse(self):
+		from erpnext.stock.doctype.stock_entry.stock_entry_utils import make_stock_entry
+
+		other = frappe.get_doc({
+			"doctype": "Warehouse", "warehouse_name": f"Access Scope {random_string(8)}",
+			"company": self.company,
+		}).insert(ignore_permissions=True)
+		item = frappe.get_doc({
+			"doctype": "Item", "item_code": f"Access Scope {random_string(8)}",
+			"item_group": "All Item Groups", "stock_uom": "Nos", "is_stock_item": 1,
+		}).insert(ignore_permissions=True)
+		def receipt(warehouse):
+			return make_stock_entry(item_code=item.name, to_warehouse=warehouse, company=self.company,
+				qty=1, basic_rate=5, do_not_submit=True)
+		own = receipt(self.warehouse)
+		foreign = receipt(other.name)
+		mixed = frappe.copy_doc(own)
+		mixed.append("items", dict(own.items[0].as_dict(), name=None, t_warehouse=other.name))
+		mixed.insert(ignore_permissions=True)
+		transfer = make_stock_entry(item_code=item.name, from_warehouse=self.warehouse,
+			to_warehouse=other.name, company=self.company, qty=1, basic_rate=5, do_not_submit=True)
+		target = self._make_user()
+		self._set_access(target, [WAREHOUSE_OPERATOR_ROLE])
+		frappe.set_user(target)
+		filters = {"name": ("in", [own.name, foreign.name, mixed.name, transfer.name])}
+		self.assertEqual(frappe.get_list("Stock Entry", filters=filters, pluck="name"), [own.name])
+		self.assertEqual(frappe.get_list("Stock Entry", filters=filters, fields=[{"COUNT": "name", "as": "total"}])[0].total, 1)
+		self.assertTrue(frappe.get_doc("Stock Entry", own.name).has_permission("read"))
+		for denied in (foreign, mixed, transfer):
+			self.assertFalse(frappe.get_doc("Stock Entry", denied.name).has_permission("read"))
+		# A scope applying only to another DocType must not narrow Stock Entry.
+		frappe.set_user("Administrator")
+		frappe.db.set_value("User Permission", {"user": target, "allow": "Warehouse"},
+			{"applicable_for": "Delivery Note", "apply_to_all_doctypes": 0})
+		frappe.clear_cache(user=target)
+		frappe.set_user(target)
+		self.assertEqual(set(frappe.get_list("Stock Entry", filters=filters, pluck="name")),
+			{own.name, foreign.name, mixed.name, transfer.name})
+
 	def test_existing_worker_account_with_an_app_management_role_is_blocked(self):
 		from process_simplification.production_reporting.domain import assert_worker_user_isolated
 
@@ -321,6 +413,48 @@ class TestManagementAccess(IntegrationTestCase):
 		sales_order = permission("Sales Order", SALES_OPERATOR_ROLE)
 		self.assertTrue(sales_order.read and sales_order.create and sales_order.write and sales_order.submit)
 		self.assertFalse(sales_order.cancel or sales_order.delete or sales_order.amend)
+
+		sales_account = permission("Account", SALES_OPERATOR_ROLE)
+		self.assertTrue(sales_account.read and sales_account.select)
+		self.assertFalse(
+			sales_account.create
+			or sales_account.write
+			or sales_account.submit
+			or sales_account.cancel
+			or sales_account.delete
+			or sales_account.amend
+			or sales_account.report
+		)
+
+		sales_reservation = permission("Stock Reservation Entry", SALES_OPERATOR_ROLE)
+		self.assertTrue(
+			sales_reservation.read
+			and sales_reservation.select
+			and sales_reservation.create
+			and sales_reservation.write
+			and sales_reservation.submit
+		)
+		self.assertFalse(
+			sales_reservation.cancel
+			or sales_reservation.delete
+			or sales_reservation.amend
+			or sales_reservation.report
+		)
+
+		sales_delivery = permission("Delivery Note", SALES_OPERATOR_ROLE)
+		self.assertTrue(
+			sales_delivery.read
+			and sales_delivery.select
+			and sales_delivery.create
+			and sales_delivery.write
+		)
+		self.assertFalse(
+			sales_delivery.submit
+			or sales_delivery.cancel
+			or sales_delivery.delete
+			or sales_delivery.amend
+			or sales_delivery.report
+		)
 
 		warehouse_stock = permission("Stock Entry", WAREHOUSE_OPERATOR_ROLE)
 		self.assertTrue(warehouse_stock.read and warehouse_stock.create and warehouse_stock.write and warehouse_stock.submit)
@@ -417,6 +551,35 @@ class TestManagementAccess(IntegrationTestCase):
 			frappe.get_doc("Stock Entry Type", "Material Transfer").purpose,
 			"Material Transfer",
 		)
+
+	def test_warehouse_receipt_can_read_buying_policy_but_cannot_change_settings(self):
+		from frappe.client import get_single_value
+
+		warehouse_user = self._make_user()
+		self._set_access(warehouse_user, [WAREHOUSE_OPERATOR_ROLE])
+		expected = frappe.db.get_single_value("Buying Settings", "maintain_same_rate")
+		frappe.set_user(warehouse_user)
+		self.assertEqual(get_single_value("Buying Settings", "maintain_same_rate"), expected)
+		self.assertFalse(frappe.has_permission("Buying Settings", "write"))
+		self.assertFalse(frappe.has_permission("Buying Settings", "create"))
+
+	def test_transaction_operators_can_read_posting_date_policy_but_cannot_change_it(self):
+		from frappe.client import get_single_value
+
+		expected = frappe.db.get_single_value("Accounts Settings", "confirm_before_resetting_posting_date")
+		for role in (WAREHOUSE_OPERATOR_ROLE, SALES_OPERATOR_ROLE):
+			with self.subTest(role=role):
+				frappe.set_user("Administrator")
+				user = self._make_user()
+				self._set_access(user, [role])
+				frappe.set_user(user)
+				self.assertEqual(get_single_value("Accounts Settings", "confirm_before_resetting_posting_date"), expected)
+				for ptype in ("write", "create", "delete", "share", "export"):
+					self.assertFalse(frappe.has_permission("Accounts Settings", ptype))
+				settings = frappe.get_doc("Accounts Settings")
+				settings.confirm_before_resetting_posting_date = not expected
+				with self.assertRaises(frappe.PermissionError):
+					settings.save()
 
 	def test_warehouse_operator_can_read_only_prepared_reports_it_may_run(self):
 		warehouse_user = self._make_user()

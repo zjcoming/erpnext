@@ -212,11 +212,13 @@ REFERENCE_READ_DOCTYPES = {
 
 SALES_OPERATOR_PERMISSIONS = {
 	**{doctype: {"read", "select"} for doctype in REFERENCE_READ_DOCTYPES},
+	"Account": {"read", "select"},
+	"Accounts Settings": {"read"},
 	"Sales Order": {"read", "select", "create", "write", "submit"},
 	"Production Plan": {"read", "select"},
 	"Work Order": {"read", "select"},
-	"Stock Reservation Entry": {"read", "select"},
-	"Delivery Note": {"read", "select"},
+	"Stock Reservation Entry": {"read", "select", "create", "write", "submit"},
+	"Delivery Note": {"read", "select", "create", "write"},
 }
 
 WAREHOUSE_OPERATOR_PERMISSIONS = {
@@ -229,6 +231,9 @@ WAREHOUSE_OPERATOR_PERMISSIONS = {
 	"Price List": {"read", "select"},
 	"Supplier Group": {"read", "select"},
 	"Stock Settings": {"read"},
+	"Buying Settings": {"read"},
+	# Native transaction validation reads the posting-date confirmation policy.
+	"Accounts Settings": {"read"},
 	"Prepared Report": {"read", "select"},
 	"Stock Entry Type": {"read", "select"},
 	"Stock Ledger Entry": {"read", "select", "report"},

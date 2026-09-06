@@ -9,13 +9,13 @@ required_apps = ["erpnext"]
 
 app_include_css = [
 	"/assets/process_simplification/css/process_simplification.css?v=18",
-	"/assets/process_simplification/css/process_ui.css?v=2",
+	"/assets/process_simplification/css/process_ui.css?v=5",
 ]
 app_include_js = [
 	"/assets/process_simplification/js/item_identity.js?v=2",
 	"/assets/process_simplification/js/worker_assignment.js?v=12",
-	"/assets/process_simplification/js/worker_reporting.js?v=6",
-	"/assets/process_simplification/js/notification_sound.js?v=3",
+	"/assets/process_simplification/js/worker_reporting.js?v=10",
+	"/assets/process_simplification/js/notification_sound.js?v=6",
 ]
 
 after_install = "process_simplification.install.after_install"
@@ -32,6 +32,9 @@ doc_events = {
 	"Notification Log": {
 		"after_insert": "process_simplification.notifications.publish_notification_sound",
 	},
+	"Material Request": {
+		"on_change": "process_simplification.notifications.notify_material_request_received",
+	},
 	"Job Card": {
 		"before_save": "process_simplification.production_reporting.job_card.before_save",
 		"before_submit": "process_simplification.production_reporting.job_card.before_submit",
@@ -47,6 +50,7 @@ doc_events = {
 }
 
 permission_query_conditions = {
+	"Stock Entry": "process_simplification.stock_permissions.stock_entry_query",
 	"Job Card": "process_simplification.production_reporting.permissions.job_card_query",
 	"Work Order": "process_simplification.production_reporting.permissions.work_order_query",
 	"Job Card Worker Assignment": "process_simplification.production_reporting.permissions.assignment_query",

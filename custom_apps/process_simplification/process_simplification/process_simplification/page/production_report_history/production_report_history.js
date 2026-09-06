@@ -254,7 +254,7 @@ if (typeof frappe !== "undefined") {
 				frappe.set_route("Form", $button.data("doctype"), $button.data("name"));
 			}
 		});
-		page.add_inner_button(__("刷新"), () => reporting.runWorkerReportingToolbarLoad(load));
+		reporting.addWorkerRefreshMenu(page);
 		page.worker_history = { state, load };
 	};
 

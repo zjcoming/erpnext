@@ -23,24 +23,38 @@ from process_simplification.production_exceptions.constants import (
 WAREHOUSE_RESPONSIBILITY = "库存处理"
 PROCUREMENT_RESPONSIBILITY = "缺料采购"
 PRODUCTION_DISPATCH_RESPONSIBILITY = "生产派工"
+PURCHASE_RECEIPT_RESPONSIBILITY = "采购到货"
 RESPONSIBILITIES = {
 	WAREHOUSE_RESPONSIBILITY,
 	PROCUREMENT_RESPONSIBILITY,
 	PRODUCTION_DISPATCH_RESPONSIBILITY,
+	PURCHASE_RECEIPT_RESPONSIBILITY,
 }
 RESPONSIBILITY_ROLES = {
 	WAREHOUSE_RESPONSIBILITY: {WAREHOUSE_OPERATOR_ROLE, OWNER_ROLE},
 	PROCUREMENT_RESPONSIBILITY: {WAREHOUSE_OPERATOR_ROLE, OWNER_ROLE},
 	PRODUCTION_DISPATCH_RESPONSIBILITY: {PRODUCTION_MANAGER_ROLE, OWNER_ROLE},
+	PURCHASE_RECEIPT_RESPONSIBILITY: {
+		PRODUCTION_MANAGER_ROLE,
+		OWNER_ROLE,
+		WAREHOUSE_OPERATOR_ROLE,
+	},
 }
 RESPONSIBILITY_ROLE_PRIORITY = {
 	WAREHOUSE_RESPONSIBILITY: (WAREHOUSE_OPERATOR_ROLE, OWNER_ROLE),
 	PROCUREMENT_RESPONSIBILITY: (WAREHOUSE_OPERATOR_ROLE, OWNER_ROLE),
 	PRODUCTION_DISPATCH_RESPONSIBILITY: (PRODUCTION_MANAGER_ROLE, OWNER_ROLE),
+	PURCHASE_RECEIPT_RESPONSIBILITY: (
+		PRODUCTION_MANAGER_ROLE,
+		OWNER_ROLE,
+		WAREHOUSE_OPERATOR_ROLE,
+	),
 }
+PURCHASE_RECEIPT_DEFAULT_ROLES = {PRODUCTION_MANAGER_ROLE, OWNER_ROLE}
 
 APP_NAME = "process_simplification"
 PROCESS_NOTIFICATION_REALTIME_EVENT = "process_simplification_notification"
+STANDARD_MATERIAL_REQUEST_RECEIPT_NOTIFICATION = "Material Request Receipt Notification"
 ASSIGNMENT_ROUTE = "/app/active-production-work"
 REPORT_REVIEW_ROUTE = "/app/production-report-review"
 REPORT_HISTORY_ROUTE = "/app/production-report-history"
@@ -78,6 +92,30 @@ def process_notifications_enabled() -> bool:
 
 def process_notification_sound_enabled() -> bool:
 	return _notification_setting_enabled("enable_notification_sound")
+
+
+def disable_standard_material_request_receipt_email() -> bool:
+	"""Replace ERPNext's email-only receipt alert with our in-app notification."""
+	if not frappe.db.exists("Notification", STANDARD_MATERIAL_REQUEST_RECEIPT_NOTIFICATION):
+		return False
+	if not frappe.db.get_value(
+		"Notification",
+		STANDARD_MATERIAL_REQUEST_RECEIPT_NOTIFICATION,
+		"enabled",
+	):
+		return False
+
+	frappe.db.set_value(
+		"Notification",
+		STANDARD_MATERIAL_REQUEST_RECEIPT_NOTIFICATION,
+		"enabled",
+		0,
+		update_modified=False,
+	)
+	from frappe.email.doctype.notification.notification import clear_notification_cache
+
+	clear_notification_cache()
+	return True
 
 
 def allowed_notification_role_profiles(responsibility: str) -> tuple[str, ...]:
@@ -272,6 +310,13 @@ def _default_responsibility_recipients(company: str, responsibility: str) -> lis
 		for user in candidates
 		if user not in {"Administrator", "Guest"}
 	}
+	if responsibility == PURCHASE_RECEIPT_RESPONSIBILITY:
+		return sorted(
+			user
+			for user, roles in roles_by_user.items()
+			if PURCHASE_RECEIPT_DEFAULT_ROLES.intersection(roles)
+			and _user_matches_company(user, company)
+		)
 	for role in RESPONSIBILITY_ROLE_PRIORITY[responsibility]:
 		matching = sorted(
 			user
@@ -678,6 +723,47 @@ def notify_quick_order_shortage(sales_order: str, company: str, shortages) -> li
 		document_type="Sales Order",
 		document_name=sales_order,
 		link=SHORTAGE_ROUTE,
+	)
+
+
+@_notification_event
+def notify_material_request_received(doc, method=None):
+	"""Notify production and factory management when purchased material arrives."""
+	status = doc.get("status")
+	if status not in {"Partially Received", "Received"}:
+		return []
+
+	before_save = doc.get_doc_before_save() if hasattr(doc, "get_doc_before_save") else None
+	if before_save and before_save.get("status") == status:
+		return []
+
+	company = doc.get("company")
+	if not company:
+		return []
+
+	fully_received = status == "Received"
+	subject = "物料需求已全部到货：{0}" if fully_received else "物料需求部分到货：{0}"
+	description = (
+		"物料需求单 {0} 已全部收货，采购入库库存已经更新。"
+		if fully_received
+		else "物料需求单 {0} 已部分收货，当前到货进度 {1}%。"
+	)
+	if fully_received:
+		description = description.format(escape_html(doc.get("name") or ""))
+	else:
+		description = description.format(
+			escape_html(doc.get("name") or ""),
+			flt(doc.get("per_received"), 2),
+		)
+	description += "请查看物料需求单，并检查相关生产需求的齐套、发料和派工安排。"
+
+	return notify_users(
+		responsibility_recipients(company, PURCHASE_RECEIPT_RESPONSIBILITY),
+		subject=subject.format(escape_html(doc.get("name") or "")),
+		description=description,
+		document_type="Material Request",
+		document_name=doc.get("name"),
+		link="/app/material-request/{0}".format(doc.get("name")),
 	)
 
 

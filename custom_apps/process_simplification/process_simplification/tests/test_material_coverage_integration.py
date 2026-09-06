@@ -134,6 +134,55 @@ class TestMaterialCoverageIntegration(IntegrationTestCase):
 		mr.submit()
 		return mr
 
+	def test_multi_item_purchase_order_preserves_material_request_links(self):
+		from erpnext.buying.doctype.purchase_order.purchase_order import make_purchase_receipt
+		from erpnext.stock.doctype.material_request.material_request import make_purchase_order
+
+		items = [self._make_item("QO-MULTI-MR-A"), self._make_item("QO-MULTI-MR-B")]
+		other_supplier = frappe.get_doc({
+			"doctype": "Supplier",
+			"supplier_name": "QO Split Supplier " + frappe.generate_hash(length=8),
+			"supplier_group": "All Supplier Groups",
+		}).insert().name
+
+		for split in (False, True):
+			mr = frappe.get_doc({
+				"doctype": "Material Request", "company": self.TEST_COMPANY,
+				"material_request_type": "Purchase", "schedule_date": nowdate(),
+				"items": [{
+					"item_code": item.name, "qty": qty, "uom": "Nos",
+					"warehouse": self.source_warehouse, "schedule_date": nowdate(),
+				} for item, qty in zip(items, (10, 5))],
+			}).insert()
+			mr.submit()
+			orders = []
+			for position in range(2 if split else 1):
+				po = make_purchase_order(mr.name)
+				if split and position == 0:
+					po.set("items", [po.items[0]])
+				po.supplier = other_supplier if position else self.supplier
+				for row in po.items:
+					row.rate = 5
+				po.insert()
+				po.submit()
+				orders.append(po)
+				mapped_receipt = make_purchase_receipt(po.name)
+				self.assertEqual(
+					[(r.item_code, r.qty, r.uom, r.purchase_order, r.purchase_order_item,
+					  r.material_request, r.material_request_item) for r in mapped_receipt.items],
+					[(r.item_code, r.qty, "Nos", po.name, r.name, mr.name,
+					  r.material_request_item) for r in po.items],
+				)
+			self.assertEqual(
+				[(r.item_code, r.qty, r.material_request, r.material_request_item)
+				 for po in orders for r in po.items],
+				[(r.item_code, r.qty, mr.name, r.name) for r in mr.items],
+			)
+			self.assertEqual([po.supplier for po in orders],
+				[self.supplier, other_supplier] if split else [self.supplier])
+			mr.reload()
+			self.assertEqual([r.ordered_qty for r in mr.items], [10, 5])
+
 	def test_real_purchase_supply_uses_stock_uom_and_filters_company_warehouse_and_need_date(self):
 		from erpnext.buying.doctype.purchase_order.purchase_order import make_purchase_receipt
 		from process_simplification.api.shortage import _po_outstanding
@@ -345,6 +394,92 @@ class TestMaterialCoverageIntegration(IntegrationTestCase):
 		self.assertEqual(coverage.materials[0]["open_material_request_qty"], 10)
 		self.assertEqual(coverage.materials[0]["open_purchase_order_qty"], 15)
 		self.assertEqual(coverage.materials[0]["shortage_qty"], 5)
+
+	def _receipt_supply_fixture(self):
+		from erpnext.stock.doctype.material_request.material_request import make_purchase_order
+
+		item = self._make_item("QO-RECEIPT-RM")
+		finished = self._make_item("QO-RECEIPT-FG")
+		need_date = add_days(nowdate(), 3)
+		request = self._make_material_request(
+			item_code=item.name, warehouse=self.source_warehouse,
+			schedule_date=nowdate(), qty=10,
+		)
+		order = make_purchase_order(request.name)
+		order.supplier = self.supplier
+		order.items[0].rate = 5
+		order.insert()
+		order.submit()
+		bom = frappe.get_doc({
+			"doctype": "BOM", "item": finished.name, "company": self.TEST_COMPANY,
+			"currency": "INR", "quantity": 1, "is_active": 1, "is_default": 1,
+			"items": [{"item_code": item.name, "qty": 1, "uom": "Nos", "rate": 5}],
+		}).insert()
+		bom.submit()
+		return item, request, order, bom, need_date
+
+	def _assert_receipt_supply(self, fixture, received):
+		from process_simplification.api.shortage import calculate_material_coverage
+
+		item, request, order, bom, need_date = fixture
+		order.reload()
+		self.assertEqual(order.items[0].received_qty, received)
+		self.assertEqual(frappe.db.get_value(
+			"Bin", {"item_code": item.name, "warehouse": self.source_warehouse},
+			"actual_qty",
+		) or 0, received)
+		coverage = calculate_material_coverage(
+			[{"bom_no": bom.name, "qty": 10}], self.TEST_COMPANY,
+			need_by_date=need_date,
+			defaults=frappe._dict({"source_warehouse": self.source_warehouse}),
+		)
+		self.assertEqual(len(coverage.materials), 1)
+		row = coverage.materials[0]
+		self.assertEqual(row["available_qty"], received)
+		self.assertEqual(row["open_purchase_order_qty"], 10 - received)
+		self.assertEqual(row["open_material_request_qty"], 0)
+		self.assertEqual(row["shortage_qty"], 0)
+		self.assertEqual(row["status"], "ready_now" if received == 10 else "awaiting_purchase_receipt")
+		entries = frappe.get_all("Stock Ledger Entry", filters={
+			"item_code": item.name, "warehouse": self.source_warehouse, "is_cancelled": 0,
+		}, pluck="actual_qty")
+		self.assertEqual(sum(entries), received)
+
+	def test_full_receipt_moves_inbound_to_stock_without_double_count(self):
+		from erpnext.buying.doctype.purchase_order.purchase_order import make_purchase_receipt
+
+		fixture = self._receipt_supply_fixture()
+		receipt = make_purchase_receipt(fixture[2].name)
+		receipt.insert()
+		self._assert_receipt_supply(fixture, 0)
+		receipt.submit()
+		self._assert_receipt_supply(fixture, 10)
+
+	def test_partial_receipts_reconcile_remaining_supply(self):
+		from erpnext.buying.doctype.purchase_order.purchase_order import make_purchase_receipt
+		from erpnext.controllers.status_updater import OverAllowanceError
+
+		fixture = self._receipt_supply_fixture()
+		for qty, total in ((3, 3), (4, 7), (3, 10)):
+			receipt = make_purchase_receipt(fixture[2].name)
+			receipt.items[0].qty = qty
+			receipt.insert()
+			self._assert_receipt_supply(fixture, total - qty)
+			if total == 10:
+				stale = make_purchase_receipt(fixture[2].name)
+				stale.insert()
+			receipt.submit()
+			self._assert_receipt_supply(fixture, total)
+		# A rejected HTTP submit rolls back its request transaction. Keep the
+		# successfully received batches while reproducing that boundary here.
+		frappe.db.savepoint("stale_receipt_request")
+		try:
+			with self.assertRaises(OverAllowanceError):
+				stale.submit()
+		finally:
+			frappe.db.rollback(save_point="stale_receipt_request")
+		self._assert_receipt_supply(fixture, 10)
+		self.assertEqual(frappe.db.get_value("Purchase Receipt", stale.name, "docstatus"), 0)
 
 	def test_operation_bom_uses_item_rows_and_the_same_validated_work_order_source_warehouse(self):
 		from process_simplification.api.shortage import calculate_material_coverage

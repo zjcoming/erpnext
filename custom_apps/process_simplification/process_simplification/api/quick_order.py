@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from math import isfinite
 
 import frappe
 from frappe.desk.search import sanitize_searchfield
@@ -102,9 +103,9 @@ def normalize_quick_order_payload(payload):
 		rate = normalize_qty(row.get("rate"))
 		if not item_code:
 			throw_chinese("第 {0} 行产品不能为空。".format(index))
-		if qty <= 0:
+		if not isfinite(qty) or qty <= 0:
 			throw_chinese("第 {0} 行数量必须大于 0。".format(index))
-		if rate <= 0:
+		if not isfinite(rate) or rate <= 0:
 			throw_chinese("第 {0} 行成交单价必须大于 0。".format(index))
 		normalized_items.append({"item_code": item_code, "qty": qty, "rate": rate})
 
@@ -488,6 +489,8 @@ def _standard_validate_sales_order(so):
 def _validate_commercial_rules(so):
 	try:
 		_standard_validate_sales_order(so)
+	except (frappe.QueryDeadlockError, frappe.QueryTimeoutError):
+		raise
 	except Exception as exc:
 		return [
 			_issue(
@@ -499,6 +502,8 @@ def _validate_commercial_rules(so):
 
 	try:
 		so.check_credit_limit()
+	except (frappe.QueryDeadlockError, frappe.QueryTimeoutError):
+		raise
 	except Exception as exc:
 		return [
 			_issue(
@@ -638,8 +643,11 @@ def _evaluate_quick_order(payload):
 		try:
 			from process_simplification.api.production import get_prior_material_demands
 
+			reallocatable_commitments = {}
 			prior_demands = get_prior_material_demands(
-				company, target_delivery_date=data.delivery_date
+				company,
+				target_delivery_date=data.delivery_date,
+				reallocatable_commitments=reallocatable_commitments,
 			)
 			coverage = calculate_multilevel_material_coverage(
 				demands,
@@ -647,6 +655,7 @@ def _evaluate_quick_order(payload):
 				need_by_date=data.delivery_date,
 				defaults=defaults,
 				prior_demands=prior_demands,
+				fact_cache={"reallocatable_production_commitments": reallocatable_commitments},
 			)
 		except MaterialCoverageBomExpansionError:
 			for demand in demands:
@@ -839,8 +848,26 @@ def _create_idempotency_record(name: str, key: str, intent_digest: str):
 		}
 	)
 	record.flags.ignore_permissions = True
-	record.insert()
+	record.insert(set_name=name)
 	return record
+
+
+def _find_quick_order_idempotency_record(record_name: str, key: str):
+	if frappe.db.exists("Quick Order Idempotency", record_name):
+		return frappe.get_doc("Quick Order Idempotency", record_name)
+	# Older records used a generated name. Reuse the same user/key without
+	# rewriting historical records or allowing a retry to create another order.
+	legacy = frappe.get_all(
+		"Quick Order Idempotency",
+		filters={"requesting_user": frappe.session.user, "idempotency_key": key},
+		fields=["name"],
+		limit_page_length=2,
+	)
+	if len(legacy) > 1:
+		throw_chinese("该提交标识存在多条历史记录，请联系管理员核对，勿重复开单。")
+	if legacy:
+		return frappe.get_doc("Quick Order Idempotency", legacy[0].name)
+	return None
 
 
 @frappe.whitelist(methods=["POST"])
@@ -859,44 +886,53 @@ def submit_quick_sales_order(payload=None, review_token: str | None = None, idem
 	lock_name = "process_simplification:quick_order_submit:{0}".format(record_name)
 
 	with frappe.cache.lock(lock_name, timeout=30, blocking_timeout=5):
-		if frappe.db.exists("Quick Order Idempotency", record_name):
-			record = frappe.get_doc("Quick Order Idempotency", record_name)
-			return _existing_idempotency_result(record, intent_digest)
+		for attempt in range(3):
+			try:
+				record = _find_quick_order_idempotency_record(record_name, idempotency_key)
+				if record:
+					return _existing_idempotency_result(record, intent_digest)
 
-		current = _evaluate_quick_order(data)
-		if not current["can_submit"]:
-			return _public_result(current)
-		if current["review_fingerprint"] != stored_review.review_fingerprint:
-			public = _public_result(current)
-			public["status"] = "reconfirmation_required"
-			public["review_token"] = _issue_review_token(current)
-			return public
+				current = _evaluate_quick_order(data)
+				if not current["can_submit"]:
+					return _public_result(current)
+				if current["review_fingerprint"] != stored_review.review_fingerprint:
+					public = _public_result(current)
+					public["status"] = "reconfirmation_required"
+					public["review_token"] = _issue_review_token(current)
+					return public
 
-		frappe.db.savepoint("quick_order_submit")
-		record = _create_idempotency_record(record_name, idempotency_key, intent_digest)
-		so = current["_sales_order"]
-		try:
-			so.insert()
-			so.submit()
-			record.status = "Completed"
-			record.sales_order = so.name
-			record.completed_at = now_datetime()
-			record.save(ignore_permissions=True)
-			shortages = current.get("shortages") or []
-			if shortages:
-				from process_simplification.notifications import notify_quick_order_shortage
+				record = _create_idempotency_record(record_name, idempotency_key, intent_digest)
+				so = current["_sales_order"]
+				so.insert()
+				so.submit()
+				record.status = "Completed"
+				record.sales_order = so.name
+				record.completed_at = now_datetime()
+				record.save(ignore_permissions=True)
+				shortages = current.get("shortages") or []
+				if shortages:
+					from process_simplification.notifications import notify_quick_order_shortage
 
-				notify_quick_order_shortage(
-					so.name,
-					current.get("company") or so.company,
-					shortages,
-				)
-			# Keep the lock until both the order and durable key are visible to a retry.
-			# Frappe's request-level auto-commit runs only after this method returns.
-			frappe.db.commit()
-		except Exception as exc:
-			frappe.db.rollback(save_point="quick_order_submit")
-			throw_chinese("创建销售订单失败：{0}".format(escape_html(str(exc))))
+					notify_quick_order_shortage(
+						so.name,
+						current.get("company") or so.company,
+						shortages,
+					)
+				# Hold the key lock until both the order and key are visible to retries.
+				frappe.db.commit()
+			except (frappe.QueryDeadlockError, frappe.QueryTimeoutError):
+				# A conflict can invalidate every savepoint. Recheck the durable key
+				# and current review in a fresh transaction before attempting a write.
+				frappe.db.rollback()
+				if attempt == 2:
+					throw_chinese("订单提交遇到并发更新，请稍后重新确认；系统会按原提交标识防止重复开单。")
+				continue
+			except Exception as exc:
+				# This endpoint owns its commit. Do not retain partial writes or mask
+				# the original failure by rolling back to a lost savepoint.
+				frappe.db.rollback()
+				throw_chinese("创建销售订单失败：{0}".format(escape_html(str(exc))))
+			break
 
 	return {
 		"schema_version": QUICK_ORDER_SCHEMA_VERSION,

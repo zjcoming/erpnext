@@ -10,6 +10,7 @@ from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry impor
 )
 
 from process_simplification.api.setup import get_default_bom
+from process_simplification.request_transaction import retry_request_transaction
 from process_simplification.production_reporting.domain import (
 	require_reviewer,
 	reviewer_companies,
@@ -540,6 +541,7 @@ def request_manufacture(work_order: str):
 
 
 @frappe.whitelist(methods=["POST"])
+@retry_request_transaction
 def request_material_issue(
 	work_order: str,
 	allow_partial: int | str = 0,

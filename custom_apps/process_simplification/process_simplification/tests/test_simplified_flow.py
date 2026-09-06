@@ -877,6 +877,48 @@ class TestSimplifiedFlow(UnitTestCase):
 			{"delivery_note": "DN-DRAFT-001", "docstatus": 0, "reused": True},
 		)
 
+	@patch("process_simplification.api.actions.make_delivery_note")
+	@patch("process_simplification.api.actions.get_sales_order_item")
+	@patch("process_simplification.api.actions._get_existing_draft_delivery_note", return_value=None)
+	@patch("process_simplification.api.actions.frappe.db.get_value", return_value="SO-ITEM-TEST")
+	@patch("process_simplification.api.actions.frappe.has_permission", return_value=True)
+	@patch("process_simplification.api.actions._row_from_workbench")
+	def test_create_delivery_note_limits_draft_to_effective_reservation(
+		self,
+		row_from_workbench,
+		has_permission,
+		get_value,
+		get_existing_draft,
+		get_sales_order_item,
+		make_delivery_note,
+	):
+		from process_simplification.api.actions import create_delivery_note
+
+		row_from_workbench.return_value = frappe._dict({"reserved_qty": 6})
+		get_sales_order_item.return_value = frappe._dict({"conversion_factor": 1})
+		delivery_note = MagicMock(name="delivery_note")
+		delivery_note.name = "DN-DRAFT-002"
+		delivery_note.docstatus = 0
+		delivery_note.items = [
+			frappe._dict({"so_detail": "SO-ITEM-TEST", "qty": 10}),
+			frappe._dict({"so_detail": "OTHER-ITEM", "qty": 99}),
+		]
+		make_delivery_note.return_value = delivery_note
+
+		result = create_delivery_note("SO-TEST", "SO-ITEM-TEST")
+
+		self.assertEqual(
+			result,
+			{"delivery_note": "DN-DRAFT-002", "docstatus": 0, "reused": False},
+		)
+		self.assertEqual(len(delivery_note.items), 1)
+		self.assertEqual(delivery_note.items[0].qty, 6)
+		delivery_note.insert.assert_called_once_with()
+		make_delivery_note.assert_called_once_with(
+			"SO-TEST",
+			kwargs={"for_reserved_stock": True, "filtered_children": ["SO-ITEM-TEST"]},
+		)
+
 	@patch("process_simplification.api.actions.get_available_qty_to_reserve")
 	@patch("process_simplification.api.actions.frappe.get_doc")
 	@patch("process_simplification.api.actions.frappe.has_permission")

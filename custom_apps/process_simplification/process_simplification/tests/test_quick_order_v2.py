@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 import frappe
@@ -10,6 +11,9 @@ from process_simplification.api.utils import SimplifiedFlowError
 class TestQuickOrderV2(UnitTestCase):
 	def setUp(self):
 		super().setUp()
+		# These unit fixtures have no competing orders; priority allocation has
+		# dedicated coverage and must not read the site's live order backlog here.
+		self.enterContext(patch("process_simplification.api.production.get_prior_material_demands", return_value=[]))
 		resolver = patch(
 			"process_simplification.api.shortage.resolve_production_source_warehouse",
 			side_effect=self._resolve_test_source_warehouse,
@@ -842,6 +846,7 @@ class TestQuickOrderV2(UnitTestCase):
 			patch("process_simplification.api.quick_order.frappe.cache.lock", return_value=lock),
 			patch("process_simplification.api.quick_order.frappe.db.exists", return_value=False),
 			patch("process_simplification.api.quick_order.frappe.db.savepoint"),
+			patch("process_simplification.api.quick_order.frappe.get_all", return_value=[]),
 			patch(
 				"process_simplification.notifications.notify_quick_order_shortage"
 			) as notify_shortage,
@@ -911,6 +916,7 @@ class TestQuickOrderV2(UnitTestCase):
 			patch("process_simplification.api.quick_order.frappe.db.exists", side_effect=exists),
 			patch("process_simplification.api.quick_order.frappe.get_doc", return_value=completed_record),
 			patch("process_simplification.api.quick_order.frappe.db.savepoint"),
+			patch("process_simplification.api.quick_order.frappe.get_all", return_value=[]),
 		):
 			first = submit_quick_sales_order(data, "review-token", "request-1")
 			retry = submit_quick_sales_order(data, "review-token", "request-1")
@@ -961,12 +967,138 @@ class TestQuickOrderV2(UnitTestCase):
 			patch("process_simplification.api.quick_order.frappe.cache.lock", return_value=lock),
 			patch("process_simplification.api.quick_order.frappe.db.exists", return_value=False),
 			patch("process_simplification.api.quick_order.frappe.db.savepoint"),
+			patch("process_simplification.api.quick_order.frappe.get_all", return_value=[]),
 			patch("process_simplification.api.quick_order.frappe.db.rollback") as rollback,
 			self.assertRaises(SimplifiedFlowError),
 		):
 			submit_quick_sales_order(data, "review-token", "request-1")
 
-		rollback.assert_called_once_with(save_point="quick_order_submit")
+		rollback.assert_called_once_with()
+
+	def test_idempotency_record_keeps_its_user_bound_durable_name(self):
+		from process_simplification.api.quick_order import _create_idempotency_record
+
+		with patch("process_simplification.api.quick_order.frappe.get_doc") as get_doc:
+			record = _create_idempotency_record("bound-name", "request", "intent")
+			record.insert.assert_called_once_with(set_name="bound-name")
+			self.assertEqual(get_doc.call_args.args[0]["name"], "bound-name")
+
+	def test_legacy_idempotency_lookup_is_user_scoped_and_refuses_ambiguity(self):
+		from process_simplification.api.quick_order import _find_quick_order_idempotency_record
+
+		with (
+			patch("process_simplification.api.quick_order.frappe.db.exists", return_value=False),
+			patch("process_simplification.api.quick_order.frappe.get_all") as get_all,
+			patch("process_simplification.api.quick_order.frappe.get_doc") as get_doc,
+		):
+			get_all.return_value = [frappe._dict(name="old-generated-name")]
+			self.assertIs(_find_quick_order_idempotency_record("bound-name", "request"), get_doc.return_value)
+			get_doc.assert_called_once_with("Quick Order Idempotency", "old-generated-name")
+			self.assertEqual(get_all.call_args.kwargs["filters"],
+				{"requesting_user": frappe.session.user, "idempotency_key": "request"})
+			get_all.return_value.append(frappe._dict(name="ambiguous-second-record"))
+			with self.assertRaisesRegex(SimplifiedFlowError, "多条历史记录"):
+				_find_quick_order_idempotency_record("bound-name", "request")
+			self.assertEqual(get_doc.call_count, 1)
+
+	@contextmanager
+	def _mock_guarded_submission(self):
+		from process_simplification.api import quick_order as api
+
+		data = self._normalized_order()
+		digest = api._quick_order_intent_digest(data)
+		order = MagicMock(name="sales_order", docstatus=1)
+		order.name = "SO-RETRIED"
+		current = {"can_submit": True, "review_fingerprint": "review-1", "_sales_order": order}
+		with (
+			patch.object(api.frappe, "has_permission"),
+			patch.object(api, "normalize_quick_order_payload", return_value=data),
+			patch.object(api, "_get_review_token", return_value=frappe._dict(
+				intent_digest=digest, review_fingerprint="review-1")),
+			patch.object(api.frappe.cache, "lock"),
+			patch.object(api.frappe.db, "exists", return_value=False) as exists,
+			patch.object(api.frappe, "get_all", return_value=[]),
+			patch.object(api, "_evaluate_quick_order", return_value=current) as evaluate,
+			patch.object(api, "_create_idempotency_record") as create_record,
+			patch.object(api.frappe.db, "commit") as commit,
+			patch.object(api.frappe.db, "rollback") as rollback,
+			patch.object(api.frappe.db, "savepoint") as savepoint,
+		):
+			yield frappe._dict(api=api, data=data, digest=digest, order=order, current=current,
+				exists=exists, evaluate=evaluate, create_record=create_record,
+				commit=commit, rollback=rollback, savepoint=savepoint)
+
+	def test_transaction_conflict_restarts_with_a_fresh_order_and_review(self):
+		with self._mock_guarded_submission() as ctx:
+			failed_order = MagicMock(name="aborted_order")
+			failed_order.insert.side_effect = frappe.QueryDeadlockError("snapshot changed")
+			ctx.evaluate.side_effect = [dict(ctx.current, _sales_order=failed_order), ctx.current]
+			result = ctx.api.submit_quick_sales_order(ctx.data, "review-token", "request-1")
+			self.assertEqual(result["sales_order"], "SO-RETRIED")
+			self.assertEqual(ctx.evaluate.call_count, 2)
+			ctx.rollback.assert_called_once_with()
+			ctx.savepoint.assert_not_called()
+			failed_order.submit.assert_not_called()
+			ctx.order.insert.assert_called_once_with()
+			ctx.order.submit.assert_called_once_with()
+			ctx.commit.assert_called_once_with()
+
+	def test_transaction_conflict_replays_an_already_committed_key(self):
+		with self._mock_guarded_submission() as ctx:
+			ctx.exists.side_effect = [False, True, True]
+			ctx.commit.side_effect = frappe.QueryDeadlockError("after-commit callback conflict")
+			record = frappe._dict(intent_digest=ctx.digest, status="Completed", sales_order="SO-RETRIED")
+			with patch.object(ctx.api.frappe, "get_doc", return_value=record):
+				result = ctx.api.submit_quick_sales_order(ctx.data, "review-token", "request-1")
+			self.assertTrue(result["idempotent_replay"])
+			self.assertEqual(result["sales_order"], "SO-RETRIED")
+			ctx.evaluate.assert_called_once_with(ctx.data)
+			ctx.order.insert.assert_called_once_with()
+			ctx.rollback.assert_called_once_with()
+
+	def test_transaction_conflict_requires_reconfirmation_if_review_changes(self):
+		with self._mock_guarded_submission() as ctx:
+			ctx.order.insert.side_effect = frappe.QueryDeadlockError("snapshot changed")
+			ctx.evaluate.side_effect = [ctx.current, dict(ctx.current, review_fingerprint="changed")]
+			with patch.object(ctx.api, "_issue_review_token", return_value="fresh-review"):
+				result = ctx.api.submit_quick_sales_order(ctx.data, "review-token", "request-1")
+			self.assertEqual(result["status"], "reconfirmation_required")
+			self.assertEqual(result["review_token"], "fresh-review")
+			ctx.order.insert.assert_called_once_with()
+			ctx.commit.assert_not_called()
+
+	def test_transaction_conflict_stops_after_three_attempts(self):
+		for error in (frappe.QueryDeadlockError, frappe.QueryTimeoutError):
+			with self.subTest(error=error), self._mock_guarded_submission() as ctx:
+				ctx.evaluate.side_effect = error("retryable database conflict")
+				with self.assertRaisesRegex(SimplifiedFlowError, "并发更新"):
+					ctx.api.submit_quick_sales_order(ctx.data, "review-token", "request-1")
+				self.assertEqual(ctx.evaluate.call_count, 3)
+				self.assertEqual(ctx.rollback.call_count, 3)
+				self.assertTrue(all(not c.args and not c.kwargs for c in ctx.rollback.call_args_list))
+				ctx.create_record.assert_not_called()
+				ctx.commit.assert_not_called()
+
+	def test_idempotency_record_failure_preserves_original_error_and_rolls_back(self):
+		with self._mock_guarded_submission() as ctx:
+			ctx.create_record.side_effect = frappe.ValidationError("original record error")
+			with self.assertRaisesRegex(SimplifiedFlowError, "original record error"):
+				ctx.api.submit_quick_sales_order(ctx.data, "review-token", "request-1")
+			ctx.rollback.assert_called_once_with()
+			ctx.order.insert.assert_not_called()
+			ctx.commit.assert_not_called()
+
+	def test_database_conflicts_are_not_commercial_validation_blockers(self):
+		from process_simplification.api import quick_order as api
+
+		for stage in ("validation", "credit"):
+			for error in (frappe.QueryDeadlockError, frappe.QueryTimeoutError):
+				with self.subTest(stage=stage, error=error):
+					order = MagicMock()
+					with patch.object(api, "_standard_validate_sales_order") as validate:
+						(validate if stage == "validation" else order.check_credit_limit).side_effect = error("conflict")
+						with self.assertRaises(error):
+							api._validate_commercial_rules(order)
 
 	@patch("process_simplification.api.quick_order._issue_review_token", return_value="review-token-2")
 	@patch("process_simplification.api.quick_order._evaluate_quick_order")
@@ -1004,6 +1136,7 @@ class TestQuickOrderV2(UnitTestCase):
 			patch("process_simplification.api.quick_order.frappe.cache.lock", return_value=lock),
 			patch("process_simplification.api.quick_order.frappe.db.exists", return_value=False),
 			patch("process_simplification.api.quick_order._create_idempotency_record") as create_record,
+			patch("process_simplification.api.quick_order.frappe.get_all", return_value=[]),
 		):
 			result = submit_quick_sales_order(data, "review-token", "request-1")
 
@@ -1538,6 +1671,10 @@ class TestQuickOrderV2(UnitTestCase):
 
 		has_permission.return_value = True
 		row_from_workbench.return_value = frappe._dict({"uncovered_qty": 4})
+		self.enterContext(patch(
+			"process_simplification.api.actions._locked_row_from_workbench",
+			return_value=row_from_workbench.return_value,
+		))
 		get_allocated_production_row.return_value = frappe._dict({"unplanned_production_qty": 4})
 		get_sales_order_item.return_value = frappe._dict(
 			{

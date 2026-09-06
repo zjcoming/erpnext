@@ -145,7 +145,10 @@ test("collapsed production demand cards do not paint interactive details over la
 test("factory UI layer is loaded after legacy styles and enforces task-first mobile controls", () => {
 	const hooks = fs.readFileSync(path.resolve(__dirname, "../../hooks.py"), "utf8");
 	const stylesheet = fs.readFileSync(uiStylesheetPath, "utf8");
-	assert.ok(hooks.indexOf("process_simplification.css?v=18") < hooks.indexOf("process_ui.css?v=2"));
+	const legacyStylesIndex = hooks.search(/process_simplification\.css\?v=\d+/);
+	const uiStylesIndex = hooks.search(/process_ui\.css\?v=\d+/);
+	assert.ok(legacyStylesIndex >= 0);
+	assert.ok(uiStylesIndex > legacyStylesIndex);
 	assert.match(stylesheet, /\.worker-task-nav\s*\{/);
 	assert.match(stylesheet, /\.worker-assignment-key-facts\s*\{/);
 	assert.match(stylesheet, /\.fulfillment-next-action,/);

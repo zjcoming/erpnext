@@ -290,6 +290,28 @@ test("my reporting removes recent history while the history card exposes escaped
 	assert.match(html, /驳回原因.*数量不符/);
 });
 
+test("plain text rejection reasons stay escaped in worker history and supervisor details", () => {
+	const reason = '甲 & 乙 <b>仅作文字</b>；字面 &amp; 和 "引号" <img src=x onerror="alert(1)">';
+	const esc = (value) => String(value ?? "")
+		.replaceAll("&", "&amp;").replaceAll("<", "&lt;")
+		.replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+	const helpers = {
+		translate: (value) => value,
+		escapeHtml: esc,
+		formatNumber: (value) => Number(value || 0).toFixed(2),
+		formatDateTime: (value) => value || "-",
+	};
+	const row = { status: "Rejected", rejection_reason: reason };
+	for (const html of [
+		workerHistoryPage.workerReportHistoryCardHtml(row, helpers),
+		reviewPage.reviewDetailsHtml(row, helpers),
+	]) {
+		assert.ok(html.includes(esc(reason)));
+		assert.doesNotMatch(html, /<img|<b>/);
+		assert.match(html, /字面 &amp;amp;/);
+	}
+});
+
 test("piecework and time wage previews use different quantities", () => {
 	assert.equal(workerPage.workReportAmount("Piecework", 3, 120, 5), 15);
 	assert.equal(workerPage.workReportAmount("Time", 3, 90, 20), 30);

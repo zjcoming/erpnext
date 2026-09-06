@@ -1366,6 +1366,53 @@ class TestWorkerReporting(IntegrationTestCase):
 		self.assertEqual(first_assignment.status, "Completed")
 		self.assertEqual(second_assignment.status, "Completed")
 
+	def test_legacy_successor_cannot_start_until_predecessor_report_is_approved(self):
+		# Model an existing assignment surviving an imported/changed operation sequence.
+		successor, legacy = self._setup_flow(qty=10)
+		work_order = frappe.get_doc("Work Order", successor.work_order)
+		operation = frappe.get_doc({"doctype": "Operation", "name": "Sequence Gate " + random_string(8)}).insert()
+		previous_row = work_order.append("operations", {
+			"operation": operation.name, "workstation": self.TEST_WORKSTATION,
+			"time_in_mins": 1, "sequence_id": 1, "status": "Pending", "completed_qty": 0,
+		})
+		previous_row.docstatus = 1
+		previous_row.db_insert()
+		frappe.db.set_value("Work Order Operation", successor.operation_id, "sequence_id", 2)
+		frappe.db.set_value("Job Card", successor.name, "sequence_id", 2)
+		previous = frappe.copy_doc(frappe.get_doc("Job Card", successor.name))
+		previous.operation = operation.name
+		previous.operation_id = previous_row.name
+		previous.sequence_id = 1
+		previous.custom_worker_reporting_enabled = 0
+		previous.custom_worker_reporting_supervisor = None
+		previous.insert()
+		self._make_rate(previous)
+		previous_user = self._make_worker()
+		previous_employee = frappe.db.get_value("Employee", {"user_id": previous_user}, "name")
+		previous_assignment = self._assign(previous, previous_employee)
+
+		def assert_blocked(request_id):
+			with self.set_user(self.worker_user):
+				rows = service.get_worker_dashboard()["assignments"]
+				row = next(row for row in rows if row.name == legacy.name)
+				self.assertFalse(row.can_start)
+				self.assertEqual(row.block_code, "PREVIOUS_OPERATION_PENDING")
+				with self.assertRaisesRegex(frappe.ValidationError, "前序"):
+					service.start_work_session(legacy.name, request_id)
+			self.assertFalse(frappe.db.exists("Job Card Work Report", {"assignment": legacy.name}))
+
+		assert_blocked("sequence-before-report")
+		pending = self._submit_as(previous_assignment, previous_user, 10)
+		self.assertEqual(frappe.db.get_value("Work Order Operation", previous_row.name, "completed_qty"), 0)
+		assert_blocked("sequence-pending-approval")
+		self._approve(pending)
+		self.assertEqual(frappe.db.get_value("Work Order Operation", previous_row.name, "completed_qty"), 10)
+		with self.set_user(self.worker_user):
+			row = next(row for row in service.get_worker_dashboard()["assignments"] if row.name == legacy.name)
+			self.assertTrue(row.can_start)
+			report = service.start_work_session(legacy.name, "sequence-after-approval")
+			self.assertEqual(report.status, "In Progress")
+
 	def test_multi_worker_dispatch_plan_requires_unique_workers_and_exact_total(self):
 		job_card = self._make_job_card(100)
 		self._make_rate(job_card)
@@ -1714,6 +1761,25 @@ class TestWorkerReporting(IntegrationTestCase):
 				frappe.db.rollback()
 			with self.secondary_connection():
 				self._cleanup_committed_concurrency_fixture(job_card, rate_name, raw_name)
+
+	def test_rejection_preserves_plain_text_reason_and_audit_on_retry(self):
+		job_card, assignment = self._setup_flow(qty=10)
+		report = self._submit(assignment, 1)
+		reason = '数量待复核：甲 & 乙 <b>仅作文字</b>；保留字面 &amp; 和 "引号"。'
+		with self.set_user(self.supervisor):
+			service.reject_work_report(report.name, reason)
+		report.reload()
+		self.assertEqual(report.rejection_reason, reason)
+		self.assertEqual(report.status, "Rejected")
+		reviewed_at = report.reviewed_at
+		with self.set_user(self.supervisor):
+			service.reject_work_report(report.name, "迟到的不同原因不能改写原始审核")
+		report.reload()
+		self.assertEqual(report.rejection_reason, reason)
+		self.assertEqual(report.reviewed_at, reviewed_at)
+		job_card.reload()
+		self.assertEqual(job_card.total_completed_qty, 0)
+		self.assertFalse(job_card.time_logs)
 
 	def test_rejection_releases_quantity_and_requires_a_new_report(self):
 		job_card, assignment = self._setup_flow(qty=100)

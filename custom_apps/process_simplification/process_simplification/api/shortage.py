@@ -277,7 +277,19 @@ def _coverage_stock_snapshot(item_code: str, warehouse: str | None, company: str
 	key = (company, item_code, warehouse)
 	if key not in stock_snapshots:
 		stock_snapshots[key] = get_material_stock_snapshot(item_code, warehouse)
-	return stock_snapshots[key]
+	snapshot = stock_snapshots[key]
+	reallocatable = normalize_qty(
+		(fact_cache.get("reallocatable_production_commitments") or {}).get(key)
+	)
+	if reallocatable > 0 and snapshot.get("production_committed_qty") is not None:
+		# Recompute before clamping: adding to an already-clamped free_qty would
+		# invent stock when commitments exceed physical inventory.
+		snapshot = frappe._dict(snapshot.copy())
+		remaining_commitment = max(
+			normalize_qty(snapshot.get("production_committed_qty")) - reallocatable, 0
+		)
+		snapshot.free_qty = max(normalize_qty(snapshot.get("available_qty")) - remaining_commitment, 0)
+	return snapshot
 
 
 def _coverage_supply_documents(

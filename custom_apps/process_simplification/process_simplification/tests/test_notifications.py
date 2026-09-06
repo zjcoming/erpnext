@@ -19,8 +19,13 @@ from process_simplification.notifications import (
 	PROCUREMENT_RESPONSIBILITY,
 	PROCESS_NOTIFICATION_REALTIME_EVENT,
 	PRODUCTION_DISPATCH_RESPONSIBILITY,
+	PURCHASE_RECEIPT_RESPONSIBILITY,
+	STANDARD_MATERIAL_REQUEST_RECEIPT_NOTIFICATION,
 	WAREHOUSE_RESPONSIBILITY,
+	allowed_notification_role_profiles,
+	disable_standard_material_request_receipt_email,
 	notify_exception_approved,
+	notify_material_request_received,
 	notify_operation_completed,
 	notify_quick_order_shortage,
 	notify_users,
@@ -413,6 +418,94 @@ class TestProcessNotifications(IntegrationTestCase):
 			1,
 		)
 
+	def test_material_request_receipt_uses_process_notification_not_email(self):
+		production_manager = self._make_user(PRODUCTION_MANAGER_ROLE)
+		owner = self._make_user(OWNER_ROLE)
+		additional_warehouse = self._make_user(WAREHOUSE_OPERATOR_ROLE)
+		self._configure(PURCHASE_RECEIPT_RESPONSIBILITY, additional_warehouse)
+		doc = frappe._dict(
+			name="MAT-MR-NOTIFY-1",
+			company=self.company,
+			status="Received",
+			per_received=100,
+		)
+		doc.get_doc_before_save = lambda: frappe._dict(status="Partially Received")
+
+		notify_material_request_received(doc)
+
+		for recipient in (production_manager, owner, additional_warehouse):
+			log = frappe.db.get_value(
+				"Notification Log",
+				{
+					"for_user": recipient,
+					"document_type": "Material Request",
+					"document_name": doc.name,
+				},
+				["type", "app", "subject", "link"],
+				as_dict=True,
+			)
+			self.assertEqual(log.type, "Alert")
+			self.assertEqual(log.app, APP_NAME)
+			self.assertEqual(log.subject, "物料需求已全部到货：MAT-MR-NOTIFY-1")
+			self.assertEqual(log.link, "/app/material-request/MAT-MR-NOTIFY-1")
+
+	def test_unchanged_material_request_receipt_status_does_not_notify(self):
+		warehouse = self._make_user(WAREHOUSE_OPERATOR_ROLE)
+		self._configure(PURCHASE_RECEIPT_RESPONSIBILITY, warehouse)
+		doc = frappe._dict(
+			name="MAT-MR-NOTIFY-UNCHANGED",
+			company=self.company,
+			status="Partially Received",
+			per_received=50,
+		)
+		doc.get_doc_before_save = lambda: frappe._dict(status="Partially Received")
+
+		self.assertEqual(notify_material_request_received(doc), [])
+		self.assertFalse(
+			frappe.db.exists(
+				"Notification Log",
+				{"document_name": doc.name},
+			)
+		)
+
+	def test_standard_material_request_receipt_email_is_disabled(self):
+		self.assertTrue(
+			frappe.db.exists(
+				"Notification",
+				STANDARD_MATERIAL_REQUEST_RECEIPT_NOTIFICATION,
+			)
+		)
+		frappe.db.set_value(
+			"Notification",
+			STANDARD_MATERIAL_REQUEST_RECEIPT_NOTIFICATION,
+			"enabled",
+			1,
+			update_modified=False,
+		)
+
+		self.assertTrue(disable_standard_material_request_receipt_email())
+		self.assertFalse(
+			frappe.db.get_value(
+				"Notification",
+				STANDARD_MATERIAL_REQUEST_RECEIPT_NOTIFICATION,
+				"enabled",
+			)
+		)
+
+	def test_purchase_receipt_route_is_exposed_in_notification_settings(self):
+		for doctype in ("Process Notification Recipient", "Process Notification Role Recipient"):
+			options = frappe.get_meta(doctype).get_field("responsibility").options.splitlines()
+			self.assertIn(PURCHASE_RECEIPT_RESPONSIBILITY, options)
+
+		expected_profiles = {
+			ROLE_DEFINITION_BY_ROLE[role]["profile"]
+			for role in (PRODUCTION_MANAGER_ROLE, OWNER_ROLE, WAREHOUSE_OPERATOR_ROLE)
+		}
+		self.assertEqual(
+			set(allowed_notification_role_profiles(PURCHASE_RECEIPT_RESPONSIBILITY)),
+			expected_profiles,
+		)
+
 
 class TestProcessNotificationRouting(UnitTestCase):
 	def test_missing_notification_switch_defaults_to_enabled_without_overriding_saved_off(self):
@@ -561,6 +654,35 @@ class TestProcessNotificationRouting(UnitTestCase):
 			self.assertEqual(
 				responsibility_recipients("Company A", PRODUCTION_DISPATCH_RESPONSIBILITY),
 				["production@example.com"],
+			)
+
+	def test_purchase_receipt_defaults_to_production_manager_and_owner(self):
+		with (
+			patch("process_simplification.notifications._configured_recipients", return_value=[]),
+			patch(
+				"process_simplification.notifications.frappe.get_all",
+				return_value=[
+					"production@example.com",
+					"owner@example.com",
+					"warehouse@example.com",
+				],
+			),
+			patch(
+				"process_simplification.notifications.frappe.get_roles",
+				side_effect=lambda user: {
+					"production@example.com": [PRODUCTION_MANAGER_ROLE],
+					"owner@example.com": [OWNER_ROLE],
+					"warehouse@example.com": [WAREHOUSE_OPERATOR_ROLE],
+				}[user],
+			),
+			patch(
+				"process_simplification.notifications._user_matches_company",
+				return_value=True,
+			),
+		):
+			self.assertEqual(
+				responsibility_recipients("Company A", PURCHASE_RECEIPT_RESPONSIBILITY),
+				["owner@example.com", "production@example.com"],
 			)
 
 	def test_managed_job_card_submit_triggers_dispatch_notification(self):

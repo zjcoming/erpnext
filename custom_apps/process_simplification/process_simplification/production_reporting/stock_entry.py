@@ -685,6 +685,24 @@ class SubassemblyReservationStockEntryMixin:
 			return
 		return super().validate_component_and_quantities()
 
+	def make_stock_reserve_for_wip_and_fg(self):
+		"""Leave guided finished goods for the sales handoff to reserve.
+
+		ERPNext uses the Work Order ``reserve_stock`` flag for both raw-material
+		reservation and automatic finished-goods reservation. The simplified flow
+		needs the first behavior, but its receipt request deliberately hands the
+		completed stock back to sales for an explicit reservation before delivery.
+		Limit the exception to guided receipt requests so native Work Orders and
+		material-transfer reservations keep their standard behavior.
+		"""
+		if (
+			self.get("purpose") == "Manufacture"
+			and self.get("work_order")
+			and self.get("custom_process_workflow_action") == "Receipt Request"
+		):
+			return None
+		return super().make_stock_reserve_for_wip_and_fg()
+
 	def on_submit(self):
 		result = super().on_submit()
 		_reconcile_work_order_reservations(self)

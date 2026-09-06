@@ -18,6 +18,48 @@ from process_simplification.production_reporting.stock_entry import (
 
 
 class TestStockEntryHooks(UnitTestCase):
+	def test_guided_receipt_leaves_finished_goods_for_explicit_sales_reservation(self):
+		from process_simplification.production_reporting.stock_entry import (
+			SubassemblyReservationStockEntryMixin,
+		)
+
+		class NativeStockEntry:
+			def make_stock_reserve_for_wip_and_fg(self):
+				self.native_reservation_calls += 1
+				return "native"
+
+		class GuidedStockEntry(SubassemblyReservationStockEntryMixin, NativeStockEntry):
+			def __init__(self, **values):
+				self.values = values
+				self.native_reservation_calls = 0
+
+			def get(self, fieldname):
+				return self.values.get(fieldname)
+
+		guided_receipt = GuidedStockEntry(
+			purpose="Manufacture",
+			work_order="WO-GUIDED",
+			custom_process_workflow_action="Receipt Request",
+		)
+		self.assertIsNone(guided_receipt.make_stock_reserve_for_wip_and_fg())
+		self.assertEqual(guided_receipt.native_reservation_calls, 0)
+
+		for values in (
+			{
+				"purpose": "Material Transfer for Manufacture",
+				"work_order": "WO-GUIDED",
+				"custom_process_workflow_action": "Material Issue Request",
+			},
+			{
+				"purpose": "Manufacture",
+				"work_order": "WO-NATIVE",
+				"custom_process_workflow_action": None,
+			},
+		):
+			entry = GuidedStockEntry(**values)
+			self.assertEqual(entry.make_stock_reserve_for_wip_and_fg(), "native")
+			self.assertEqual(entry.native_reservation_calls, 1)
+
 	def test_serial_batch_usage_is_attributed_to_the_required_original_item(self):
 		usage = _merge_alternative_fulfillment_usage(
 			_build_row_wise_serial_batch_usage(

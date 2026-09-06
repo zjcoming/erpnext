@@ -9,6 +9,9 @@ from process_simplification.management_access import (
 	migrate_management_users_to_role_profiles,
 	retire_legacy_management_roles,
 )
+from process_simplification.notifications import (
+	disable_standard_material_request_receipt_email,
+)
 from process_simplification.patches.v0_0.add_management_navigation import (
 	execute as add_management_navigation,
 )
@@ -44,6 +47,7 @@ def after_install():
 	add_worker_reporting_navigation()
 	add_management_navigation()
 	group_process_simplification_navigation()
+	disable_standard_material_request_receipt_email()
 
 
 def after_migrate():
@@ -56,3 +60,4 @@ def after_migrate():
 	add_worker_reporting_navigation()
 	add_management_navigation()
 	group_process_simplification_navigation()
+	disable_standard_material_request_receipt_email()

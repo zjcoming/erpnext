@@ -64,6 +64,7 @@ function workReportButtonMeta(assignment, translate = (message) => message) {
 		RATE_MISSING: translate("缺少计价规则"),
 		DAILY_MINUTES_LIMIT: translate("今日工时已满"),
 		MATERIAL_NOT_TRANSFERRED: translate("等待发料"),
+		PREVIOUS_OPERATION_PENDING: translate("等待前序"),
 		JOB_CARD_UNAVAILABLE: translate("不可报工"),
 		TIME_LOG_SETTING: translate("配置不兼容"),
 		PROCESS_LOSS: translate("需主管处理"),
@@ -85,6 +86,7 @@ function workReportBlockMessage(assignment, translate = (message) => message) {
 		RATE_MISSING: translate("当前日期没有有效计价规则，请联系主管。"),
 		DAILY_MINUTES_LIMIT: translate("今日计薪分钟已达到上限。"),
 		MATERIAL_NOT_TRANSFERRED: translate("物料尚未发放到在制仓，发料后才能开始报工。"),
+		PREVIOUS_OPERATION_PENDING: translate("前序工序尚无可接续的已完成数量，请等待主管审核前序报工。"),
 	};
 	return messages[assignment.block_code] || assignment.block_message || "";
 }
@@ -173,6 +175,22 @@ function normalizeFrappeDateTime(value) {
 
 function workReportFinishDialogStartedAt(assignment) {
 	return normalizeFrappeDateTime(assignment?.active_started_at);
+}
+
+function addWorkerRefreshMenu(page) {
+	// Reload the desk so tasks, review results and the notification badge are
+	// fetched together, including when this device has no realtime connection.
+	page.add_custom_menu_item(
+		page.menu, __("刷新任务与通知"), () => { window.location.reload(); },
+		false, null, "rotate-ccw"
+	).addClass("worker-refresh-menu-item");
+	page.add_custom_menu_item(
+		page.menu, __("启用/试听提示音"),
+		() => window.process_simplification?.notification_sound?.enable(),
+		false, null, "volume-2"
+	);
+	page.menu_btn_group.addClass("worker-page-menu");
+	page.menu_btn_group.find("button").attr("aria-label", __("菜单"));
 }
 
 function runWorkerReportingToolbarLoad(load) {
@@ -601,6 +619,13 @@ function mountWorkerReportingPage({ page, root, mode = "queue" }) {
 			dialog.set_df_property("material_choice", "description", "");
 			dialog.set_value("material_choice", "");
 			dialog.set_value("available_qty", isMaterial ? 0 : options.process_loss_available_qty);
+			dialog.set_df_property(
+				"posting_note",
+				"options",
+				`<p class="text-muted">${isMaterial
+					? __("多人派工时，可退上限按个人派工数量和 BOM 折算；待审核的退料或报废会先占用个人额度，并按整件向下取整减少可报数量。补料后相应额度自动恢复。主管批准后系统只生成原生库存移动草稿，库存人员提交单据后才会改变库存。")
+					: __("生产损耗按本工序成品数量登记。主管批准后写入工序过程损耗，不计入合格数量和计件工资，不生成库存移动单。")}</p>`
+			);
 		}
 
 		function refreshAvailableQty() {
@@ -633,7 +658,7 @@ function mountWorkerReportingPage({ page, root, mode = "queue" }) {
 				{
 					fieldname: "posting_note",
 					fieldtype: "HTML",
-					options: `<p class="text-muted">${__("多人派工时，可退上限按个人派工数量和 BOM 折算；待审核的退料或报废会先占用个人额度，并按整件向下取整减少可报数量。补料后相应额度自动恢复。主管批准后系统只生成原生库存移动草稿，库存人员提交单据后才会改变库存。")}</p>`,
+					options: "",
 				},
 			],
 			primary_action_label: __("提交主管审核"),
@@ -712,7 +737,7 @@ function mountWorkerReportingPage({ page, root, mode = "queue" }) {
 		const route = $(event.currentTarget).data("route");
 		if (route) frappe.set_route(route);
 	});
-	page.add_inner_button(__("刷新"), () => runWorkerReportingToolbarLoad(load));
+	addWorkerRefreshMenu(page);
 	page.worker_reporting = { state, load };
 	return page.worker_reporting;
 }
@@ -735,6 +760,7 @@ const workerReportingApi = {
 	normalizeFrappeDateTime,
 	workReportFinishDialogStartedAt,
 	runWorkerReportingToolbarLoad,
+	addWorkerRefreshMenu,
 	workerAssignmentPriority,
 	partitionWorkerAssignments,
 	shouldOpenWaitingMaterialGroup,

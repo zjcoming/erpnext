@@ -4,6 +4,8 @@ import frappe
 from frappe import _
 from frappe.utils import flt, parse_json
 
+from process_simplification.request_transaction import retry_request_transaction
+
 from erpnext.selling.doctype.sales_order.sales_order import make_delivery_note
 from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
 	get_available_qty_to_reserve,
@@ -232,6 +234,7 @@ def _manufactured_finished_rows(sales_order: str, sales_order_item: str):
 
 
 @frappe.whitelist(methods=["POST"])
+@retry_request_transaction
 def reserve_completed_stock(sales_order: str, sales_order_item: str, qty: float | None = None):
 	frappe.has_permission("Stock Reservation Entry", "create", throw=True)
 	row = _row_from_workbench(sales_order, sales_order_item)

@@ -22,6 +22,7 @@ from process_simplification.management_access import (
 	CAPABILITY_PRODUCTION_REVIEW,
 	user_has_capability,
 )
+from process_simplification.request_transaction import retry_request_transaction
 
 
 STATUS_LABELS = {
@@ -505,6 +506,7 @@ def get_prior_material_demands(
 	*,
 	target_delivery_date=None,
 	exclude_sales_order_item: str | None = None,
+	reallocatable_commitments=None,
 ):
 	"""Production demands that must consume shared raw material before a target,
 	in delivery-date priority order.
@@ -526,15 +528,57 @@ def get_prior_material_demands(
 		}
 	)
 	demands = []
+	seen_work_orders = set()
 	for demand in get_production_overview(page_size=0).get("demands") or []:
 		if demand.get("company") != company:
 			continue
 		if exclude_sales_order_item and demand.get("sales_order_item") == exclude_sales_order_item:
 			continue
 		if order_item_priority_key(demand) >= target_priority:
+			if reallocatable_commitments is not None:
+				_collect_later_work_order_commitments(
+					demand, company, reallocatable_commitments, seen_work_orders
+				)
 			continue
 		demands.append(demand)
 	return _material_demands(demands)
+
+
+def _collect_later_work_order_commitments(demand, company, commitments, seen_work_orders):
+	"""Expose only later orders' unissued, unreserved Work Order requirements.
+
+	Bin production commitments include soft plan demand. Quick-order previews may
+	reallocate that demand by delivery priority, but exact-source reservations,
+	issued material, standalone Work Orders and other companies remain protected.
+	Use the same ledger and reservation facts already loaded by readiness.
+	"""
+	from process_simplification.api.production_readiness import (
+		TERMINAL_WORK_ORDER_STATUSES,
+		_source_reserved_qty,
+		_work_order_item_issue_warehouse,
+	)
+
+	for plan in demand.get("production_plans") or []:
+		for work_order in plan.get("work_orders") or []:
+			name = work_order.get("name")
+			if not name or name in seen_work_orders:
+				continue
+			seen_work_orders.add(name)
+			if work_order.get("status") in TERMINAL_WORK_ORDER_STATUSES:
+				continue
+			for item in work_order.get("required_items") or []:
+				key = (
+					company,
+					item.get("item_code"),
+					_work_order_item_issue_warehouse(work_order, item),
+				)
+				if not all(key):
+					continue
+				qty = max(
+					_positive(item, "remaining_issue_qty") - _source_reserved_qty(item),
+					0,
+				)
+				commitments[key] = commitments.get(key, 0) + qty
 
 
 def get_prior_finished_stock_allocations(
@@ -723,6 +767,7 @@ def attach_visible_worker_assignment_counts(demands):
 
 
 @frappe.whitelist()
+@retry_request_transaction
 def get_production_overview(page=1, page_size=DEFAULT_WORKBENCH_PAGE_SIZE, filters=None):
 	frappe.has_permission("Sales Order", "read", throw=True)
 	frappe.has_permission("Work Order", "read", throw=True)

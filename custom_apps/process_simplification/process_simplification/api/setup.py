@@ -3,6 +3,7 @@ from __future__ import annotations
 import frappe
 from frappe import _
 from frappe.utils import cint, parse_json
+from erpnext import get_default_company
 
 from process_simplification.defaults import get_company_manufacturing_defaults
 
@@ -78,6 +79,9 @@ def get_default_bom(item_code: str) -> str | None:
 
 @frappe.whitelist()
 def validate_setup(company: str | None = None, item_codes: list[str] | str | None = None):
+	company = company or get_default_company()
+	if company:
+		frappe.has_permission("Company", "read", doc=company, throw=True)
 	if isinstance(item_codes, str):
 		item_codes = parse_json(item_codes)
 

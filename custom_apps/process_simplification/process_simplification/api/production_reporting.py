@@ -3,6 +3,7 @@ from __future__ import annotations
 import frappe
 
 from process_simplification.production_reporting import service, summary
+from process_simplification.request_transaction import retry_request_transaction
 
 
 @frappe.whitelist()
@@ -190,6 +191,7 @@ def search_wage_employees(doctype=None, txt=None, searchfield=None, start=0, pag
 
 
 @frappe.whitelist(methods=["POST"])
+@retry_request_transaction
 def build_monthly_summaries(company, month_start, employee=None):
 	return summary.build_monthly_summaries(company, month_start, employee)
 
@@ -200,5 +202,6 @@ def get_wage_management_context():
 
 
 @frappe.whitelist(methods=["POST"])
+@retry_request_transaction
 def confirm_monthly_summary(summary_name):
 	return summary.confirm_monthly_summary(summary_name)

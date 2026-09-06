@@ -1057,6 +1057,9 @@ def allocate_work_order_readiness(plans, stock_snapshots, supply_documents=None)
 			remaining_stock[key] = max(available - allocated_free, 0)
 			item.available_qty = allocated
 			item.current_gap_qty = max(remaining_required - allocated, 0)
+			# Arithmetic residue must not create a purchase or replenishment action.
+			if item.current_gap_qty <= QTY_EPSILON:
+				item.current_gap_qty = 0
 			if item.current_gap_qty > QTY_EPSILON:
 				higher_priority_allocations = [
 					source
@@ -1150,7 +1153,7 @@ def allocate_work_order_readiness(plans, stock_snapshots, supply_documents=None)
 						else:
 							item.open_material_request_qty += document.allocated_qty
 						item.supply_documents.append(document)
-				item.shortage_qty = uncovered
+				item.shortage_qty = uncovered if uncovered > QTY_EPSILON else 0
 				if item.current_gap_qty <= 0:
 					item.status = "ready_now"
 				elif item.shortage_qty > 0:

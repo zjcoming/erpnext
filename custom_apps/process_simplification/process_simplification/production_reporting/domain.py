@@ -222,6 +222,7 @@ def job_card_values(job_card: str, *, for_update: bool = False) -> frappe._dict 
 			"company",
 			"operation",
 			"operation_id",
+			"sequence_id",
 			"for_quantity",
 			"total_completed_qty",
 			"pending_qty",
@@ -308,6 +309,16 @@ def job_card_block(
 				message=_("The Work Order is not executable while its status is {0}.").format(
 					work_order_status
 				),
+			)
+	if job_card.get("sequence_id") and job_card.docstatus == 0:
+		# Use the native operation quantity contract so pending worker reports
+		# cannot unlock a successor. Mutation callers already lock the Work Order.
+		native_card = frappe.get_doc("Job Card", job_card.name, for_update=for_update)
+		remaining = native_card.get_max_completable_qty()
+		if remaining is not None and remaining <= 0:
+			return frappe._dict(
+				code="PREVIOUS_OPERATION_PENDING",
+				message=_("前序工序尚无可接续的已完成数量，请等待主管审核前序报工。"),
 			)
 	return None
 

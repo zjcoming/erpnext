@@ -612,6 +612,7 @@ def assign_workers(job_card: str, assignments, supervisor: str | None = None):
 		assert_work_order_dispatch_ready,
 	)
 
+	assert_supported_job_card(jc, for_update=True)
 	assert_work_order_dispatch_ready(jc.work_order)
 	precision = job_card_qty_precision()
 	allocations = _normalize_assignment_plan(assignments, jc.for_quantity, precision)
@@ -1188,6 +1189,7 @@ def get_worker_dashboard():
 				"company",
 				"operation",
 				"operation_id",
+				"sequence_id",
 				"for_quantity",
 				"total_completed_qty",
 				"docstatus",

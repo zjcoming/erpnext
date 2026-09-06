@@ -414,3 +414,210 @@ class TestQuickOrderIntegration(IntegrationTestCase):
 		self.assertEqual(order.items[0].uom, "Nos")
 		self.assertEqual(order.items[0].warehouse, warehouse)
 		self.assertEqual(result["route"], ["order-workbench", {"sales_order": order.name}])
+
+	def test_direct_stock_order_reservation_and_delivery_preserve_quantity_chain(self):
+		from erpnext.stock.doctype.stock_entry.stock_entry_utils import make_stock_entry
+		from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
+			get_available_qty_to_reserve,
+		)
+
+		from process_simplification.api.actions import create_delivery_note, reserve_stock
+		from process_simplification.api.quick_order import (
+			preflight_quick_sales_order,
+			submit_quick_sales_order,
+		)
+		from process_simplification.api.workbench import (
+			get_effective_reserved_qty,
+			get_order_workbench,
+		)
+
+		frappe.db.set_single_value("Stock Settings", "enable_stock_reservation", 1)
+		frappe.db.set_single_value("Stock Settings", "allow_partial_reservation", 0)
+		if frappe.get_meta("Stock Settings").has_field("auto_reserve_stock"):
+			frappe.db.set_single_value("Stock Settings", "auto_reserve_stock", 0)
+
+		suffix = frappe.generate_hash(length=8)
+		abbr = "D{0}".format(suffix[:4]).upper()
+		company = frappe.get_doc(
+			{
+				"doctype": "Company",
+				"company_name": "Direct Stock E2E {0}".format(suffix),
+				"abbr": abbr,
+				"default_currency": "INR",
+				"country": "India",
+				"create_chart_of_accounts_based_on": "Standard Template",
+			}
+		).insert()
+		customer_group = frappe.get_doc(
+			{
+				"doctype": "Customer Group",
+				"customer_group_name": "Direct Stock Customers {0}".format(suffix),
+				"parent_customer_group": "All Customer Groups",
+				"is_group": 0,
+			}
+		).insert()
+		territory = frappe.get_doc(
+			{
+				"doctype": "Territory",
+				"territory_name": "Direct Stock Territory {0}".format(suffix),
+				"parent_territory": "All Territories",
+				"is_group": 0,
+			}
+		).insert()
+		customer = frappe.get_doc(
+			{
+				"doctype": "Customer",
+				"customer_name": "Direct Stock Customer {0}".format(suffix),
+				"customer_type": "Company",
+				"customer_group": customer_group.name,
+				"territory": territory.name,
+			}
+		).insert()
+		item_group = frappe.get_doc(
+			{
+				"doctype": "Item Group",
+				"item_group_name": "Direct Stock Products {0}".format(suffix),
+				"parent_item_group": "All Item Groups",
+				"is_group": 0,
+			}
+		).insert()
+		item = frappe.get_doc(
+			{
+				"doctype": "Item",
+				"item_code": "DIRECT-STOCK-FG-{0}".format(suffix),
+				"item_name": "Direct Stock Finished Good",
+				"item_group": item_group.name,
+				"stock_uom": "Nos",
+				"is_stock_item": 1,
+				"is_sales_item": 1,
+				"is_purchase_item": 0,
+				"valuation_rate": 25,
+			}
+		).insert()
+		warehouse = "Stores - {0}".format(abbr)
+		price_list = frappe.get_doc(
+			{
+				"doctype": "Price List",
+				"price_list_name": "Direct Stock Selling {0}".format(suffix),
+				"enabled": 1,
+				"selling": 1,
+				"currency": "INR",
+			}
+		).insert()
+		frappe.db.set_single_value("Selling Settings", "selling_price_list", price_list.name)
+
+		make_stock_entry(item_code=item.name, to_warehouse=warehouse, qty=10, rate=25)
+		self.assertEqual(
+			frappe.db.get_value(
+				"Bin", {"item_code": item.name, "warehouse": warehouse}, "actual_qty"
+			),
+			10,
+		)
+
+		guarded_doctypes = ("Production Plan", "Work Order", "Material Request")
+		before_counts = {doctype: frappe.db.count(doctype) for doctype in guarded_doctypes}
+		payload = {
+			"customer": customer.name,
+			"delivery_date": add_days(nowdate(), 3),
+			"po_no": "DIRECT-STOCK-{0}".format(frappe.generate_hash(length=8)),
+			"remarks": "现货直发",
+			"items": [{"item_code": item.name, "qty": 6, "rate": 25}],
+		}
+		defaults = frappe._dict(
+			{
+				"company": company.name,
+				"fg_warehouse": warehouse,
+				"source_warehouse": warehouse,
+				"wip_warehouse": None,
+			}
+		)
+		with (
+			patch("process_simplification.api.quick_order.get_company_defaults", return_value=defaults),
+			patch("process_simplification.api.quick_order.get_default_bom", return_value=None),
+			patch(
+				"process_simplification.api.quick_order._item_price",
+				return_value=frappe._dict(
+					{"price_list": price_list.name, "price_list_rate": 25, "currency": "INR"}
+				),
+			),
+		):
+			preflight = preflight_quick_sales_order(payload)
+			self.assertTrue(preflight["can_submit"])
+			self.assertEqual(preflight["available_to_reserve"], 6)
+			self.assertEqual(preflight["production_required"], 0)
+			with patch("process_simplification.api.quick_order.frappe.db.commit"):
+				result = submit_quick_sales_order(
+					payload,
+					preflight["review_token"],
+					"DIRECT-STOCK-REQUEST-{0}".format(frappe.generate_hash(length=8)),
+				)
+
+		order = frappe.get_doc("Sales Order", result["sales_order"])
+		order_item = order.items[0]
+		self.assertEqual(order.docstatus, 1)
+		self.assertEqual(order_item.qty, 6)
+		self.assertEqual(order_item.delivered_qty, 0)
+		self.assertEqual(
+			frappe.db.count(
+				"Stock Reservation Entry",
+				{"voucher_type": "Sales Order", "voucher_no": order.name, "docstatus": 1},
+			),
+			0,
+		)
+
+		reservation_result = reserve_stock(order.name, order_item.name, qty=6)
+		reservation = frappe.get_doc(
+			"Stock Reservation Entry", reservation_result["stock_reservation_entry"]
+		)
+		self.assertEqual(reservation.docstatus, 1)
+		self.assertEqual(reservation.reserved_qty, 6)
+		self.assertEqual(get_effective_reserved_qty(order.name, order_item.name), 6)
+		self.assertEqual(get_available_qty_to_reserve(item.name, warehouse), 4)
+		self.assertEqual(
+			frappe.db.get_value(
+				"Bin", {"item_code": item.name, "warehouse": warehouse}, "actual_qty"
+			),
+			10,
+		)
+
+		delivery_result = create_delivery_note(order.name, order_item.name)
+		delivery_note = frappe.get_doc("Delivery Note", delivery_result["delivery_note"])
+		self.assertEqual(delivery_note.docstatus, 0)
+		self.assertEqual(len(delivery_note.items), 1)
+		self.assertEqual(delivery_note.items[0].qty, 6)
+		self.assertEqual(
+			frappe.db.get_value(
+				"Bin", {"item_code": item.name, "warehouse": warehouse}, "actual_qty"
+			),
+			10,
+		)
+		self.assertEqual(get_effective_reserved_qty(order.name, order_item.name), 6)
+
+		delivery_note.submit()
+		order.reload()
+		reservation.reload()
+		self.assertEqual(order.items[0].delivered_qty, 6)
+		self.assertEqual(order.per_delivered, 100)
+		self.assertEqual(reservation.delivered_qty, 6)
+		self.assertEqual(get_effective_reserved_qty(order.name, order_item.name), 0)
+		self.assertEqual(
+			frappe.db.get_value(
+				"Bin", {"item_code": item.name, "warehouse": warehouse}, "actual_qty"
+			),
+			4,
+		)
+		self.assertEqual(get_available_qty_to_reserve(item.name, warehouse), 4)
+		delivery_ledger = frappe.get_all(
+			"Stock Ledger Entry",
+			filters={"voucher_type": "Delivery Note", "voucher_no": delivery_note.name},
+			fields=["actual_qty"],
+		)
+		self.assertEqual([entry.actual_qty for entry in delivery_ledger], [-6])
+		workbench_row = get_order_workbench(order.name)["rows"][0]
+		self.assertEqual(workbench_row["delivered_qty"], 6)
+		self.assertEqual(workbench_row["pending_qty"], 0)
+		self.assertEqual(workbench_row["reserved_qty"], 0)
+		self.assertEqual(
+			{doctype: frappe.db.count(doctype) for doctype in guarded_doctypes},
+			before_counts,
+		)

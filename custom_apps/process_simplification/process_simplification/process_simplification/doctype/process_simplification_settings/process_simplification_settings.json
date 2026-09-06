@@ -7,7 +7,7 @@
  "fields": [
   {"fieldname": "worker_reporting_section", "fieldtype": "Section Break", "label": "工人报工"},
   {"default": "1", "description": "开启后，计时工资由工人在结束报工时填写计薪分钟；关闭后，计薪分钟取暂停后累计的计时器实际分钟。实际计时段始终保留供审核和 Job Card 使用。", "fieldname": "allow_manual_time_entry", "fieldtype": "Check", "label": "计时工资允许手工填写工时"},
-  {"description": "系统始终保留默认责任链；下方配置只追加接收用户或岗位，不会替换默认负责人。", "fieldname": "notification_section", "fieldtype": "Section Break", "label": "通知系统", "permlevel": 1},
+  {"description": "系统始终保留默认责任链；采购到货默认同时通知生产管理员和老板/工厂管理人员。下方配置只追加接收用户或岗位，不会替换默认负责人。", "fieldname": "notification_section", "fieldtype": "Section Break", "label": "通知系统", "permlevel": 1},
   {"default": "1", "description": "关闭后不生成流程通知、不实时推送且不播放声音；生产、库存和审核业务本身仍正常执行。", "fieldname": "enable_process_notifications", "fieldtype": "Check", "label": "启用流程通知", "permlevel": 1},
   {"default": "1", "depends_on": "enable_process_notifications", "description": "关闭后仍保留通知列表和未读提示，只停止本应用通知声音。用户个人静音设置的优先级更高。", "fieldname": "enable_notification_sound", "fieldtype": "Check", "label": "启用声音提示", "permlevel": 1},
   {"depends_on": "enable_process_notifications", "description": "按公司和通知责任追加具体接收用户；用户必须具备相应岗位并在公司数据范围内。", "fieldname": "notification_recipients", "fieldtype": "Table", "label": "追加接收用户", "options": "Process Notification Recipient", "permlevel": 1},

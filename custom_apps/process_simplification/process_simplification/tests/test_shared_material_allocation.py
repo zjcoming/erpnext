@@ -281,3 +281,56 @@ class TestDeliveryPriorityPriorDemands(UnitTestCase):
 
 		items = {row["source"]["finished_item"] for row in prior}
 		self.assertEqual(items, {"EARLY"})
+
+	def test_rush_preview_reclaims_only_later_unissued_unreserved_plan_demand(self):
+		from process_simplification.api import production
+
+		def planned(item, date, *, status="Not Started", remaining=80, reserved=0):
+			demand = self._demand(item, date, sales_order_item=item, qty=80)
+			demand["production_plans"] = [{"work_orders": [{
+				"name": "WO-" + item, "status": status,
+				"required_items": [{"item_code": "RM-SHARED", "source_warehouse": "Stores",
+					"remaining_issue_qty": remaining, "source_reserved_qty": reserved}],
+			}]}]
+			return demand
+
+		late = planned("LATE", "2026-08-10", remaining=50, reserved=20)
+		other = planned("OTHER", "2026-08-10")
+		other["company"] = "Other Company"
+		demands = [planned("EARLY", "2026-08-01"), planned("SAME", "2026-08-05"),
+			late, late, planned("DONE", "2026-08-10", status="Completed"), other]
+		commitments = {}
+		with patch.object(production, "get_production_overview", return_value={"demands": demands}), \
+			patch.object(production, "get_default_bom", side_effect=lambda item: "BOM-" + item):
+			prior = production.get_prior_material_demands("_Test Company",
+				target_delivery_date="2026-08-05", reallocatable_commitments=commitments)
+		self.assertEqual({row["source"]["finished_item"] for row in prior}, {"EARLY", "SAME"})
+		self.assertEqual(commitments, {("_Test Company", "RM-SHARED", "Stores"): 30})
+
+	def test_rush_preview_does_not_release_exact_source_reservation(self):
+		from process_simplification.api import production
+
+		commitments = {}
+		production._collect_later_work_order_commitments({"production_plans": [{"work_orders": [{
+			"name": "WO-HARD", "status": "Not Started", "required_items": [{
+				"item_code": "RM", "issue_warehouse": "Stores", "remaining_issue_qty": 80,
+				"source_reserved_qty": 80,
+			}],
+		}]}]}, "Company", commitments, set())
+		self.assertEqual(commitments, {("Company", "RM", "Stores"): 0})
+
+	@patch("process_simplification.api.shortage.get_material_stock_snapshot")
+	def test_rush_stock_recomputes_pool_before_clamping_and_keeps_external_commitments(self, snapshot):
+		from process_simplification.api.shortage import _coverage_stock_snapshot
+
+		key = ("Company", "RM", "Stores")
+		for actual, committed, released, expected in [(100, 80, 80, 100), (100, 80, 0, 20),
+			(100, 80, 60, 80), (100, 200, 80, 0), (100, 140, 80, 40)]:
+			with self.subTest(actual=actual, committed=committed, released=released):
+				original = frappe._dict(available_qty=actual, production_committed_qty=committed,
+					free_qty=max(actual-committed, 0))
+				snapshot.return_value = original
+				result = _coverage_stock_snapshot("RM", "Stores", "Company",
+					{"reallocatable_production_commitments": {key: released}})
+				self.assertEqual(result.free_qty, expected)
+				self.assertEqual(original.free_qty, max(actual-committed, 0))

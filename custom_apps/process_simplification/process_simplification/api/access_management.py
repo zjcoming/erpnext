@@ -289,6 +289,8 @@ def set_user_access(
 	warehouse_scope = _parse_set(warehouses)
 	employee_row = _resolve_employee(user, employee)
 	if WORKER_ROLE in requested_roles and employee_row:
+		if company_scope.difference({employee_row.company}):
+			frappe.throw(_("工人账号只能选择关联员工所属公司：{0}。").format(employee_row.company))
 		company_scope.add(employee_row.company)
 
 	current_roles = set(frappe.get_roles(user))
