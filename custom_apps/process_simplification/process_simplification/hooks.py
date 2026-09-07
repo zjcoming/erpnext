@@ -10,6 +10,7 @@ required_apps = ["erpnext"]
 app_include_css = [
 	"/assets/process_simplification/css/process_simplification.css?v=18",
 	"/assets/process_simplification/css/process_ui.css?v=5",
+	"/assets/process_simplification/css/purchasing.css?v=2",
 	"/assets/process_simplification/css/process_pwa.css?v=1",
 ]
 app_include_js = [
@@ -20,7 +21,12 @@ app_include_js = [
 	"/assets/process_simplification/js/process_pwa.js?v=1",
 ]
 
-boot_session = "process_simplification.pwa.boot_session"
+boot_session = [
+	"process_simplification.pwa.boot_session",
+	"process_simplification.navigation_layout.boot_session",
+]
+
+doctype_js = {"Material Request": "public/js/material_request_purchasing.js"}
 
 after_install = "process_simplification.install.after_install"
 after_migrate = "process_simplification.install.after_migrate"
@@ -38,6 +44,18 @@ doc_events = {
 	},
 	"Material Request": {
 		"on_change": "process_simplification.notifications.notify_material_request_received",
+	},
+	"Purchase Receipt": {
+		"before_validate": "process_simplification.purchasing.receipts.lock_receipt_sources",
+		"before_cancel": "process_simplification.purchasing.receipts.lock_receipt_sources",
+		"on_submit": "process_simplification.purchasing.receipts.record_receipt_event",
+		"on_cancel": "process_simplification.purchasing.receipts.record_receipt_event",
+	},
+	"Purchase Order": {
+		"before_validate": "process_simplification.purchasing.allocation.lock_order_sources",
+		"validate": "process_simplification.purchasing.allocation.validate_order_allocation",
+		"before_update_after_submit": "process_simplification.purchasing.allocation.validate_order_allocation",
+		"on_change": "process_simplification.purchasing.allocation.validate_order_allocation",
 	},
 	"Job Card": {
 		"before_save": "process_simplification.production_reporting.job_card.before_save",
@@ -77,7 +95,8 @@ has_permission = {
 }
 
 scheduler_events = {
-	"daily": ["process_simplification.api.quick_order.cleanup_expired_quick_order_idempotency"]
+	"daily": ["process_simplification.api.quick_order.cleanup_expired_quick_order_idempotency"],
+	"cron": {"* * * * *": ["process_simplification.purchasing.receipts.retry_pending_events"]},
 }
 
 add_to_apps_screen = [

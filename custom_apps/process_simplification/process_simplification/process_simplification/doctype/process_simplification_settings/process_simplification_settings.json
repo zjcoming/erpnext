@@ -3,8 +3,9 @@
  "creation": "2026-08-30 00:00:00.000000",
  "doctype": "DocType",
  "engine": "InnoDB",
- "field_order": ["worker_reporting_section", "allow_manual_time_entry", "pwa_section", "enable_pwa", "pwa_app_name", "pwa_short_name", "pwa_https_url", "pwa_install_prompt", "pwa_prompt_interval_days", "pwa_status", "notification_section", "enable_process_notifications", "enable_notification_sound", "notification_recipients", "notification_role_recipients"],
+ "field_order": ["worker_reporting_section", "allow_manual_time_entry", "pwa_section", "enable_pwa", "pwa_app_name", "pwa_short_name", "pwa_https_url", "pwa_install_prompt", "pwa_prompt_interval_days", "pwa_status", "notification_section", "purchase_receipt_notifications_started_at", "enable_process_notifications", "enable_notification_sound", "notification_recipients", "notification_role_recipients"],
  "fields": [
+  {"fieldname": "purchase_receipt_notifications_started_at", "fieldtype": "Datetime", "label": "逐批到货通知启用时间", "read_only": 1, "permlevel": 1},
   {"fieldname": "worker_reporting_section", "fieldtype": "Section Break", "label": "工人报工"},
   {"default": "1", "description": "开启后，计时工资由工人在结束报工时填写计薪分钟；关闭后，计薪分钟取暂停后累计的计时器实际分钟。实际计时段始终保留供审核和 Job Card 使用。", "fieldname": "allow_manual_time_entry", "fieldtype": "Check", "label": "计时工资允许手工填写工时"},
   {"description": "将现有系统安装到手机桌面，继续使用原有账号、页面和权限。报工与审批需要联网。", "fieldname": "pwa_section", "fieldtype": "Section Break", "label": "手机应用 (PWA)", "permlevel": 1},

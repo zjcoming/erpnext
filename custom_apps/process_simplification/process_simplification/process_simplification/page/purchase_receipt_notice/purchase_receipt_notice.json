@@ -1,0 +1,11 @@
+{
+  "doctype": "Page",
+  "name": "purchase-receipt-notice",
+  "page_name": "purchase-receipt-notice",
+  "title": "采购到货通知",
+  "module": "Process Simplification",
+  "standard": "Yes",
+  "roles": [],
+  "system_page": 0,
+  "modified": "2026-09-07 23:24:35.574521"
+}

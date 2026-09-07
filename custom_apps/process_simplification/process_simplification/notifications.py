@@ -729,6 +729,11 @@ def notify_quick_order_shortage(sales_order: str, company: str, shortages) -> li
 @_notification_event
 def notify_material_request_received(doc, method=None):
 	"""Notify production and factory management when purchased material arrives."""
+	if doc.get("material_request_type") == "Purchase":
+		from process_simplification.purchasing.receipts import events_enabled
+
+		if events_enabled():
+			return []
 	status = doc.get("status")
 	if status not in {"Partially Received", "Received"}:
 		return []

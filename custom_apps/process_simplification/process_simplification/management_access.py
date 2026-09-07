@@ -230,6 +230,10 @@ WAREHOUSE_OPERATOR_PERMISSIONS = {
 	"Job Card": {"read", "select"},
 	"Price List": {"read", "select"},
 	"Supplier Group": {"read", "select"},
+	"Currency": {"read", "select"},
+	"Terms and Conditions": {"read", "select"},
+	"Purchase Taxes and Charges Template": {"read", "select"},
+	"Payment Terms Template": {"read", "select"},
 	"Stock Settings": {"read"},
 	"Buying Settings": {"read"},
 	# Native transaction validation reads the posting-date confirmation policy.
@@ -292,6 +296,7 @@ PAGE_CAPABILITIES = {
 	"production-report-review": CAPABILITY_PRODUCTION_REVIEW,
 	"production-exception-review": CAPABILITY_EXCEPTION_STOCK,
 	"shortage-purchase-planning": CAPABILITY_SHORTAGE_PURCHASE,
+	"purchase-supplier-allocation": CAPABILITY_SHORTAGE_PURCHASE,
 	"process-access-management": CAPABILITY_ACCESS_MANAGEMENT,
 }
 
@@ -302,6 +307,7 @@ NATIVE_PAGE_ROLES = {
 	"production-report-review": {SYSTEM_MANAGER_ROLE},
 	"production-exception-review": {"Stock User", "Stock Manager", SYSTEM_MANAGER_ROLE},
 	"shortage-purchase-planning": {"Manufacturing User", "Purchase User", SYSTEM_MANAGER_ROLE},
+	"purchase-supplier-allocation": {"Manufacturing User", "Purchase User", SYSTEM_MANAGER_ROLE},
 	"process-access-management": {SYSTEM_MANAGER_ROLE},
 }
 

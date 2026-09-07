@@ -5,8 +5,8 @@ from typing import Any
 
 import frappe
 from frappe import _
+from frappe.model.meta import get_field_precision
 from frappe.utils import flt
-
 
 ACTIVE_WORK_ORDER_STATUSES = ("Submitted", "Not Started", "In Process", "Stock Reserved", "Stock Partially Reserved")
 TERMINAL_WORK_ORDER_STATUSES = ("Completed", "Stopped", "Closed", "Cancelled")
@@ -64,6 +64,15 @@ def throw_chinese(message: str, title: str = "流程简化"):
 
 def normalize_qty(value: Any, precision: int | None = None) -> float:
 	return flt(value or 0, precision)
+
+
+def get_quantity_precision(doctype="Material Request Item", fieldname="stock_qty") -> int:
+	return get_field_precision(frappe.get_meta(doctype).get_field(fieldname))
+
+
+def normalize_purchase_qty(value: Any) -> float:
+	"""Round purchasing stock quantities without rounding BOM ratios or unrelated workflows."""
+	return normalize_qty(value, get_quantity_precision())
 
 
 def resolve_item_display_name(item_code, current_item_name=None, document_item_name=None):

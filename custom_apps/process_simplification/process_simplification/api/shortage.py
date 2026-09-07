@@ -1,23 +1,59 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from math import isfinite
 
 import frappe
 from frappe.utils import add_days, nowdate, parse_json
 
 from erpnext.manufacturing.doctype.bom.bom import get_bom_items_as_dict
-
 from process_simplification.api.setup import (
 	get_company_defaults,
 	get_default_bom,
 	resolve_production_source_warehouse,
 )
-from process_simplification.api.utils import apply_current_item_names, normalize_qty, throw_chinese
+from process_simplification.api.utils import (
+	apply_current_item_names,
+	get_quantity_precision,
+	normalize_purchase_qty,
+	normalize_qty,
+	throw_chinese,
+)
 from process_simplification.api.workbench import get_order_workbench
 
 
 class MaterialCoverageBomExpansionError(Exception):
 	"""The requested BOM could not be expanded for material coverage."""
+
+
+def _normalize_purchase_balance(value):
+	# Preserve small contributions until orders are aggregated, at least to the
+	# native quantity columns' nine decimal places, while removing float residue.
+	return normalize_qty(value, max(9, get_quantity_precision()))
+
+
+def _normalize_purchase_coverage(row):
+	precision = get_quantity_precision()
+	row["quantity_precision"] = precision
+	fields = (
+		"required_qty",
+		"actual_qty",
+		"committed_qty",
+		"available_qty",
+		"open_material_request_qty",
+		"open_purchase_order_qty",
+		"current_gap_qty",
+		"shortage_qty",
+	)
+	for entry in [row, *(row.get("sources") or [])]:
+		for field in fields:
+			if field in entry:
+				entry[field] = (
+					normalize_qty(entry[field], precision)
+					if entry is row
+					else _normalize_purchase_balance(entry[field])
+				)
+	return row
 
 
 def _parse(value):
@@ -364,9 +400,7 @@ def calculate_material_coverage(
 		resolved_source = resolve_production_source_warehouse(
 			company,
 			defaults=defaults,
-			sales_order_item_warehouse=(demand.get("source") or {}).get(
-				"sales_order_item_warehouse"
-			),
+			sales_order_item_warehouse=(demand.get("source") or {}).get("sales_order_item_warehouse"),
 		)
 		for bom_item in bom_items.values():
 			item_code = bom_item.get("item_code")
@@ -408,9 +442,7 @@ def calculate_material_coverage(
 		if not warehouse_can_use:
 			material["blocked"] = True
 			continue
-		snapshot = _coverage_stock_snapshot(
-			material["item_code"], material["warehouse"], company, fact_cache
-		)
+		snapshot = _coverage_stock_snapshot(material["item_code"], material["warehouse"], company, fact_cache)
 		material["actual_qty"] = normalize_qty(snapshot.get("actual_qty"))
 		material["committed_qty"] = normalize_qty(snapshot.get("committed_qty"))
 		prior_qty = prior_consumed.get((material["item_code"], material["warehouse"]), 0)
@@ -432,14 +464,17 @@ def calculate_material_coverage(
 			key=lambda doc: (doc.get("schedule_date") or "9999-12-31", doc["doctype"], doc["name"]),
 		)
 		material["current_gap_qty"] = max(
-			normalize_qty(material["required_qty"]) - material["available_qty"], 0
+			normalize_purchase_qty(normalize_qty(material["required_qty"]) - material["available_qty"]), 0
 		)
 		material["shortage_qty"] = max(
-			material["current_gap_qty"]
-			- material["open_material_request_qty"]
-			- material["open_purchase_order_qty"],
+			normalize_purchase_qty(
+				material["current_gap_qty"]
+				- material["open_material_request_qty"]
+				- material["open_purchase_order_qty"]
+			),
 			0,
 		)
+		_normalize_purchase_coverage(material)
 		if material["current_gap_qty"] == 0:
 			material["status"] = "ready_now"
 		elif material["open_purchase_order_qty"] >= material["current_gap_qty"]:
@@ -452,7 +487,9 @@ def calculate_material_coverage(
 		else:
 			material["status"] = "new_purchase_required"
 
-	material_rows = sorted(materials.values(), key=lambda material: (material["warehouse"] or "", material["item_code"]))
+	material_rows = sorted(
+		materials.values(), key=lambda material: (material["warehouse"] or "", material["item_code"])
+	)
 	apply_current_item_names(material_rows)
 	return frappe._dict(
 		{
@@ -509,7 +546,8 @@ def _allocate_multilevel_supply(
 		need_by_date,
 		fact_cache,
 	)
-	uncovered = normalize_qty(row.current_gap_qty)
+	row.current_gap_qty = _normalize_purchase_balance(row.current_gap_qty)
+	uncovered = row.current_gap_qty
 	allocated_purchase_orders = 0
 	allocated_material_requests = 0
 	documents = []
@@ -533,13 +571,13 @@ def _allocate_multilevel_supply(
 				document.get("detail_name") or document.get("name"),
 			)
 			available_supply = remaining_supply.setdefault(
-				document_key, normalize_qty(document.get("outstanding_qty"))
+				document_key, _normalize_purchase_balance(document.get("outstanding_qty"))
 			)
 			allocated = 0
 			if not document.get("is_late"):
 				allocated = min(uncovered, available_supply)
-				remaining_supply[document_key] = max(available_supply - allocated, 0)
-				uncovered = max(uncovered - allocated, 0)
+				remaining_supply[document_key] = max(_normalize_purchase_balance(available_supply - allocated), 0)
+				uncovered = max(_normalize_purchase_balance(uncovered - allocated), 0)
 			document.allocated_qty = allocated
 			documents.append(document)
 			if doctype == "Purchase Order":
@@ -547,8 +585,8 @@ def _allocate_multilevel_supply(
 			else:
 				allocated_material_requests += allocated
 
-	row.open_purchase_order_qty = allocated_purchase_orders
-	row.open_material_request_qty = allocated_material_requests
+	row.open_purchase_order_qty = _normalize_purchase_balance(allocated_purchase_orders)
+	row.open_material_request_qty = _normalize_purchase_balance(allocated_material_requests)
 	row.supply_documents = documents
 	row.shortage_qty = uncovered
 	if row.current_gap_qty == 0:
@@ -629,6 +667,7 @@ def _aggregate_multilevel_purchased_rows(rows) -> list:
 	result = []
 	for material in materials.values():
 		material["supply_documents"] = list(material.pop("_documents").values())
+		_normalize_purchase_coverage(material)
 		if material.get("blocked"):
 			material["status"] = "cannot_calculate"
 		elif material["current_gap_qty"] == 0:
@@ -807,9 +846,7 @@ def calculate_plan_purchase_shortages(readiness_by_sales_order_item, selected_sa
 			continue
 		for plan in plans or []:
 			for work_order in plan.get("work_orders") or []:
-				work_order_sales_order_item = (
-					work_order.get("sales_order_item") or mapped_sales_order_item
-				)
+				work_order_sales_order_item = work_order.get("sales_order_item") or mapped_sales_order_item
 				if (
 					selected_sales_order_items
 					and work_order_sales_order_item not in selected_sales_order_items
@@ -858,9 +895,7 @@ def calculate_plan_purchase_shortages(readiness_by_sales_order_item, selected_sa
 					material["open_material_request_qty"] += normalize_qty(
 						item.get("open_material_request_qty")
 					)
-					material["open_purchase_order_qty"] += normalize_qty(
-						item.get("open_purchase_order_qty")
-					)
+					material["open_purchase_order_qty"] += normalize_qty(item.get("open_purchase_order_qty"))
 					material["current_gap_qty"] += normalize_qty(item.get("current_gap_qty"))
 					material["shortage_qty"] += normalize_qty(item.get("shortage_qty"))
 					material["sources"].append(
@@ -878,7 +913,11 @@ def calculate_plan_purchase_shortages(readiness_by_sales_order_item, selected_sa
 					)
 	return apply_current_item_names(
 		sorted(
-			materials.values(),
+			(
+				_normalize_purchase_coverage(row)
+				for row in materials.values()
+				if normalize_purchase_qty(row["shortage_qty"]) > 0
+			),
 			key=lambda row: (row.get("warehouse") or "", row.get("item_code") or ""),
 		)
 	)
@@ -912,11 +951,9 @@ def _remaining_supply_after_plan_readiness(readiness_by_sales_order_item):
 							document["outstanding_qty"],
 							normalize_qty(source_document.get("outstanding_qty")),
 						)
-						document["allocated_qty"] += normalize_qty(
-							source_document.get("allocated_qty")
-						)
+						document["allocated_qty"] += normalize_qty(source_document.get("allocated_qty"))
 	return {
-		key: max(document["outstanding_qty"] - document["allocated_qty"], 0)
+		key: max(_normalize_purchase_balance(document["outstanding_qty"] - document["allocated_qty"]), 0)
 		for key, document in documents.items()
 	}
 
@@ -966,9 +1003,7 @@ def calculate_company_purchase_shortages(company: str, selected_sales_order_item
 	"""
 	selected_sales_order_items = set(selected_sales_order_items or [])
 	readiness, unplanned_demands = _purchase_inputs_from_production_overview(company)
-	planned_shortages = calculate_plan_purchase_shortages(
-		readiness, selected_sales_order_items
-	)
+	planned_shortages = calculate_plan_purchase_shortages(readiness, selected_sales_order_items)
 	unplanned_coverage = calculate_multilevel_material_coverage(
 		unplanned_demands,
 		company,
@@ -997,7 +1032,9 @@ def calculate_company_purchase_shortages(company: str, selected_sales_order_item
 	)
 	for row in shortages:
 		row.company = row.get("company") or company
-	return apply_current_item_names(shortages)
+	return apply_current_item_names(
+		[row for row in shortages if normalize_purchase_qty(row.shortage_qty) > 0]
+	)
 
 
 def get_all_material_demands(company: str):
@@ -1085,15 +1122,16 @@ def _requested_purchase_qty(row):
 	default.  Once the field is present, however, a falsy value is user input and
 	must not silently fall back to the suggested shortage.
 	"""
-	return normalize_qty(
-		row.get("purchase_qty") if "purchase_qty" in row else row.get("shortage_qty")
-	)
+	value = normalize_qty(row.get("purchase_qty") if "purchase_qty" in row else row.get("shortage_qty"))
+	if not isfinite(value):
+		throw_chinese("采购数量必须是有效数字。")
+	precision = min(get_quantity_precision(), get_quantity_precision(fieldname="qty"))
+	return normalize_qty(value, precision)
 
 
 def revalidate_purchase_rows(shortage_rows, current_shortages):
 	current_by_key = {
-		(row.get("item_code"), row.get("warehouse")): frappe._dict(row)
-		for row in current_shortages or []
+		(row.get("item_code"), row.get("warehouse")): frappe._dict(row) for row in current_shortages or []
 	}
 	validated = []
 	for index, source_row in enumerate(shortage_rows or [], start=1):
@@ -1112,8 +1150,8 @@ def revalidate_purchase_rows(shortage_rows, current_shortages):
 			for source in (current or {}).get("sources") or []
 			if _purchase_source_key(source) in requested_source_keys
 		]
-		current_shortage_qty = sum(
-			normalize_qty(source.get("shortage_qty")) for source in matching_sources
+		current_shortage_qty = normalize_purchase_qty(
+			sum(normalize_qty(source.get("shortage_qty")) for source in matching_sources)
 		)
 		purchase_qty = _requested_purchase_qty(row)
 		if current_shortage_qty <= 0:
@@ -1123,7 +1161,7 @@ def revalidate_purchase_rows(shortage_rows, current_shortages):
 		if purchase_qty > current_shortage_qty:
 			throw_chinese(
 				"第 {0} 行采购数量超过最新采购缺口 {1}，请刷新后重试。".format(
-					index, current_shortage_qty
+					index, f"{current_shortage_qty:.{get_quantity_precision()}f}"
 				)
 			)
 		row.shortage_qty = current_shortage_qty
@@ -1159,7 +1197,7 @@ def _create_material_request_locked(shortage_rows, company, defaults, schedule_d
 	for index, row in enumerate(shortage_rows, start=1):
 		row = frappe._dict(row)
 		qty = _requested_purchase_qty(row)
-		shortage_qty = normalize_qty(row.get("shortage_qty"))
+		shortage_qty = normalize_purchase_qty(row.get("shortage_qty"))
 		if qty <= 0:
 			throw_chinese("第 {0} 行采购数量必须大于 0。".format(index))
 		if qty > shortage_qty and not row.get("allow_over_purchase"):
@@ -1177,6 +1215,12 @@ def _create_material_request_locked(shortage_rows, company, defaults, schedule_d
 		)
 
 	mr.insert()
+	if any(
+		normalize_qty(item.get("qty"), get_quantity_precision(fieldname="qty")) <= 0
+		or (item.get("stock_qty") is not None and normalize_purchase_qty(item.get("stock_qty")) <= 0)
+		for item in mr.items
+	):
+		throw_chinese("采购数量按单据精度处理后必须大于 0，未提交采购申请。")
 	mr.submit()
 	# The company-scoped lock must remain held until this submitted request is
 	# visible to the next revalidation. Otherwise two users can both pass the

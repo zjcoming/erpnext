@@ -20,7 +20,7 @@ GROUPS = (
 			"production-exception-review",
 		),
 	),
-	("采购", ("shortage-purchase-planning",)),
+	("采购", ("shortage-purchase-planning", "purchase-supplier-allocation", "purchase-receipt-notice")),
 	("工资管理", ("Operation Wage Rate", "Monthly Worker Wage Summary")),
 	("系统管理", ("Process Simplification Settings", "process-access-management")),
 )

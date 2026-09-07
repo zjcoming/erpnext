@@ -1,0 +1,108 @@
+{
+  "doctype": "DocType",
+  "name": "Purchase Allocation Line",
+  "module": "Process Simplification",
+  "engine": "InnoDB",
+  "istable": 1,
+  "allow_rename": 0,
+  "field_order": [
+    "material_request_item",
+    "supplier",
+    "qty",
+    "uom",
+    "stock_qty",
+    "rate",
+    "currency",
+    "schedule_date",
+    "warehouse",
+    "purchase_order",
+    "purchase_order_item"
+  ],
+  "fields": [
+    {
+      "fieldname": "material_request_item",
+      "fieldtype": "Data",
+      "label": "Material Request Item",
+      "read_only": 1,
+      "in_list_view": 0
+    },
+    {
+      "fieldname": "supplier",
+      "fieldtype": "Link",
+      "options": "Supplier",
+      "label": "Supplier",
+      "read_only": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "qty",
+      "fieldtype": "Float",
+      "label": "Qty",
+      "read_only": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "uom",
+      "fieldtype": "Link",
+      "options": "UOM",
+      "label": "Uom",
+      "read_only": 1,
+      "in_list_view": 0
+    },
+    {
+      "fieldname": "stock_qty",
+      "fieldtype": "Float",
+      "label": "Stock Qty",
+      "read_only": 1,
+      "in_list_view": 0
+    },
+    {
+      "fieldname": "rate",
+      "fieldtype": "Currency",
+      "label": "Rate",
+      "read_only": 1,
+      "in_list_view": 0
+    },
+    {
+      "fieldname": "currency",
+      "fieldtype": "Link",
+      "options": "Currency",
+      "label": "Currency",
+      "read_only": 1,
+      "in_list_view": 0
+    },
+    {
+      "fieldname": "schedule_date",
+      "fieldtype": "Date",
+      "label": "Schedule Date",
+      "read_only": 1,
+      "in_list_view": 0
+    },
+    {
+      "fieldname": "warehouse",
+      "fieldtype": "Link",
+      "options": "Warehouse",
+      "label": "Warehouse",
+      "read_only": 1,
+      "in_list_view": 0
+    },
+    {
+      "fieldname": "purchase_order",
+      "fieldtype": "Data",
+      "label": "Purchase Order",
+      "read_only": 1,
+      "in_list_view": 0
+    },
+    {
+      "fieldname": "purchase_order_item",
+      "fieldtype": "Data",
+      "label": "Purchase Order Item",
+      "read_only": 1,
+      "in_list_view": 0
+    }
+  ],
+  "permissions": [],
+  "sort_field": "creation",
+  "sort_order": "DESC",
+  "track_changes": 0
+}

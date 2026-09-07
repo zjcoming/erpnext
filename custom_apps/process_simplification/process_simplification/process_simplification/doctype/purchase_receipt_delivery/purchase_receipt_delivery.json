@@ -1,0 +1,66 @@
+{
+  "doctype": "DocType",
+  "name": "Purchase Receipt Delivery",
+  "module": "Process Simplification",
+  "engine": "InnoDB",
+  "istable": 1,
+  "allow_rename": 0,
+  "field_order": [
+    "recipient",
+    "status",
+    "attempts",
+    "next_attempt",
+    "notification_log",
+    "last_error"
+  ],
+  "fields": [
+    {
+      "fieldname": "recipient",
+      "fieldtype": "Link",
+      "options": "User",
+      "label": "Recipient",
+      "read_only": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "status",
+      "fieldtype": "Select",
+      "options": "Pending\nDelivered\nRetry\nFailed\nSkipped",
+      "label": "Status",
+      "read_only": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "attempts",
+      "fieldtype": "Int",
+      "label": "Attempts",
+      "read_only": 1,
+      "in_list_view": 0
+    },
+    {
+      "fieldname": "next_attempt",
+      "fieldtype": "Datetime",
+      "label": "Next Attempt",
+      "read_only": 1,
+      "in_list_view": 0
+    },
+    {
+      "fieldname": "notification_log",
+      "fieldtype": "Data",
+      "label": "Notification Log",
+      "read_only": 1,
+      "in_list_view": 0
+    },
+    {
+      "fieldname": "last_error",
+      "fieldtype": "Small Text",
+      "label": "Last Error",
+      "read_only": 1,
+      "in_list_view": 0
+    }
+  ],
+  "permissions": [],
+  "sort_field": "creation",
+  "sort_order": "DESC",
+  "track_changes": 0
+}

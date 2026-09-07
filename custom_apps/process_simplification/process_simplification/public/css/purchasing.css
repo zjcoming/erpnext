@@ -1,0 +1,125 @@
+/* Shared factory purchasing pages: task first, compact progress, native controls. */
+.process-simplification-page.purchase-allocation,
+.process-simplification-page.receipt-notice { max-width: 1480px; margin: 0 auto; padding: 16px 0 36px; color: var(--text-color); }
+.purchase-hero { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 20px; border: 1px solid var(--border-color); border-radius: 12px; background: var(--card-bg, #fff); margin-bottom: 14px; }
+.purchase-hero h1 { margin: 5px 0 8px; font-size: 28px; font-weight: 700; }
+.purchase-hero p { margin: 0; }
+.purchase-eyebrow { color: var(--primary); font-size: 12px; font-weight: 600; }
+.purchase-meta, .purchase-footnote { color: var(--text-muted); font-size: 12px; }
+.purchase-next-action { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; background: var(--blue-50, #f0f7ff); border: 1px solid var(--blue-100, #dcecff); border-radius: 10px; margin-bottom: 14px; }
+.purchase-next-action.is-warning { background: var(--yellow-50, #fff9ed); border-color: var(--yellow-200, #f1deb3); }
+.purchase-next-action strong { font-size: 16px; }
+.purchase-next-action p { margin: 4px 0 0; font-size: 13px; line-height: 1.7; }
+.purchase-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
+.purchase-stats > div { background: var(--card-bg, #fff); padding: 12px 16px; border: 1px solid var(--border-color); border-radius: 10px; }
+.purchase-stats span { color: var(--text-muted); font-size: 12px; }
+.purchase-stats strong { display: block; font-size: 25px; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.purchase-stats small { margin-left: 7px; font-size: 12px; color: var(--text-muted); font-weight: 400; }
+.purchase-section { border: 1px solid var(--border-color); border-radius: 12px; background: var(--card-bg, #fff); margin-bottom: 16px; overflow: hidden; }
+.purchase-section-heading { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 16px 18px; }
+.purchase-section h2 { font-size: 16px; font-weight: 600; margin: 0; }
+.purchase-selected-count, .purchase-request-count { font-size: 12px; color: var(--text-muted); }
+.purchase-order { display: flex; gap: 16px; align-items: center; padding: 12px 18px; border-top: 1px solid var(--border-color); }
+.purchase-order > div { flex: 1; min-width: 0; }
+.purchase-order strong { display: block; margin-bottom: 3px; font-size: 14px; overflow-wrap: anywhere; }
+.purchase-order > div a { font-size: 12px; }
+.purchase-badge { border-radius: 5px; padding: 4px 8px; font-size: 12px; white-space: nowrap; }
+.purchase-badge.warning { background: var(--yellow-100, #fff1cc); color: var(--yellow-800, #825a10); }
+.purchase-badge.info { background: var(--blue-50, #edf6ff); color: var(--blue-700, #1766a4); }
+.purchase-badge.success { background: var(--green-50, #edf9f1); color: var(--green-700, #28764b); }
+.purchase-badge.muted { background: var(--control-bg); color: var(--text-muted); }
+.purchase-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.purchase-table th { background: var(--subtle-fg, #f7f8fa); color: var(--text-muted); font-weight: 500; font-size: 12px; }
+.purchase-table th, .purchase-table td { padding: 11px 16px; border-top: 1px solid var(--border-color); vertical-align: middle; }
+.purchase-item-table th:not(:first-child), .purchase-item-table td:not(:first-child) { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.purchase-item-table td:first-child { width: 35%; }
+.purchase-item-table strong { display: block; font-weight: 600; }
+.purchase-item-table small { display: block; color: var(--text-muted); margin-top: 3px; font-size: 11px; }
+.purchase-item-table .has-quantity { font-weight: 600; }
+.purchase-item-table .is-zero { color: var(--gray-500, #9a9fa5); }
+.purchase-footnote { margin: 0; padding: 12px 18px; border-top: 1px solid var(--border-color); line-height: 1.7; }
+.purchase-bulk { padding: 0 18px 16px; display: flex; align-items: end; gap: 12px; flex-wrap: wrap; }
+.purchase-bulk .form-group { width: 270px; margin-bottom: 0; }
+.purchase-bulk > span { width: 100%; }
+.purchase-editor { border-top: 1px solid var(--border-color); }
+.purchase-editor > summary { display: flex; align-items: center; justify-content: space-between; list-style: none; cursor: pointer; gap: 12px; padding: 14px 18px; }
+.purchase-editor > summary::-webkit-details-marker { display: none; }
+.purchase-editor > summary::after { content: '＋'; flex: 0 0 auto; font-size: 18px; color: var(--text-muted); }
+.purchase-editor[open] > summary::after { content: '−'; }
+.purchase-editor > summary > div { flex: 1; min-width: 0; }
+.purchase-editor > summary strong { display: block; font-size: 14px; }
+.purchase-editor > summary .purchase-meta { display: block; margin-top: 3px; }
+.purchase-editor[open] > summary { background: var(--blue-50, #f3f8ff); }
+.purchase-progress { font-size: 12px; color: var(--green-700, #28764b); }
+.purchase-error { color: var(--orange-700, #ad6419); }
+.purchase-editor-body { padding: 0 18px 16px; }
+.purchase-editor-controls { display: flex; gap: 20px; align-items: center; padding: 14px 0 4px; flex-wrap: wrap; }
+.purchase-editor-controls .form-group { width: 220px; margin-bottom: 0; }
+.purchase-check { display: flex; align-items: center; gap: 8px; min-height: 40px; margin: 0; cursor: pointer; font-size: 13px; }
+.purchase-check input { width: 16px; height: 16px; }
+.purchase-fields { display: grid; grid-template-columns: minmax(200px, 2fr) repeat(3, minmax(100px, 1fr)) minmax(145px, 1.2fr); gap: 12px; }
+.purchase-fields .form-group { min-width: 0; margin-bottom: 8px; }
+.purchase-allocation label, .receipt-notice label { font-size: 12px; font-weight: 400; }
+.purchase-allocation-row { padding: 14px 0; border-bottom: 1px solid var(--border-color); margin-bottom: 12px; }
+.purchase-row-options { display: flex; align-items: start; gap: 12px; justify-content: space-between; }
+.purchase-row-options > details { flex: 1; min-width: 0; }
+.purchase-row-options summary { font-size: 12px; color: var(--text-muted); cursor: pointer; padding: 8px 0; }
+.purchase-row-options .purchase-fields { grid-template-columns: repeat(2, minmax(140px, 1fr)); max-width: 700px; }
+.purchase-editor-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 18px; border-top: 1px solid var(--border-color); }
+.purchase-editor-footer p { font-size: 12px; color: var(--text-muted); margin: 0; }
+.purchase-request-search { padding: 0 18px 14px; max-width: 540px; }
+.purchase-request-search .form-group { margin: 0; }
+.purchase-request-table td:last-child { text-align: right; }
+.purchase-empty { padding: 40px 20px; text-align: center; color: var(--text-muted); }
+.purchase-card { border: 1px solid var(--border-color); border-radius: 10px; background: var(--card-bg, #fff); margin-bottom: 14px; padding: 18px; }
+.purchase-card h4 { margin: 0 0 10px; font-size: 16px; }
+.purchase-notice-warning { padding: 14px 18px; background: var(--yellow-50, #fff9ed); border: 1px solid var(--yellow-200, #f1deb3); border-radius: 10px; margin-bottom: 14px; }
+.receipt-body { line-height: 1.8; overflow-wrap: anywhere; }
+.receipt-body table { width: 100%; }
+@media (max-width: 1100px) {
+	.purchase-fields { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+	.purchase-fields > .form-group:first-child { grid-column: span 2; }
+	.purchase-row-options .purchase-fields > .form-group:first-child { grid-column: auto; }
+	.purchase-table th, .purchase-table td { padding: 10px 12px; }
+}
+@media (max-width: 650px) {
+	.process-simplification-page.purchase-allocation, .process-simplification-page.receipt-notice { padding-top: 10px; }
+	.purchase-hero { padding: 16px; align-items: start; }
+	.purchase-hero h1 { font-size: 23px; }
+	.purchase-hero p { font-size: 12px; overflow-wrap: anywhere; }
+	.purchase-hero > .btn { white-space: normal; flex: 0 0 86px; }
+	.purchase-next-action { padding: 13px 15px; }
+	.purchase-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+	.purchase-stats > div { padding: 10px 14px; }
+	.purchase-stats strong { font-size: 22px; }
+	.purchase-section-heading { flex-wrap: wrap; padding: 14px; }
+	.purchase-order { padding: 12px 14px; flex-wrap: wrap; gap: 10px; }
+	.purchase-order > div { flex-basis: calc(100% - 70px); }
+	.purchase-order > .btn { width: 100%; }
+	.purchase-table thead { display: none; }
+	.purchase-table, .purchase-table tbody { display: block; }
+	.purchase-table tr { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-top: 1px solid var(--border-color); padding: 12px 14px; gap: 12px 8px; }
+	.purchase-table td { display: block; padding: 0; border: 0; min-width: 0; overflow-wrap: anywhere; }
+	.purchase-table td:first-child, .purchase-request-table td:last-child { grid-column: 1 / -1; width: auto; text-align: left; }
+	.purchase-item-table td:not(:first-child) { text-align: left; }
+	.purchase-table td[data-label]::before { content: attr(data-label); display: block; font-size: 11px; color: var(--text-muted); font-weight: 400; margin-bottom: 4px; }
+	.purchase-request-table tr { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+	.purchase-request-table td:last-child .btn { width: 100%; }
+	.purchase-footnote { padding: 12px 14px; }
+	.purchase-bulk { padding: 0 14px 14px; gap: 10px; }
+	.purchase-bulk .form-group, .purchase-bulk > .btn { width: 100%; }
+	.purchase-editor > summary { padding: 14px; flex-wrap: wrap; gap: 6px; }
+	.purchase-editor > summary > div { flex-basis: calc(100% - 30px); }
+	.purchase-editor > summary::after { order: 1; }
+	.purchase-editor > summary > .purchase-progress { order: 2; flex-basis: 100%; }
+	.purchase-editor-body { padding: 0 14px 14px; }
+	.purchase-editor-controls { gap: 8px; }
+	.purchase-editor-controls .form-group { width: 100%; }
+	.purchase-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+	.purchase-fields > .form-group:first-child { grid-column: 1 / -1; }
+	.purchase-row-options .purchase-fields { grid-template-columns: minmax(0, 1fr); }
+	.purchase-editor-footer { flex-direction: column; align-items: stretch; padding: 14px; }
+	.purchase-allocation .btn, .receipt-notice .btn, .purchase-allocation .form-control, .receipt-notice .form-control { min-height: 44px; }
+	.purchase-allocation .form-control { font-size: 16px; }
+	.purchase-allocation .purchase-check { min-height: 44px; }
+}

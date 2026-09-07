@@ -49,13 +49,29 @@ function shortageSourcesHtml(sources, helpers) {
 	)} ${rows.length - 3} ${helpers.escapeHtml(helpers.translate("个来源"))}</summary>${rest}</details>`;
 }
 
+function purchaseQuantityPrecision(row) {
+	const precision = Number(row.quantity_precision ?? 2);
+	return Number.isInteger(precision) && precision >= 0 && precision <= 9 ? precision : 2;
+}
+
+function normalizedPurchaseQuantity(value, row) {
+	const number = Number(value ?? 0);
+	return Number.isFinite(number) ? Number(number.toFixed(purchaseQuantityPrecision(row))) : 0;
+}
+
+function preparePurchaseRows(rows) {
+	return (rows || []).filter((row) => normalizedPurchaseQuantity(row.shortage_qty, row) > 0)
+		.map((row) => ({ ...row, purchase_qty: normalizedPurchaseQuantity(row.purchase_qty ?? row.shortage_qty, row) }));
+}
+
 function shortageRowsHtml(rows, helpers) {
 	const esc = helpers.escapeHtml;
-	const fmt = helpers.formatQty;
 	const translate = helpers.translate || ((message) => message);
 	return (rows || []).map((row, index) => {
 		const rowIndex = row._row_index === undefined ? index : row._row_index;
-		const purchaseQty = Number(row.purchase_qty ?? row.shortage_qty ?? 0);
+		const precision = purchaseQuantityPrecision(row);
+		const fmt = (value) => helpers.formatQty(value, precision);
+		const purchaseQty = normalizedPurchaseQuantity(row.purchase_qty ?? row.shortage_qty, row).toFixed(precision);
 		const selected = row._selected !== false;
 		return `
 			<tr data-index="${rowIndex}" class="${selected ? "is-selected" : ""}">
@@ -88,13 +104,13 @@ function shortageRowsHtml(rows, helpers) {
 				</td>
 				<td class="shortage-purchase-cell" data-label="${esc(translate("本次采购"))}">
 					<div class="shortage-qty-editor">
-						<input class="form-control text-right purchase-qty" type="number" min="0" step="any" value="${purchaseQty}">
+						<input class="form-control text-right purchase-qty" type="number" min="0" step="${(10 ** -precision).toFixed(precision)}" value="${purchaseQty}">
 						${row.stock_uom ? `<span>${esc(row.stock_uom)}</span>` : ""}
 					</div>
 					<small>${esc(translate("建议按剩余缺口采购"))}</small>
 				</td>
 				<td class="shortage-sources-cell" data-label="${esc(translate("需求来源"))}">
-					${shortageSourcesHtml(row.sources, { ...helpers, translate })}
+					${shortageSourcesHtml(row.sources, { ...helpers, formatQty: fmt, translate })}
 				</td>
 			</tr>
 		`;
@@ -201,6 +217,8 @@ function shortagePageHtml(helpers) {
 }
 
 const shortagePurchasePlanningApi = {
+	normalizedPurchaseQuantity,
+	preparePurchaseRows,
 	shortageDocumentLink,
 	shortageSourceHtml,
 	shortageRowsHtml,
@@ -223,6 +241,8 @@ frappe.pages["shortage-purchase-planning"].on_page_load = function (wrapper) {
 	});
 
 	page.main.html(shortagePageHtml({ translate: __, escapeHtml: frappe.utils.escape_html }));
+	page.add_inner_button(__("已建采购申请／供应商分配"), () => frappe.set_route("purchase-supplier-allocation"));
+	page.add_inner_button(__("到货通知记录"), () => frappe.set_route("purchase-receipt-notice"));
 	const $root = page.main.find(".shortage-purchase-planning");
 	const canCreate = canCreateMaterialRequest(frappe.model);
 	const state = {
@@ -246,8 +266,8 @@ frappe.pages["shortage-purchase-planning"].on_page_load = function (wrapper) {
 	});
 	scheduleDateField.set_value(frappe.datetime.add_days(frappe.datetime.nowdate(), 1));
 
-	function fmt(value) {
-		return format_number(flt(value), null, 2);
+	function fmt(value, precision = 2) {
+		return format_number(flt(value), null, precision);
 	}
 
 	function visibleEntries() {
@@ -260,7 +280,7 @@ frappe.pages["shortage-purchase-planning"].on_page_load = function (wrapper) {
 	function selectedRows() {
 		return state.rows.filter((row, index) => state.selectedIndexes.has(index)).map((row) => ({
 			...row,
-			purchase_qty: flt(row.purchase_qty ?? row.shortage_qty),
+			purchase_qty: normalizedPurchaseQuantity(row.purchase_qty ?? row.shortage_qty, row),
 			schedule_date: scheduleDateField.get_value(),
 		}));
 	}
@@ -287,7 +307,7 @@ frappe.pages["shortage-purchase-planning"].on_page_load = function (wrapper) {
 	function renderStatus(kind, message) {
 		const content = {
 			loading: `<div class="shortage-state shortage-loading"><span class="shortage-spinner"></span><div><strong>${__("正在汇总全部缺料")}</strong><small>${__("正在核对已排产需求、库存和在途采购…")}</small></div></div>`,
-			empty: `<div class="shortage-state shortage-empty"><span>✓</span><div><strong>${__("当前没有待采购缺料")}</strong><small>${__("已排产需求均有库存或在途采购覆盖。")}</small></div></div>`,
+			empty: `<div class="shortage-state shortage-empty"><span>✓</span><div><strong>${__("当前没有待采购缺料")}</strong><small>${__("当前需求已有库存、采购申请或采购订单覆盖。已有申请可从“已建采购申请／供应商分配”继续下单。")}</small></div></div>`,
 			filtered: `<div class="shortage-state shortage-empty"><span>⌕</span><div><strong>${__("没有匹配结果")}</strong><small>${__("换一个物料、订单、工单或仓库关键词试试。")}</small></div></div>`,
 			error: `<div class="shortage-state shortage-error"><span>!</span><div><strong>${__("缺料读取失败")}</strong><small>${frappe.utils.escape_html(message || __("请刷新重试。"))}</small></div><button type="button" class="btn btn-default" data-action="refresh">${__("重新读取")}</button></div>`,
 		}[kind] || "";
@@ -330,10 +350,7 @@ frappe.pages["shortage-purchase-planning"].on_page_load = function (wrapper) {
 		frappe.call({
 			method: "process_simplification.api.shortage.check_all_shortages",
 		}).then((response) => {
-			state.rows = ((response && response.message && response.message.shortages) || []).map((row) => ({
-				...row,
-				purchase_qty: flt(row.shortage_qty),
-			}));
+			state.rows = preparePurchaseRows((response && response.message && response.message.shortages) || []);
 			state.selectedIndexes = new Set(state.rows.map((_, index) => index));
 			state.loaded = true;
 			state.loading = false;
@@ -375,7 +392,7 @@ frappe.pages["shortage-purchase-planning"].on_page_load = function (wrapper) {
 					freeze_message: __("正在复核并生成采购申请…"),
 				}).then((response) => {
 					const materialRequest = response && response.message && response.message.material_request;
-					if (materialRequest) frappe.set_route("Form", "Material Request", materialRequest);
+					if (materialRequest) frappe.set_route("purchase-supplier-allocation", { material_request: materialRequest });
 				});
 			}
 		);

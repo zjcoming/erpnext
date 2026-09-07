@@ -1,0 +1,110 @@
+{
+  "doctype": "DocType",
+  "name": "Purchase Receipt Event",
+  "module": "Process Simplification",
+  "engine": "InnoDB",
+  "istable": 0,
+  "autoname": "prompt",
+  "allow_rename": 0,
+  "field_order": [
+    "receipt",
+    "event_type",
+    "company",
+    "supplier",
+    "occurred_at",
+    "actor",
+    "status",
+    "snapshot",
+    "deliveries",
+    "last_error"
+  ],
+  "fields": [
+    {
+      "fieldname": "receipt",
+      "fieldtype": "Link",
+      "options": "Purchase Receipt",
+      "label": "Receipt",
+      "read_only": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "event_type",
+      "fieldtype": "Select",
+      "options": "Arrival\nReturn\nReceipt Cancelled\nReturn Cancelled",
+      "label": "Event Type",
+      "read_only": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "company",
+      "fieldtype": "Link",
+      "options": "Company",
+      "label": "Company",
+      "read_only": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "supplier",
+      "fieldtype": "Link",
+      "options": "Supplier",
+      "label": "Supplier",
+      "read_only": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "occurred_at",
+      "fieldtype": "Datetime",
+      "label": "Occurred At",
+      "read_only": 1,
+      "in_list_view": 0
+    },
+    {
+      "fieldname": "actor",
+      "fieldtype": "Link",
+      "options": "User",
+      "label": "Actor",
+      "read_only": 1,
+      "in_list_view": 0
+    },
+    {
+      "fieldname": "status",
+      "fieldtype": "Select",
+      "options": "Pending\nPartial\nDelivered\nFailed\nSuppressed\nNo Recipients\nSkipped",
+      "label": "Status",
+      "read_only": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "snapshot",
+      "fieldtype": "Code",
+      "options": "JSON",
+      "label": "Snapshot",
+      "read_only": 1,
+      "in_list_view": 0
+    },
+    {
+      "fieldname": "deliveries",
+      "fieldtype": "Table",
+      "options": "Purchase Receipt Delivery",
+      "label": "Deliveries",
+      "read_only": 1,
+      "in_list_view": 0
+    },
+    {
+      "fieldname": "last_error",
+      "fieldtype": "Small Text",
+      "label": "Last Error",
+      "read_only": 1,
+      "in_list_view": 0
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1
+    }
+  ],
+  "sort_field": "creation",
+  "sort_order": "DESC",
+  "track_changes": 0
+}

@@ -12,6 +12,7 @@ from process_simplification.management_access import (
 from process_simplification.notifications import (
 	disable_standard_material_request_receipt_email,
 )
+from process_simplification.patches.v0_0.add_purchasing_navigation import execute as add_purchasing_navigation
 from process_simplification.patches.v0_0.add_management_navigation import (
 	execute as add_management_navigation,
 )
@@ -23,6 +24,7 @@ from process_simplification.patches.v0_0.group_process_simplification_navigation
 )
 from process_simplification.production_reporting.setup import setup_worker_reporting
 from process_simplification.production_workflow.setup import ensure_production_workflow_fields
+from process_simplification.purchasing.receipts import ensure_defaults as ensure_receipt_defaults
 from process_simplification.pwa import ensure_defaults as ensure_pwa_defaults
 
 
@@ -47,9 +49,11 @@ def after_install():
 	retire_legacy_management_roles()
 	add_worker_reporting_navigation()
 	add_management_navigation()
+	add_purchasing_navigation()
 	group_process_simplification_navigation()
 	disable_standard_material_request_receipt_email()
 	ensure_pwa_defaults()
+	ensure_receipt_defaults()
 
 
 def after_migrate():
@@ -61,6 +65,8 @@ def after_migrate():
 	retire_legacy_management_roles()
 	add_worker_reporting_navigation()
 	add_management_navigation()
+	add_purchasing_navigation()
 	group_process_simplification_navigation()
 	disable_standard_material_request_receipt_email()
 	ensure_pwa_defaults()
+	ensure_receipt_defaults()

@@ -7,6 +7,8 @@ const {
 	filterShortageRows,
 	canCreateMaterialRequest,
 	shortagePageHtml,
+	normalizedPurchaseQuantity,
+	preparePurchaseRows,
 } = require("../../process_simplification/page/shortage_purchase_planning/shortage_purchase_planning.js");
 
 const escapeHtml = (value) =>
@@ -16,6 +18,29 @@ const escapeHtml = (value) =>
 		.replaceAll(">", "&gt;")
 		.replaceAll('"', "&quot;")
 		.replaceAll("'", "&#39;");
+
+test("purchase input removes arithmetic residue and never renders an exponent", () => {
+	const rows = preparePurchaseRows([
+		{ item_code: "NO-GAP", shortage_qty: 7.247535904753022e-13, quantity_precision: 2 },
+		{ item_code: "BUY", shortage_qty: 4.949999999999996, quantity_precision: 2 },
+	]);
+	assert.equal(rows.length, 1);
+	assert.equal(rows[0].purchase_qty, 4.95);
+	const html = shortageRowsHtml(rows, { escapeHtml, formatQty: String });
+	assert.match(html, /value="4\.95"/);
+	assert.match(html, /step="0\.01"/);
+	assert.doesNotMatch(html, /value="[^"]*e[-+]\d/i);
+});
+
+test("purchase input respects the supplied precision and preserves explicit zero", () => {
+	const row = { shortage_qty: 0.000001, quantity_precision: 6 };
+	assert.equal(normalizedPurchaseQuantity(row.shortage_qty, row), 0.000001);
+	assert.equal(preparePurchaseRows([{ ...row, purchase_qty: 0 }])[0].purchase_qty, 0);
+	const html = shortageRowsHtml([row], { escapeHtml, formatQty: (value, precision) => Number(value || 0).toFixed(precision) });
+	assert.match(html, /value="0\.000001"/);
+	assert.match(html, /step="0\.000001"/);
+	assert.match(html, /<strong>0\.000001<\/strong>/);
+});
 
 test("shortage rows use required quantity and escape every source label", () => {
 	const html = shortageRowsHtml(

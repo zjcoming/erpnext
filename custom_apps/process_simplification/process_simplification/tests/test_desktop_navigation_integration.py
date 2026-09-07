@@ -17,6 +17,8 @@ EXPECTED_WORKSPACE_CARDS = {
 	),
 	"采购与工资": (
 		"shortage-purchase-planning",
+		"purchase-supplier-allocation",
+		"purchase-receipt-notice",
 		"Operation Wage Rate",
 		"Monthly Worker Wage Summary",
 	),
@@ -379,3 +381,43 @@ class TestDesktopNavigationIntegration(IntegrationTestCase):
 		self.assertFalse(frappe.db.exists("Workspace Sidebar", "process-simplification"))
 		self.assertEqual(sidebar.items[0].link_type, "Workspace")
 		self.assertEqual(sidebar.items[0].link_to, "process-simplification")
+
+	def test_purchasing_navigation_repairs_missing_and_duplicate_links(self):
+		from process_simplification.patches.v0_0.add_purchasing_navigation import ITEMS, execute
+
+		for doctype, name, fieldname in (
+			("Workspace Sidebar", SIDEBAR_NAME, "items"),
+			("Workspace", "process-simplification", "links"),
+		):
+			doc = frappe.get_doc(doctype, name)
+			doc.set(fieldname, [row for row in doc.get(fieldname) if row.link_to != "purchase-supplier-allocation"])
+			doc.append(fieldname, dict(type="Link", label="旧到货入口", link_type="Page", link_to="purchase-receipt-notice"))
+			doc.save(ignore_permissions=True)
+		execute()
+		execute()
+		sidebar = frappe.get_doc("Workspace Sidebar", SIDEBAR_NAME)
+		workspace = frappe.get_doc("Workspace", "process-simplification")
+		for label, route, icon in ITEMS:
+			sidebar_rows = [row for row in sidebar.items if row.link_to == route]
+			self.assertEqual(len(sidebar_rows), 1)
+			self.assertEqual(sidebar_rows[0].icon, icon)
+			self.assertEqual(sidebar_rows[0].child, 1)
+			self.assertEqual(sidebar_rows[0].label, label)
+			self.assertEqual(len([row for row in workspace.links if row.link_to == route]), 1)
+		self._assert_workspace_cards(workspace)
+
+	def test_receipt_history_navigation_does_not_change_direct_notice_access(self):
+		from unittest.mock import patch
+		from process_simplification.navigation_layout import boot_session
+
+		for roles, visible in ((["Production Worker"], False), (["Process Simplification Owner"], True), (["System Manager"], True)):
+			boot = frappe._dict(workspace_sidebar_item={"process simplification": {"items": [
+				{"link_to": "purchase-receipt-notice"}, {"link_to": "my-production-reporting"}
+			]}})
+			with patch.object(frappe, "session", frappe._dict(user="navigation-test@example.invalid")), patch.object(frappe, "get_roles", return_value=roles):
+				boot_session(boot)
+			links = [row["link_to"] for row in boot.workspace_sidebar_item["process simplification"]["items"]]
+			self.assertEqual("purchase-receipt-notice" in links, visible)
+			self.assertIn("my-production-reporting", links)
+		# The detail page remains available to recipients; its API checks company and responsibility.
+		self.assertEqual(frappe.get_doc("Page", "purchase-receipt-notice").roles, [])

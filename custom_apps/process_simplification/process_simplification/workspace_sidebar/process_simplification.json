@@ -179,6 +179,24 @@
    "type": "Link"
   },
   {
+   "type": "Link",
+   "label": "\u4f9b\u5e94\u5546\u5206\u914d",
+   "link_type": "Page",
+   "link_to": "purchase-supplier-allocation",
+   "icon": "users",
+   "child": 1,
+   "collapsible": 1
+  },
+  {
+   "type": "Link",
+   "label": "\u5230\u8d27\u901a\u77e5",
+   "link_type": "Page",
+   "link_to": "purchase-receipt-notice",
+   "icon": "bell",
+   "child": 1,
+   "collapsible": 1
+  },
+  {
    "child": 0,
    "collapsible": 1,
    "indent": 0,

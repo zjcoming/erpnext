@@ -1,0 +1,83 @@
+{
+  "doctype": "DocType",
+  "name": "Purchase Allocation Batch",
+  "module": "Process Simplification",
+  "engine": "InnoDB",
+  "istable": 0,
+  "autoname": "prompt",
+  "allow_rename": 0,
+  "field_order": [
+    "material_request",
+    "company",
+    "requesting_user",
+    "request_key",
+    "intent_digest",
+    "result",
+    "allocations"
+  ],
+  "fields": [
+    {
+      "fieldname": "material_request",
+      "fieldtype": "Link",
+      "options": "Material Request",
+      "label": "Material Request",
+      "read_only": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "company",
+      "fieldtype": "Link",
+      "options": "Company",
+      "label": "Company",
+      "read_only": 1,
+      "in_list_view": 1
+    },
+    {
+      "fieldname": "requesting_user",
+      "fieldtype": "Link",
+      "options": "User",
+      "label": "Requesting User",
+      "read_only": 1,
+      "in_list_view": 0
+    },
+    {
+      "fieldname": "request_key",
+      "fieldtype": "Data",
+      "label": "Request Key",
+      "read_only": 1,
+      "in_list_view": 0
+    },
+    {
+      "fieldname": "intent_digest",
+      "fieldtype": "Data",
+      "label": "Intent Digest",
+      "read_only": 1,
+      "in_list_view": 0
+    },
+    {
+      "fieldname": "result",
+      "fieldtype": "Code",
+      "options": "JSON",
+      "label": "Result",
+      "read_only": 1,
+      "in_list_view": 0
+    },
+    {
+      "fieldname": "allocations",
+      "fieldtype": "Table",
+      "options": "Purchase Allocation Line",
+      "label": "Allocations",
+      "read_only": 1,
+      "in_list_view": 0
+    }
+  ],
+  "permissions": [
+    {
+      "role": "System Manager",
+      "read": 1
+    }
+  ],
+  "sort_field": "creation",
+  "sort_order": "DESC",
+  "track_changes": 0
+}

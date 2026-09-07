@@ -18,6 +18,8 @@ for (const pageName of [
 	"production-report-review",
 	"production-exception-review",
 	"shortage-purchase-planning",
+	"purchase-supplier-allocation",
+	"purchase-receipt-notice",
 	"executive-dashboard",
 	"process-access-management",
 ]) {
@@ -96,7 +98,7 @@ test("workspace home groups permitted links by factory responsibility", () => {
 		["经营总览", 1],
 		["销售与订单", 2],
 		["生产执行", 6],
-		["采购与工资", 3],
+		["采购与工资", 5],
 		["系统管理", 2],
 		["标准单据", 6],
 	]);
@@ -174,7 +176,7 @@ test("workspace sidebar groups business pages and hides permission-empty groups"
 				"production-exception-review",
 			],
 		],
-		["采购", ["shortage-purchase-planning"]],
+		["采购", ["shortage-purchase-planning", "purchase-supplier-allocation", "purchase-receipt-notice"]],
 		["工资管理", ["Operation Wage Rate", "Monthly Worker Wage Summary"]],
 		["系统管理", ["Process Simplification Settings", "process-access-management"]],
 	];

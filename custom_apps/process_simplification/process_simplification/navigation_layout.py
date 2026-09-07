@@ -19,6 +19,8 @@ WORKSPACE_CARD_LINKS = (
 		"采购与工资",
 		(
 			"shortage-purchase-planning",
+			"purchase-supplier-allocation",
+			"purchase-receipt-notice",
 			"Operation Wage Rate",
 			"Monthly Worker Wage Summary",
 		),
@@ -98,3 +100,17 @@ def _recalculate_link_counts(rows):
 			count += 1
 	if card:
 		card.link_count = count
+
+
+def boot_session(bootinfo):
+	"""History navigation follows its manager-only API; direct notices keep recipient access."""
+	import frappe
+	from process_simplification.management_access import OWNER_ROLE
+
+	if frappe.session.user == "Administrator" or set(frappe.get_roles()) & {OWNER_ROLE, "System Manager"}:
+		return
+	for sidebar in (bootinfo.get("workspace_sidebar_item") or {}).values():
+		sidebar["items"] = [
+			item for item in sidebar.get("items", [])
+			if item.get("link_to") != "purchase-receipt-notice"
+		]
