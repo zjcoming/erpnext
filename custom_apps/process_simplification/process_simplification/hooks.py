@@ -1,9 +1,14 @@
 app_name = "process_simplification"
-app_title = "流程简化"
-app_publisher = "Custom ERPNext Implementation"
-app_description = "Simplified manufacturing workflow for small factories"
-app_email = "admin@example.com"
+app_title = "恒算 ERP"
+app_publisher = "重庆恒算科技有限公司"
+app_description = "恒算 ERP 企业经营管理系统"
+app_email = "contact@hengsuankeji.com"
 app_license = "GPL-3.0"
+app_logo_url = "/assets/process_simplification/images/hengsuan.svg"
+
+website_context = {"favicon": app_logo_url}
+update_website_context = "process_simplification.branding.update_website_context"
+web_include_css = ["/assets/process_simplification/css/hengsuan_branding.css?v=2"]
 
 required_apps = ["erpnext"]
 
@@ -12,6 +17,7 @@ app_include_css = [
 	"/assets/process_simplification/css/process_ui.css?v=5",
 	"/assets/process_simplification/css/purchasing.css?v=2",
 	"/assets/process_simplification/css/process_pwa.css?v=1",
+	"/assets/process_simplification/css/hengsuan_branding.css?v=2",
 ]
 app_include_js = [
 	"/assets/process_simplification/js/item_identity.js?v=2",
@@ -19,11 +25,13 @@ app_include_js = [
 	"/assets/process_simplification/js/worker_reporting.js?v=10",
 	"/assets/process_simplification/js/notification_sound.js?v=6",
 	"/assets/process_simplification/js/process_pwa.js?v=1",
+	"/assets/process_simplification/js/hengsuan_branding.js?v=2",
 ]
 
 boot_session = [
 	"process_simplification.pwa.boot_session",
 	"process_simplification.navigation_layout.boot_session",
+	"process_simplification.branding.boot_session",
 ]
 
 doctype_js = {"Material Request": "public/js/material_request_purchasing.js"}
@@ -102,7 +110,7 @@ scheduler_events = {
 add_to_apps_screen = [
 	{
 		"name": app_name,
-		"logo": "/assets/process_simplification/images/process-simplification.svg",
+		"logo": app_logo_url,
 		"title": app_title,
 		"route": "/desk/process-simplification",
 		"has_permission": "process_simplification.permissions.can_access_app",

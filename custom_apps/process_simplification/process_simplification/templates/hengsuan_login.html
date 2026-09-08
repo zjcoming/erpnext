@@ -1,0 +1,14 @@
+{% extends "frappe/www/login.html" %}
+
+{% block page_content %}
+<header class="hs-login-brand">
+	<img src="{{ hengsuan_branding.logo_url }}" alt="恒算科技标志" width="56" height="56">
+	<h1>{{ hengsuan_branding.product_name }}</h1>
+	<p>{{ hengsuan_branding.description }}</p>
+</header>
+{{ super() }}
+<footer class="hs-login-footer">
+	<p>{{ hengsuan_branding.company_name }} · 研发与服务</p>
+	<a href="{{ hengsuan_branding.website }}" target="_blank" rel="noopener noreferrer">恒算科技官网 ↗</a>
+</footer>
+{% endblock %}

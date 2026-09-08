@@ -12,7 +12,28 @@ msgstr ""
 "Content-Transfer-Encoding: 8bit\n"
 
 msgid "process-simplification"
-msgstr "流程简化"
+msgstr "恒算 ERP"
 
 msgid "Process Simplification"
-msgstr "流程简化"
+msgstr "恒算 ERP"
+
+msgid "Sign In"
+msgstr "登录"
+
+msgid "Welcome! Please sign in to continue."
+msgstr "欢迎使用，请登录以继续。"
+
+msgid "Forgot password?"
+msgstr "忘记密码？"
+
+msgid "Forgot Password?"
+msgstr "忘记密码？"
+
+msgid "Back to sign in"
+msgstr "返回登录"
+
+msgid "Process Simplification Settings"
+msgstr "恒算 ERP 设置"
+
+msgid "简化流程总设置"
+msgstr "恒算 ERP 设置"

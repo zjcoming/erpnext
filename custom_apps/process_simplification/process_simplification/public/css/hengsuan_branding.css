@@ -1,0 +1,180 @@
+/* Product identity; business-page controls keep the existing theme. */
+body.hs-login {
+	background: #f5f7fb;
+}
+
+body.hs-login .page-content-wrapper {
+	min-height: auto;
+	padding-top: 24px;
+}
+
+.hs-login-brand {
+	max-width: 440px;
+	margin: 56px auto 28px;
+	text-align: center;
+	color: #0f172a;
+}
+
+.hs-login-brand img {
+	border-radius: 12px;
+	margin-bottom: 16px;
+}
+
+.hs-login-brand h1 {
+	margin: 0;
+	font-size: 30px;
+	font-weight: 700;
+	letter-spacing: 0.02em;
+}
+
+.hs-login-brand p {
+	margin: 10px 0 0;
+	font-size: 14px;
+	color: #64748b;
+}
+
+body.hs-login :is(.for-login, .for-email-login, .for-signup, .for-forgot, .for-login-with-email-link) {
+	padding-top: 0;
+	padding-bottom: 0;
+}
+
+body.hs-login .page-card {
+	max-width: 400px;
+	min-height: 0;
+	background: #fff;
+	border: 1px solid #e2e8f0;
+	border-radius: 16px;
+	box-shadow: 0 8px 28px rgb(15 23 42 / 5%);
+}
+
+body.hs-login .page-card :is(.form-control, .btn-login) {
+	min-height: 44px;
+}
+
+body.hs-login .page-card .page-card-actions .btn-login {
+	background: #1d4ed8;
+}
+
+body.hs-login .page-card .page-card-actions .btn-login:hover {
+	background: #1e40af;
+}
+
+body.hs-login .page-card-head .app-logo {
+	display: none;
+}
+
+.hs-login-footer {
+	margin: 28px auto 40px;
+	padding: 0 16px;
+	text-align: center;
+	font-size: 12px;
+	line-height: 1.8;
+	color: #64748b;
+}
+
+.hs-login-footer p {
+	margin: 0;
+}
+
+.hs-login-footer a {
+	display: inline-flex;
+	align-items: center;
+	min-height: 44px;
+	color: #315a9d;
+}
+
+.body-sidebar .hs-branded-header .header-logo img {
+	width: 32px;
+	height: 32px;
+	border-radius: 6px;
+}
+
+.body-sidebar .hs-branded-header .header-title {
+	font-weight: 650;
+}
+
+.body-sidebar .hs-branded-header .header-subtitle {
+	color: var(--text-muted);
+	font-size: 11px;
+}
+
+.hs-brand-about {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	width: 100%;
+	min-height: 44px;
+	padding: 8px;
+	border: 0;
+	border-top: 1px solid var(--border-color);
+	background: transparent;
+	color: var(--text-muted);
+	font: inherit;
+	font-size: 12px;
+	text-align: start;
+	cursor: pointer;
+}
+
+.hs-brand-about:hover,
+.hs-brand-about:focus-visible {
+	color: var(--text-color);
+	background: var(--control-bg);
+}
+
+.hs-brand-about img {
+	width: 20px;
+	height: 20px;
+	flex-shrink: 0;
+	border-radius: 4px;
+}
+
+.body-sidebar-container:not(.expanded) .hs-brand-about span {
+	display: none;
+}
+
+.hs-about-product {
+	text-align: center;
+	padding: 12px 8px;
+}
+
+.hs-about-product > img {
+	width: 64px;
+	height: 64px;
+	border-radius: 12px;
+	margin-bottom: 16px;
+}
+
+.hs-about-product h3 {
+	font-size: 22px;
+}
+
+.hs-about-company {
+	margin-top: 24px;
+}
+
+.hs-about-foundation {
+	margin-top: 24px;
+	font-size: 12px;
+	color: var(--text-muted);
+}
+
+@media (max-width: 575px) {
+	.hs-login-brand {
+		margin-top: 28px;
+		margin-bottom: 24px;
+	}
+
+	.hs-login-brand h1 {
+		font-size: 26px;
+	}
+
+	body.hs-login .page-card {
+		padding: 24px;
+	}
+}
+
+@media print {
+	.hs-brand-about {
+		display: none;
+	}
+}

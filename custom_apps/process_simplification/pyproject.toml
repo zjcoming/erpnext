@@ -1,9 +1,9 @@
 [project]
 name = "process_simplification"
 authors = [
-    { name = "Custom ERPNext Implementation", email = "admin@example.com" }
+    { name = "重庆恒算科技有限公司", email = "contact@hengsuankeji.com" }
 ]
-description = "Simplified manufacturing flow app for ERPNext"
+description = "恒算 ERP 企业经营管理系统，基于 ERPNext 定制开发"
 requires-python = ">=3.10"
 readme = "README.md"
 dynamic = ["version"]

@@ -14,6 +14,7 @@ import frappe
 from frappe import _
 from frappe.utils import cint
 
+from process_simplification.branding import PRODUCT_NAME
 from process_simplification.management_access import OWNER_ROLE, SYSTEM_MANAGER_ROLE
 
 SETTINGS_DOCTYPE = "Process Simplification Settings"
@@ -23,11 +24,11 @@ SCOPE = "/desk"
 START_URL = "/desk"
 MANIFEST_URL = "/api/method/process_simplification.pwa.manifest"
 WORKER_URL = "/api/method/process_simplification.pwa.service_worker"
-ICON_ROOT = "/assets/process_simplification/images/pwa"
+ICON_ROOT = "/assets/process_simplification/images/pwa/hengsuan"
 PWA_DEFAULTS = {
 	"enable_pwa": 1,
-	"pwa_app_name": "工厂工作台",
-	"pwa_short_name": "工厂工作台",
+	"pwa_app_name": PRODUCT_NAME,
+	"pwa_short_name": PRODUCT_NAME,
 	"pwa_install_prompt": 1,
 	"pwa_prompt_interval_days": 7,
 }
@@ -102,6 +103,10 @@ def ensure_defaults():
 	for field, value in PWA_DEFAULTS.items():
 		if field not in stored:
 			frappe.db.set_single_value(SETTINGS_DOCTYPE, field, value)
+	# Upgrade the former product default; retain a customer's own app names.
+	for field in ("pwa_app_name", "pwa_short_name"):
+		if stored.get(field) == "工厂工作台":
+			frappe.db.set_single_value(SETTINGS_DOCTYPE, field, PRODUCT_NAME)
 
 
 def _settings():
@@ -157,7 +162,7 @@ def manifest():
 		"id": APP_ID,
 		"name": config["app_name"],
 		"short_name": config["short_name"],
-		"description": "生产、报工与工厂管理",
+		"description": "恒算 ERP · 销售、采购、库存、生产与工资管理",
 		"lang": "zh-CN",
 		"start_url": START_URL,
 		"scope": SCOPE,
