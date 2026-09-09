@@ -310,8 +310,8 @@ if (typeof frappe !== "undefined") {
 			addWageButtons();
 		}
 
-		function load() {
-			return frappe.call({
+		function load(options = {}) {
+			return frappe.ps_read_page(page, {
 				method: "process_simplification.api.production_reporting.get_review_dashboard",
 				args: {
 					pending_page: state.pages.reports,
@@ -319,15 +319,19 @@ if (typeof frappe !== "undefined") {
 					processed_page: state.pages.processed_today,
 					page_length: state.pageLength,
 				},
-				freeze: true,
+				background: options.background,
 				freeze_message: __("正在读取待审核报工..."),
-			}).then((response) => {
+				apply(response) {
 				state.data = response.message || { reports: [], assignments: [], processed_today: [], pagination: {} };
 				for (const listName of Object.keys(state.pages)) {
 					state.pages[listName] = Number(state.data.pagination?.[listName]?.page || state.pages[listName]);
 				}
 				render();
-			}).then(() => loadHistory(state.history.pagination.page || 1));
+				},
+			}).then((applied) => {
+				if (applied && !options.background) return loadHistory(state.history.pagination.page || 1);
+				return applied;
+			});
 		}
 
 		function loadHistory(pageNumber = 1) {

@@ -768,11 +768,12 @@ def attach_visible_worker_assignment_counts(demands):
 
 @frappe.whitelist()
 @retry_request_transaction
-def get_production_overview(page=1, page_size=DEFAULT_WORKBENCH_PAGE_SIZE, filters=None):
+def get_production_overview(page=1, page_size=DEFAULT_WORKBENCH_PAGE_SIZE, filters=None, include_assignment_counts=True):
 	frappe.has_permission("Sales Order", "read", throw=True)
 	frappe.has_permission("Work Order", "read", throw=True)
 	checked_at = now_datetime()
-	fulfillment = get_fulfillment_overview(page_size=0)
+	# This page attaches authoritative readiness below; avoid calculating it twice.
+	fulfillment = get_fulfillment_overview(page_size=0, include_readiness=False)
 	orders = fulfillment.get("orders") or []
 	order_by_name = {order.get("name"): frappe._dict(order) for order in orders}
 	allocated_rows = _allocated_rows_from_fulfillment(fulfillment)
@@ -814,7 +815,8 @@ def get_production_overview(page=1, page_size=DEFAULT_WORKBENCH_PAGE_SIZE, filte
 	covered_demands.sort(key=production_sort_key)
 	filtered_demands = filter_production_demands(covered_demands, filters)
 	paged_demands, pagination = paginate_workbench_rows(filtered_demands, page=page, page_size=page_size)
-	attach_visible_worker_assignment_counts(paged_demands)
+	if include_assignment_counts:
+		attach_visible_worker_assignment_counts(paged_demands)
 	return {
 		"checked_at": checked_at,
 		"summary": production_overview_summary(filtered_demands),

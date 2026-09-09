@@ -826,17 +826,17 @@ if (typeof frappe !== "undefined") {
 			renderOtherWorkOrders();
 		}
 
-		function loadOverview() {
-			return frappe.call({
-				method: "process_simplification.api.production.get_production_overview",
-				freeze: true,
+		function loadOverview(options = {}) {
+			return frappe.ps_read_page(page, {
+				method: "process_simplification.page_refresh.production_overview",
+				background: options.background,
 				args: {
 					page: state.pagination.page,
 					page_size: state.pagination.page_size,
 					filters: state.filters,
 				},
 				freeze_message: __("正在计算生产需求与物料风险..."),
-			}).then((response) => {
+				apply(response) {
 				state.data = response.message || { demands: [], other_work_orders: [] };
 				state.pagination = state.data.pagination || state.pagination;
 				const customers = state.data.customers || [];
@@ -849,6 +849,7 @@ if (typeof frappe !== "undefined") {
 					state.data.checked_at ? `${__("数据更新于")} ${frappe.datetime.str_to_user(state.data.checked_at)}` : ""
 				);
 				render();
+				},
 			});
 		}
 

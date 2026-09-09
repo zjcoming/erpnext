@@ -339,31 +339,37 @@ frappe.pages["shortage-purchase-planning"].on_page_load = function (wrapper) {
 		renderSummary();
 	}
 
-	function loadAllShortages() {
-		if (state.loading) return;
+	page.shortage_refresh = loadAllShortages;
+	function loadAllShortages(options = {}) {
+		if (state.loading) return Promise.resolve(false);
 		state.loading = true;
-		state.loaded = false;
-		$root.find(".shortage-table-wrap").hide();
+		if (!options.background) {
+			state.loaded = false;
+			$root.find(".shortage-table-wrap").hide();
+			renderStatus("loading");
+			renderSummary();
+		}
 		$root.find('[data-action="refresh"]').prop("disabled", true);
-		renderStatus("loading");
-		renderSummary();
-		frappe.call({
-			method: "process_simplification.api.shortage.check_all_shortages",
-		}).then((response) => {
+		return frappe.ps_read_page(page, {
+			method: "process_simplification.page_refresh.company_shortages",
+			background: options.background,
+			apply(response) {
 			state.rows = preparePurchaseRows((response && response.message && response.message.shortages) || []);
 			state.selectedIndexes = new Set(state.rows.map((_, index) => index));
 			state.loaded = true;
 			state.loading = false;
 			$root.find('[data-action="refresh"]').prop("disabled", false);
 			renderRows();
-		}, (error) => {
+			},
+		}).catch((error) => {
 			state.loading = false;
-			state.loaded = false;
 			$root.find('[data-action="refresh"]').prop("disabled", false);
+			if (options.background) throw error;
+			state.loaded = false;
 			$root.find(".shortage-table-wrap").hide();
 			renderStatus("error", error && (error.message || error.exc));
 			renderSummary();
-		});
+		}).finally(() => { state.loading = false; $root.find('[data-action="refresh"]').prop("disabled", false); });
 	}
 
 	function createMaterialRequest() {

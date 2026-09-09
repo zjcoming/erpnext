@@ -216,7 +216,17 @@ frappe.pages["purchase-supplier-allocation"].on_page_load = function (wrapper) {
 			page.main.find(".purchase-request-count").text(`${matches.length} 张申请`);
 			page.main.find(".purchase-request-list").html(matches.length ? `<table class="purchase-table purchase-request-table"><thead><tr><th>采购申请</th><th>公司</th><th>日期</th><th>状态</th><th></th></tr></thead><tbody>${matches.map((row) => `<tr><td><a href="${requestHref(row.name)}">${esc(row.name)}</a></td><td data-label="公司">${esc(row.company)}</td><td data-label="日期">${esc(row.transaction_date)}</td><td data-label="状态">${esc(labels[row.status] || row.status)}</td><td><a class="btn btn-default" href="${requestHref(row.name)}">分配 / 查看进度</a></td></tr>`).join("")}</tbody></table>` : '<div class="purchase-empty">没有匹配的采购申请。可从“缺料采购”生成新申请。</div>');
 		}
-		field(page.main.find(".purchase-request-search"), "搜索申请、公司或状态", "Data", "", show);
+		let query = "";
+		const searchRoot = page.main.find(".purchase-request-search");
+		field(searchRoot, "搜索申请、公司或状态", "Data", "", (value) => { query = value; show(query); });
+		page.purchase_refresh = (options = {}) => frappe.ps_read_page(page, {
+			method: api + "list_requests", background: options.background,
+			apply(response) {
+				if (!searchRoot.get(0).isConnected) return false;
+				requests = response.message || [];
+				show(query);
+			},
+		});
 		show();
 	}
 
@@ -224,6 +234,9 @@ frappe.pages["purchase-supplier-allocation"].on_page_load = function (wrapper) {
 		const route = frappe.get_route();
 		if (route[1]) return frappe.set_route("purchase-supplier-allocation", { material_request: route[1] });
 		const request = frappe.route_options?.material_request || new URLSearchParams(window.location.search).get("material_request");
+		page.purchase_refresh = request ? load : null;
+		page.ps_refresh?.configure({ manual: Boolean(request), protectInputs: Boolean(request) });
+		page.ps_refresh?.resetDirty();
 		if (frappe.route_options) delete frappe.route_options.material_request;
 		// Frappe route options are transient; keep the document in the shareable URL for reload/back.
 		if (request) window.history.replaceState(window.history.state, "", requestHref(request));

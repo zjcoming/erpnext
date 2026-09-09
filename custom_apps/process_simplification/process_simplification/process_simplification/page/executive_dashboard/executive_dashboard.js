@@ -184,25 +184,31 @@ class ProcessSimplificationExecutiveDashboard {
 		).appendTo(this.page.main);
 	}
 
-	async load() {
-		if (this.loading) return;
+	async load(options = {}) {
+		if (this.loading) return false;
 		this.loading = true;
-		this.root.find("[data-loading]").removeClass("hide");
-		this.root.find("[data-content]").addClass("hide");
+		if (!options.background) {
+			this.root.find("[data-loading]").removeClass("hide");
+			this.root.find("[data-content]").addClass("hide");
+		}
 		try {
-			const response = await frappe.call({
-				method: "process_simplification.api.executive_dashboard.get_dashboard",
+			return await frappe.ps_read_page(this.page, {
+				method: "process_simplification.page_refresh.executive_dashboard",
+				background: options.background,
 				args: {
 					company: this.company_field.get_value() || undefined,
 					from_date: this.from_date_field.get_value(),
 					to_date: this.to_date_field.get_value(),
 				},
-			});
+				apply: async (response) => {
 			this.data = response.message || {};
 			await this.set_company_options(this.data.companies || [], this.data.company);
 			this.root.find("[data-content]").removeClass("hide");
 			this.render();
+				},
+			});
 		} catch (error) {
+			if (options.background) throw error;
 			frappe.msgprint({
 				title: __("经营总览加载失败"),
 				message: error?.message || __("无法读取经营数据。"),

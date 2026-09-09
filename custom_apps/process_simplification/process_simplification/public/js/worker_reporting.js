@@ -178,10 +178,11 @@ function workReportFinishDialogStartedAt(assignment) {
 }
 
 function addWorkerRefreshMenu(page) {
-	// Reload the desk so tasks, review results and the notification badge are
-	// fetched together, including when this device has no realtime connection.
 	page.add_custom_menu_item(
-		page.menu, __("刷新任务与通知"), () => { window.location.reload(); },
+		page.menu, __("刷新任务与通知"), () => {
+			page.worker_reporting?.load?.();
+			window.process_simplification?.page_refresh?.notifications?.();
+		},
 		false, null, "rotate-ccw"
 	).addClass("worker-refresh-menu-item");
 	page.add_custom_menu_item(
@@ -381,14 +382,15 @@ function mountWorkerReportingPage({ page, root, mode = "queue" }) {
 		else renderQueue(partitions);
 	}
 
-	function load() {
-		return frappe.call({
+	function load(options = {}) {
+		return frappe.ps_read_page(page, {
 			method: "process_simplification.api.production_reporting.get_my_dashboard",
-			freeze: true,
+			background: options.background,
 			freeze_message: mode === "active" ? __("正在读取进行中的任务...") : __("正在读取当前派工..."),
-		}).then((response) => {
+			apply(response) {
 			state.data = response.message || { assignments: [], reports: [] };
 			render();
+			},
 		});
 	}
 

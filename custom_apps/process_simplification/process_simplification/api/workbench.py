@@ -741,7 +741,7 @@ def filter_readable_sales_orders(orders):
 
 
 @frappe.whitelist()
-def get_fulfillment_overview(page=1, page_size=DEFAULT_WORKBENCH_PAGE_SIZE, filters=None):
+def get_fulfillment_overview(page=1, page_size=DEFAULT_WORKBENCH_PAGE_SIZE, filters=None, include_readiness=True):
 	"""Return readable unfinished Sales Orders recalculated through the item workbench."""
 	frappe.has_permission("Sales Order", "read", throw=True)
 	checked_at = now_datetime()
@@ -799,6 +799,8 @@ def get_fulfillment_overview(page=1, page_size=DEFAULT_WORKBENCH_PAGE_SIZE, filt
 			if result.get("company") and row.get("sales_order_item"):
 				rows_by_company[result.get("company")].append(row.get("sales_order_item"))
 	for company, sales_order_items in rows_by_company.items():
+		if not include_readiness:
+			break
 		readiness.update(
 			get_production_plan_readiness(
 				company=company,

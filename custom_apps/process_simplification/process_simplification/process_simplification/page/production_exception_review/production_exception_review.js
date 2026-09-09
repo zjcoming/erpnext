@@ -174,15 +174,19 @@ if (typeof frappe !== "undefined") {
 			$root.find(".exception-pager-history").html(exceptionPaginationHtml(pagination, { translate: __, escapeHtml: esc }));
 		}
 
-		function load() {
-			return frappe.call({
+		function load(options = {}) {
+			return frappe.ps_read_page(page, {
 				method: "process_simplification.api.production_exceptions.get_review_dashboard",
-				freeze: true,
+				background: options.background,
 				freeze_message: __("正在读取异常申请..."),
-			}).then((response) => {
+				apply(response) {
 				state.data = response.message || { pending: [], stock_queue: [], processed: [] };
 				render();
-			}).then(() => loadHistory(state.history.pagination.page || 1));
+				},
+			}).then((applied) => {
+				if (applied && !options.background) return loadHistory(state.history.pagination.page || 1);
+				return applied;
+			});
 		}
 
 		function loadHistory(pageNumber = 1) {

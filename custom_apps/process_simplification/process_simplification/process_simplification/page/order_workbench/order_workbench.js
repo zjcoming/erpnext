@@ -374,17 +374,17 @@ if (typeof frappe !== "undefined") {
 			});
 		}
 
-		function loadOverview() {
-			return frappe.call({
-				method: "process_simplification.api.workbench.get_fulfillment_overview",
-				freeze: true,
+		function loadOverview(options = {}) {
+			return frappe.ps_read_page(page, {
+				method: "process_simplification.page_refresh.fulfillment_overview",
+				background: options.background,
 				args: {
 					page: state.pagination.page,
 					page_size: state.pagination.page_size,
 					filters: state.filters,
 				},
 				freeze_message: __("正在读取订单履约总览..."),
-			}).then((response) => {
+				apply(response) {
 				state.data = response.message || { orders: [] };
 				state.pagination = state.data.pagination || state.pagination;
 				const customers = state.data.customers || [];
@@ -398,6 +398,7 @@ if (typeof frappe !== "undefined") {
 						.join("")
 				);
 				render();
+				},
 			});
 		}
 

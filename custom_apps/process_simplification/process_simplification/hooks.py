@@ -22,11 +22,14 @@ app_include_css = [
 app_include_js = [
 	"/assets/process_simplification/js/item_identity.js?v=2",
 	"/assets/process_simplification/js/worker_assignment.js?v=12",
-	"/assets/process_simplification/js/worker_reporting.js?v=10",
+	"/assets/process_simplification/js/worker_reporting.js?v=11",
 	"/assets/process_simplification/js/notification_sound.js?v=6",
 	"/assets/process_simplification/js/process_pwa.js?v=1",
 	"/assets/process_simplification/js/hengsuan_branding.js?v=2",
+	"/assets/process_simplification/js/page_refresh.js?v=3",
 ]
+
+after_request = ["process_simplification.page_refresh.after_request"]
 
 boot_session = [
 	"process_simplification.pwa.boot_session",
@@ -47,6 +50,11 @@ extend_doctype_class = {
 }
 
 doc_events = {
+	"*": {
+		"after_insert": "process_simplification.page_refresh.document_changed",
+		"on_change": "process_simplification.page_refresh.document_changed",
+		"on_trash": "process_simplification.page_refresh.document_changed",
+	},
 	"Notification Log": {
 		"after_insert": "process_simplification.notifications.publish_notification_sound",
 	},
