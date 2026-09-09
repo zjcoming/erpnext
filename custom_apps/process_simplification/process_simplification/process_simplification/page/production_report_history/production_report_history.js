@@ -138,7 +138,6 @@ if (typeof frappe !== "undefined") {
 			rows: [],
 			exceptions: [],
 			pagination: { page: 1, page_length: 20 },
-			reportSequence: 0,
 		};
 		const esc = (value) => frappe.utils.escape_html(String(value ?? ""));
 		const number = (value) => format_number(flt(value), null, 2);
@@ -183,45 +182,40 @@ if (typeof frappe !== "undefined") {
 			);
 		}
 
-		function loadReports(pageNumber = 1) {
-			const sequence = ++state.reportSequence;
-			return frappe.call({
-				method: "process_simplification.api.production_reporting.get_my_report_history",
-				args: { ...filterValues(), page: pageNumber },
-				freeze: true,
+		function load(options = {}) {
+			return frappe.ps_read_page(page, {
+				requests: {
+					reports: {
+						method: "process_simplification.api.production_reporting.get_my_report_history",
+						args: { ...filterValues(), page: options.page || state.pagination.page || 1 },
+					},
+					exceptions: {
+						method: "process_simplification.api.production_exceptions.get_my_requests",
+						args: { limit: 100 },
+					},
+				},
+				background: Boolean(options.background),
 				freeze_message: __("正在查询报工与审核记录..."),
-			}).then((response) => {
-				if (sequence !== state.reportSequence) return;
-				state.rows = response.message?.rows || [];
-				state.pagination = response.message?.pagination || { page: 1, page_length: 20 };
-				renderReports();
+				apply({ message }) {
+					state.rows = message.reports?.rows || [];
+					state.pagination = message.reports?.pagination || { page: 1, page_length: 20 };
+					state.exceptions = message.exceptions || [];
+					renderReports();
+					renderExceptions();
+				},
 			});
-		}
-
-		function loadExceptions() {
-			return frappe.call({
-				method: "process_simplification.api.production_exceptions.get_my_requests",
-				args: { limit: 100 },
-			}).then((response) => {
-				state.exceptions = response.message || [];
-				renderExceptions();
-			});
-		}
-
-		function load() {
-			return Promise.all([loadReports(1), loadExceptions()]);
 		}
 
 		$root.on("submit", ".worker-history-filters", (event) => {
 			event.preventDefault();
-			loadReports(1);
+			load({ page: 1 });
 		});
 		$root.on("click", ".worker-filter-chip", (event) => {
 			const $button = $(event.currentTarget);
 			$root.find('.worker-history-filters [name="status"]').val($button.data("status") || "");
 			$root.find(".worker-filter-chip").removeClass("is-active");
 			$button.addClass("is-active");
-			loadReports(1);
+			load({ page: 1 });
 		});
 		$root.on("click", ".worker-period-chip", (event) => {
 			const $button = $(event.currentTarget);
@@ -238,14 +232,14 @@ if (typeof frappe !== "undefined") {
 			$root.find('.worker-history-filters [name="to_date"]').val(toDate);
 			$root.find(".worker-period-chip").removeClass("is-active");
 			$button.addClass("is-active");
-			loadReports(1);
+			load({ page: 1 });
 		});
 		$root.on("click", ".worker-task-nav-item", (event) => {
 			const route = $(event.currentTarget).data("route");
 			if (route) frappe.set_route(route);
 		});
 		$root.on("click", ".worker-history-page", (event) => {
-			loadReports(Number($(event.currentTarget).data("page") || 1));
+			load({ page: Number($(event.currentTarget).data("page") || 1) });
 		});
 		$root.on("click", ".worker-history-document", (event) => {
 			event.preventDefault();
@@ -254,7 +248,7 @@ if (typeof frappe !== "undefined") {
 				frappe.set_route("Form", $button.data("doctype"), $button.data("name"));
 			}
 		});
-		reporting.addWorkerRefreshMenu(page);
+		reporting.addWorkerRefreshMenu(page, { load, label: __("刷新记录与通知") });
 		page.worker_history = { state, load };
 	};
 

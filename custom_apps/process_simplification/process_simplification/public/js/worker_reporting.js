@@ -177,11 +177,12 @@ function workReportFinishDialogStartedAt(assignment) {
 	return normalizeFrappeDateTime(assignment?.active_started_at);
 }
 
-function addWorkerRefreshMenu(page) {
+function addWorkerRefreshMenu(page, { load = () => page.worker_reporting?.load?.(), label = __("刷新任务与通知") } = {}) {
 	page.add_custom_menu_item(
-		page.menu, __("刷新任务与通知"), () => {
-			page.worker_reporting?.load?.();
+		page.menu, label, () => {
+			const pending = load();
 			window.process_simplification?.page_refresh?.notifications?.();
+			return pending;
 		},
 		false, null, "rotate-ccw"
 	).addClass("worker-refresh-menu-item");

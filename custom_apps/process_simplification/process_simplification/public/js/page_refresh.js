@@ -156,15 +156,17 @@ function createPageReadLoader(call, isCurrent, lifecycle = {}) {
 	return function read(page, options) {
 		let state = states.get(page);
 		if (!state) { state = { running: null, queued: null, desired: null }; states.set(page, state); }
-		const key = JSON.stringify([options.method, options.args || {}]);
-		const args = JSON.parse(JSON.stringify(options.args || {}));
+		const requests = JSON.parse(JSON.stringify(options.requests || {
+			main: { method: options.method, args: options.args || {} },
+		}));
+		const key = JSON.stringify(requests);
 		if (state.desired?.key === key) return state.desired.promise;
 		if (state.queued) { state.queued.resolve(false); state.queued = null; }
 		if (state.running?.key === key) {
 			state.desired = state.running;
 			return state.running.promise;
 		}
-		const entry = { key, options, args };
+		const entry = { key, options, requests };
 		entry.promise = new Promise((resolve, reject) => { entry.resolve = resolve; entry.reject = reject; });
 		state.desired = entry;
 		function run(current) {
@@ -174,11 +176,22 @@ function createPageReadLoader(call, isCurrent, lifecycle = {}) {
 			Promise.resolve().then(async () => {
 				if (lifecycle.begin) ticket = await lifecycle.begin(page);
 				if (current !== state.desired || !isCurrent(page)) return;
-				return call({
-					method: opts.method, args: current.args, type: opts.type || "POST",
-					freeze: !opts.background, freeze_message: opts.freeze_message,
+				const names = Object.keys(current.requests);
+				// A page with several sections is fresh only when every section succeeds.
+				// Wait for all requests even on failure, before starting a queued read.
+				const results = await Promise.allSettled(names.map((name, index) => Promise.resolve().then(() => call({
+					...current.requests[name], type: opts.type || "POST",
+					freeze: !opts.background && index === 0, freeze_message: opts.freeze_message,
 					silent: Boolean(opts.background), timeout: 120000,
-				});
+				}))));
+				const failed = results.find((result) => result.status === "rejected");
+				if (failed) throw failed.reason;
+				if (!opts.requests) return results[0].value;
+				const message = Object.fromEntries(names.map((name, index) => [name, results[index].value.message]));
+				for (const flag of ["_refresh_pending", "_refresh_stale"]) {
+					if (results.some((result) => result.value.message?.[flag])) message[flag] = true;
+				}
+				return { message };
 			}).then(async (response) => {
 				if (current !== state.desired || !isCurrent(page)) return false;
 				if (!response) return false;
@@ -308,14 +321,14 @@ function setupPageRefresh(frappeRef, win, doc, $) {
 				if (state === "fresh") { banner.prop("hidden", true).empty(); return; }
 				if (!doc.contains(banner[0])) placeBanner();
 				const texts = {
-					changed: options.manual && !options.protectInputs ? "数据有更新，可使用页面的“刷新”重新查询。" :
+					changed: options.manual && !options.protectInputs ? (options.load ? "数据有更新。" : "数据有更新，可使用页面的“刷新”重新查询。") :
 						"数据有更新，当前填写内容已保留。完成操作后可刷新查看。",
 					waiting: "数据有更新，稍后自动更新。", loading: "正在更新数据…",
-					error: "暂时未能更新，将自动重试。",
+					error: options.manual ? "更新失败，请重试。" : "暂时未能更新，将自动重试。",
 				};
 				banner.prop("hidden", false).text(texts[state]);
-				if (state === "changed" && !inputDirty && options.load) {
-					$('<button type="button" class="btn btn-xs btn-default ml-2">刷新数据</button>')
+				if ((state === "changed" || (state === "error" && options.manual)) && !inputDirty && options.load) {
+					$('<button type="button" class="btn btn-xs btn-default ml-2"></button>').text(options.refreshLabel || "刷新数据")
 						.appendTo(banner).on("click", () => controller.refresh(true));
 				}
 			},
@@ -343,7 +356,8 @@ function setupPageRefresh(frappeRef, win, doc, $) {
 				manual: Boolean(frappeRef.route_options?.material_request || win.location.search.includes("material_request=")) },
 			"quick-sales-order": { topics: ["orders", "purchase"], interval: 30000, manual: true, protectInputs: true },
 			"executive-dashboard": { topics: ["dashboard"], interval: 120000, load: (opts) => wrapper.executive_dashboard.load(opts) },
-			"production-report-history": { topics: ["tasks", "wages"], interval: 120000, manual: true },
+			"production-report-history": { topics: ["tasks", "wages"], interval: 120000, manual: true,
+				load: page?.worker_history?.load, refreshLabel: "刷新记录" },
 			"purchase-receipt-notice": { topics: ["purchase"], interval: 120000, manual: true },
 			"query-report": ["Stock Balance", "Stock Ledger"].includes(frappeRef.get_route()?.[1]) ?
 				{ topics: ["warehouse"], interval: 120000, manual: true } : null,

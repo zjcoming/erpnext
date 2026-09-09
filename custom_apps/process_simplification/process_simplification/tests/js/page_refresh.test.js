@@ -1,5 +1,8 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const vm = require("node:vm");
 const { createPageRefreshController, createPageReadLoader, bindFreshNotificationView } = require("../../public/js/page_refresh.js");
 
 async function drain() { for (let i = 0; i < 20; i++) await Promise.resolve(); }
@@ -162,6 +165,145 @@ function trackedReader(f, call, isCurrent = () => true) {
 		end: (ticket, result) => f.controller.endRead(ticket, result),
 	});
 }
+
+function workerHistoryFixture() {
+	const f = fixture(), pending = [], statuses = [], rendered = new Map(), menus = new Map();
+	let notifications = 0;
+	const filters = { status: "", page_length: "20" };
+	let current = true;
+	const root = { on() {}, find(selector) {
+		return {
+			serializeArray: () => Object.entries(filters).map(([name, value]) => ({ name, value })),
+			html: (value) => rendered.set(selector, value),
+		};
+	} };
+	f.page.main = { html() {}, find: () => root };
+	f.page.add_custom_menu_item = (_menu, label, callback) => { menus.set(label, callback); return { addClass() {} }; };
+	f.page.menu_btn_group = { addClass() {}, find: () => ({ attr() {} }) };
+	f.page.manual = true;
+	f.page.interval = 120000;
+	f.page.status = (state) => statuses.push(state);
+	const read = trackedReader(f, (args) => new Promise((resolve, reject) => pending.push({ args, resolve, reject })), () => current);
+	const frappe = {
+		pages: { "production-report-history": {} },
+		ui: { make_app_page: () => f.page }, utils: { escape_html: String },
+		ps_read_page: read,
+	};
+	const context = vm.createContext({
+		frappe, __: (text) => text, flt: Number, format_number: String,
+		window: { process_simplification: { page_refresh: { notifications() { notifications++; } } } },
+	});
+	for (const file of ["../../public/js/worker_reporting.js",
+		"../../process_simplification/page/production_report_history/production_report_history.js"]) {
+		vm.runInContext(fs.readFileSync(path.resolve(__dirname, file), "utf8"), context);
+	}
+	const native = frappe.pages["production-report-history"];
+	native.on_page_load({ page: f.page });
+	f.page.load = f.page.worker_history.load;
+	f.controller.activate(f.page);
+	function resolvePair(offset, label, page = 1) {
+		pending[offset].resolve({ message: { rows: [{ operation: label }], pagination: { page, page_length: 20 } } });
+		pending[offset + 1].resolve({ message: [{ request_type: label }] });
+	}
+	return { ...f, filters, pending, statuses, rendered, resolvePair, menus, notificationCalls: () => notifications,
+		nativeRefresh: () => native.refresh({ page: f.page }), leave: () => { current = false; f.controller.activate(null); },
+	};
+}
+
+test("worker history first entry and native refresh clear the banner only after both sections finish", async () => {
+	const f = workerHistoryFixture();
+	const initial = f.nativeRefresh(); await drain();
+	assert.equal(f.pending.length, 2);
+	f.pending[0].resolve({ message: { rows: [], pagination: { page: 1 } } }); await drain();
+	assert.equal(f.statuses.at(-1), "loading");
+	assert.equal(f.rendered.size, 0);
+	f.pending[1].resolve({ message: [] }); await initial;
+	assert.equal(f.statuses.at(-1), "fresh");
+	assert.equal(f.page.dirty, false);
+	f.controller.event({ topics: ["tasks"] }); await f.tick(600000);
+	assert.equal(f.statuses.at(-1), "changed");
+	assert.equal(f.pending.length, 2, "manual history must not poll full records");
+	const refresh = f.nativeRefresh(); await drain(); f.resolvePair(2, "latest"); await refresh;
+	assert.equal(f.page.dirty, false);
+	assert.equal(f.statuses.at(-1), "fresh");
+});
+
+test("history menu refresh loads records as well as notifications", async () => {
+	const f = workerHistoryFixture();
+	const refresh = f.menus.get("刷新记录与通知")(); await drain();
+	assert.equal(f.pending.length, 2);
+	assert.equal(f.notificationCalls(), 1);
+	f.resolvePair(0, "menu refreshed"); await refresh;
+	assert.equal(f.statuses.at(-1), "fresh");
+	assert.match(f.rendered.get(".worker-history-results"), /menu refreshed/);
+});
+
+test("history inline refresh preserves filters and pagination and retains events arriving mid-read", async () => {
+	const f = workerHistoryFixture();
+	f.filters.status = "Approved";
+	f.page.worker_history.state.pagination.page = 3;
+	const refresh = f.controller.refresh(true); await drain();
+	assert.equal(f.pending[0].args.args.status, "Approved");
+	assert.equal(f.pending[0].args.args.page, 3);
+	assert.equal(f.pending[1].args.args.limit, 100);
+	f.controller.event({ topics: ["tasks"] });
+	f.resolvePair(0, "first", 3); await refresh;
+	assert.equal(f.page.dirty, true);
+	assert.equal(f.statuses.at(-1), "changed");
+	const retry = f.controller.refresh(true); await drain();
+	assert.equal(f.pending[2].args.args.page, 3);
+	f.resolvePair(2, "latest", 3); await retry;
+	assert.equal(f.page.dirty, false);
+	assert.equal(f.statuses.at(-1), "fresh");
+});
+
+test("history partial failure keeps old records and an error until explicit retry succeeds", async () => {
+	const f = workerHistoryFixture();
+	const initial = f.nativeRefresh(); await drain(); f.resolvePair(0, "old"); await initial;
+	const oldHtml = f.rendered.get(".worker-history-results");
+	const refresh = f.controller.refresh(true); await drain();
+	f.pending[2].resolve({ message: { rows: [{ operation: "new" }] } });
+	f.pending[3].reject(Error("exceptions offline")); await refresh;
+	assert.equal(f.rendered.get(".worker-history-results"), oldHtml);
+	assert.equal(f.statuses.at(-1), "error");
+	await f.tick(120000); assert.equal(f.pending.length, 4);
+	const retry = f.controller.refresh(true); await drain(); f.resolvePair(4, "new"); await retry;
+	assert.equal(f.statuses.at(-1), "fresh");
+	assert.match(f.rendered.get(".worker-history-results"), /new/);
+});
+
+test("history queued filters wait for the whole earlier batch and late routes never render", async () => {
+	const f = workerHistoryFixture();
+	const first = f.nativeRefresh(); await drain();
+	f.filters.status = "Approved";
+	const approved = f.page.load({ page: 1 });
+	f.pending[0].reject(Error("obsolete filter failed")); await drain();
+	assert.equal(f.pending.length, 2, "the other old request is still running");
+	f.pending[1].resolve({ message: [] }); await first; await drain();
+	assert.equal(f.pending.length, 4);
+	assert.equal(f.pending[2].args.args.status, "Approved");
+	f.filters.status = "Rejected";
+	const rejected = f.page.load({ page: 1 });
+	f.resolvePair(2, "approved"); await approved; await drain();
+	assert.equal(f.rendered.size, 0);
+	f.resolvePair(4, "rejected"); await rejected;
+	assert.match(f.rendered.get(".worker-history-results"), /rejected/);
+	const late = f.nativeRefresh(); await drain(); f.leave(); f.resolvePair(6, "late"); await late;
+	assert.doesNotMatch(f.rendered.get(".worker-history-results"), /late/);
+});
+
+test("batched reads retain pending and stale markers from any section", async () => {
+	for (const flag of ["_refresh_pending", "_refresh_stale"]) {
+		const f = fixture(); let applied = 0;
+		f.page.manual = true;
+		const read = trackedReader(f, async ({ method }) => ({ message: method === "exceptions" ? { [flag]: true } : {} }));
+		f.controller.activate(f.page);
+		assert.equal(await read(f.page, { requests: { reports: { method: "reports" }, exceptions: { method: "exceptions" } },
+			apply() { applied++; } }), false);
+		assert.equal(f.page.dirty, true);
+		assert.equal(applied, flag === "_refresh_pending" ? 0 : 1);
+	}
+});
 
 test("entering a page reuses its initial version check and finishes with one business read", async () => {
 	const f = fixture(), statuses = [];
