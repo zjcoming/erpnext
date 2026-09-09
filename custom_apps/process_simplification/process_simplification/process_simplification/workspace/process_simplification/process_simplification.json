@@ -1,7 +1,7 @@
 {
  "app": "process_simplification",
  "charts": [],
- "content": "[{\"id\":\"ps-header\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>按你的岗位开始工作</b></span>\",\"col\":12}},{\"id\":\"ps-card-overview\",\"type\":\"card\",\"data\":{\"card_name\":\"经营总览\",\"col\":4}},{\"id\":\"ps-card-sales\",\"type\":\"card\",\"data\":{\"card_name\":\"销售与订单\",\"col\":4}},{\"id\":\"ps-card-production\",\"type\":\"card\",\"data\":{\"card_name\":\"生产执行\",\"col\":4}},{\"id\":\"ps-card-procurement\",\"type\":\"card\",\"data\":{\"card_name\":\"采购与工资\",\"col\":4}},{\"id\":\"ps-card-system\",\"type\":\"card\",\"data\":{\"card_name\":\"系统管理\",\"col\":4}},{\"id\":\"ps-card-standard\",\"type\":\"card\",\"data\":{\"card_name\":\"标准单据\",\"col\":4}}]",
+ "content": "[{\"id\":\"ps-header\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>\\u6309\\u4f60\\u7684\\u5c97\\u4f4d\\u5f00\\u59cb\\u5de5\\u4f5c</b></span>\",\"col\":12}},{\"id\":\"ps-card-overview\",\"type\":\"card\",\"data\":{\"card_name\":\"\\u7ecf\\u8425\\u603b\\u89c8\",\"col\":4}},{\"id\":\"ps-card-sales\",\"type\":\"card\",\"data\":{\"card_name\":\"\\u9500\\u552e\\u4e0e\\u8ba2\\u5355\",\"col\":4}},{\"id\":\"ps-card-production\",\"type\":\"card\",\"data\":{\"card_name\":\"\\u751f\\u4ea7\\u6267\\u884c\",\"col\":4}},{\"id\":\"ps-card-warehouse\",\"type\":\"card\",\"data\":{\"card_name\":\"\\u5e93\\u623f\\u4e0e\\u5e93\\u5b58\",\"col\":4}},{\"id\":\"ps-card-procurement\",\"type\":\"card\",\"data\":{\"card_name\":\"\\u91c7\\u8d2d\\u4e0e\\u5de5\\u8d44\",\"col\":4}},{\"id\":\"ps-card-system\",\"type\":\"card\",\"data\":{\"card_name\":\"\\u7cfb\\u7edf\\u7ba1\\u7406\",\"col\":4}},{\"id\":\"ps-card-standard\",\"type\":\"card\",\"data\":{\"card_name\":\"\\u6807\\u51c6\\u5355\\u636e\",\"col\":4}}]",
  "creation": "2026-06-20 00:00:00.000000",
  "custom_blocks": [],
  "docstatus": 0,
@@ -16,7 +16,7 @@
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "经营总览",
+   "label": "\u7ecf\u8425\u603b\u89c8",
    "link_count": 1,
    "onboard": 0,
    "type": "Card Break"
@@ -24,7 +24,7 @@
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "经营总览",
+   "label": "\u7ecf\u8425\u603b\u89c8",
    "link_count": 0,
    "link_to": "executive-dashboard",
    "link_type": "Page",
@@ -34,7 +34,7 @@
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "销售与订单",
+   "label": "\u9500\u552e\u4e0e\u8ba2\u5355",
    "link_count": 2,
    "onboard": 0,
    "type": "Card Break"
@@ -42,7 +42,7 @@
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "快速开单",
+   "label": "\u5feb\u901f\u5f00\u5355",
    "link_count": 0,
    "link_to": "quick-sales-order",
    "link_type": "Page",
@@ -52,7 +52,7 @@
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "订单工作台",
+   "label": "\u8ba2\u5355\u5de5\u4f5c\u53f0",
    "link_count": 0,
    "link_to": "order-workbench",
    "link_type": "Page",
@@ -62,7 +62,7 @@
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "生产执行",
+   "label": "\u751f\u4ea7\u6267\u884c",
    "link_count": 6,
    "onboard": 0,
    "type": "Card Break"
@@ -70,7 +70,7 @@
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "生产计划中心",
+   "label": "\u751f\u4ea7\u8ba1\u5212\u4e2d\u5fc3",
    "link_count": 0,
    "link_to": "production-workbench",
    "link_type": "Page",
@@ -80,7 +80,7 @@
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "正在做",
+   "label": "\u6b63\u5728\u505a",
    "link_count": 0,
    "link_to": "active-production-work",
    "link_type": "Page",
@@ -90,7 +90,7 @@
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "我的任务",
+   "label": "\u6211\u7684\u4efb\u52a1",
    "link_count": 0,
    "link_to": "my-production-reporting",
    "link_type": "Page",
@@ -100,7 +100,7 @@
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "我的记录",
+   "label": "\u6211\u7684\u8bb0\u5f55",
    "link_count": 0,
    "link_to": "production-report-history",
    "link_type": "Page",
@@ -110,7 +110,7 @@
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "报工审核",
+   "label": "\u62a5\u5de5\u5ba1\u6838",
    "link_count": 0,
    "link_to": "production-report-review",
    "link_type": "Page",
@@ -120,7 +120,7 @@
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "异常审核",
+   "label": "\u5f02\u5e38\u5ba1\u6838",
    "link_count": 0,
    "link_to": "production-exception-review",
    "link_type": "Page",
@@ -128,17 +128,46 @@
    "type": "Link"
   },
   {
+   "type": "Card Break",
+   "label": "\u5e93\u623f\u4e0e\u5e93\u5b58",
+   "link_count": 3
+  },
+  {
+   "label": "\u5e93\u623f\u5de5\u4f5c\u53f0",
+   "link_to": "warehouse-workbench",
+   "link_type": "Page",
+   "type": "Link",
+   "onboard": 1,
+   "is_query_report": 0
+  },
+  {
+   "label": "\u5e93\u5b58\u4f59\u989d",
+   "link_to": "Stock Balance",
+   "link_type": "Report",
+   "type": "Link",
+   "onboard": 1,
+   "is_query_report": 1
+  },
+  {
+   "label": "\u5e93\u5b58\u6d41\u6c34",
+   "link_to": "Stock Ledger",
+   "link_type": "Report",
+   "type": "Link",
+   "onboard": 1,
+   "is_query_report": 1
+  },
+  {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "采购与工资",
-   "link_count": 5,
+   "label": "\u91c7\u8d2d\u4e0e\u5de5\u8d44",
+   "link_count": 7,
    "onboard": 0,
    "type": "Card Break"
   },
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "缺料采购",
+   "label": "\u7f3a\u6599\u91c7\u8d2d",
    "link_count": 0,
    "link_to": "shortage-purchase-planning",
    "link_type": "Page",
@@ -147,14 +176,30 @@
   },
   {
    "type": "Link",
-   "label": "供应商分配",
+   "label": "\u4f9b\u5e94\u5546\u5206\u914d",
    "link_type": "Page",
    "link_to": "purchase-supplier-allocation",
    "onboard": 1
   },
   {
+   "label": "\u91c7\u8d2d\u8ba2\u5355",
+   "link_to": "Purchase Order",
+   "link_type": "DocType",
    "type": "Link",
-   "label": "到货通知",
+   "onboard": 1,
+   "is_query_report": 0
+  },
+  {
+   "label": "\u91c7\u8d2d\u6536\u8d27",
+   "link_to": "Purchase Receipt",
+   "link_type": "DocType",
+   "type": "Link",
+   "onboard": 1,
+   "is_query_report": 0
+  },
+  {
+   "type": "Link",
+   "label": "\u5230\u8d27\u901a\u77e5",
    "link_type": "Page",
    "link_to": "purchase-receipt-notice",
    "onboard": 1
@@ -162,7 +207,7 @@
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "计价规则",
+   "label": "\u8ba1\u4ef7\u89c4\u5219",
    "link_count": 0,
    "link_to": "Operation Wage Rate",
    "link_type": "DocType",
@@ -172,7 +217,7 @@
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "工资汇总",
+   "label": "\u5de5\u8d44\u6c47\u603b",
    "link_count": 0,
    "link_to": "Monthly Worker Wage Summary",
    "link_type": "DocType",
@@ -182,7 +227,7 @@
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "系统管理",
+   "label": "\u7cfb\u7edf\u7ba1\u7406",
    "link_count": 2,
    "onboard": 0,
    "type": "Card Break"
@@ -190,7 +235,7 @@
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "简化流程总设置",
+   "label": "\u7b80\u5316\u6d41\u7a0b\u603b\u8bbe\u7f6e",
    "link_count": 0,
    "link_to": "Process Simplification Settings",
    "link_type": "DocType",
@@ -200,7 +245,7 @@
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "权限管理",
+   "label": "\u6743\u9650\u7ba1\u7406",
    "link_count": 0,
    "link_to": "process-access-management",
    "link_type": "Page",
@@ -210,7 +255,7 @@
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "标准单据",
+   "label": "\u6807\u51c6\u5355\u636e",
    "link_count": 6,
    "onboard": 0,
    "type": "Card Break"
@@ -218,7 +263,7 @@
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "销售订单",
+   "label": "\u9500\u552e\u8ba2\u5355",
    "link_count": 0,
    "link_to": "Sales Order",
    "link_type": "DocType",
@@ -228,7 +273,7 @@
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "库存预留",
+   "label": "\u5e93\u5b58\u9884\u7559",
    "link_count": 0,
    "link_to": "Stock Reservation Entry",
    "link_type": "DocType",
@@ -238,7 +283,7 @@
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "生产工单",
+   "label": "\u751f\u4ea7\u5de5\u5355",
    "link_count": 0,
    "link_to": "Work Order",
    "link_type": "DocType",
@@ -248,7 +293,7 @@
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "采购申请",
+   "label": "\u91c7\u8d2d\u7533\u8bf7",
    "link_count": 0,
    "link_to": "Material Request",
    "link_type": "DocType",
@@ -258,7 +303,7 @@
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "发货单",
+   "label": "\u53d1\u8d27\u5355",
    "link_count": 0,
    "link_to": "Delivery Note",
    "link_type": "DocType",
@@ -268,7 +313,7 @@
   {
    "hidden": 0,
    "is_query_report": 0,
-   "label": "库存移动",
+   "label": "\u5e93\u5b58\u79fb\u52a8",
    "link_count": 0,
    "link_to": "Stock Entry",
    "link_type": "DocType",

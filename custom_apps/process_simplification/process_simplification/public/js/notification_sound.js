@@ -53,14 +53,22 @@ function createProcessNotificationSoundController(options = {}) {
 	const getAudio = options.getAudio || (() => getProcessNotificationAudio(documentRef));
 	let lastPlayedAt = Number.NEGATIVE_INFINITY;
 	let inFlight = false;
+	const handledNotifications = new Set();
 
 	return {
-		async play({ preview = false } = {}) {
+		async play({ preview = false, notificationId = null } = {}) {
 			if (frappeRef?.boot?.user?.mute_sounds) return false;
 			const audio = getAudio();
-			if (!audio || inFlight) return false;
+			if (!audio) return false;
 			// A hidden tab must not consume the foreground tab's sound cooldown.
 			if (documentRef?.visibilityState === "hidden") return false;
+			// Realtime and automatic catch-up can deliver the same notification.
+			if (notificationId) {
+				if (handledNotifications.has(notificationId)) return false;
+				handledNotifications.add(notificationId);
+				if (handledNotifications.size > 100) handledNotifications.delete(handledNotifications.values().next().value);
+			}
+			if (inFlight) return false;
 
 			const timestamp = now();
 			const latestTimestamp = Math.max(
@@ -125,15 +133,15 @@ function setupProcessNotificationSound(options = {}) {
 
 	const register = () => {
 		if (windowRef[PROCESS_NOTIFICATION_SOUND_SETUP_FLAG]) return false;
-		if (!frappeRef?.realtime?.on || !frappeRef.realtime.socket) return false;
+		if (!frappeRef?.realtime?.socket && !frappeRef?.realtime?.disabled) return false;
 
 		windowRef[PROCESS_NOTIFICATION_SOUND_SETUP_FLAG] = true;
 		windowRef[PROCESS_NOTIFICATION_SOUND_PENDING_FLAG] = false;
 		const controller = createProcessNotificationSoundController(options);
 		windowRef[PROCESS_NOTIFICATION_SOUND_CONTROLLER] = controller;
-		frappeRef.realtime.on(PROCESS_NOTIFICATION_EVENT, (message) => {
+		frappeRef.realtime.on?.(PROCESS_NOTIFICATION_EVENT, (message) => {
 			if (message?.play_sound === false || message?.play_sound === 0) return;
-			controller.play();
+			controller.play({ notificationId: message?.notification_log });
 		});
 		return true;
 	};

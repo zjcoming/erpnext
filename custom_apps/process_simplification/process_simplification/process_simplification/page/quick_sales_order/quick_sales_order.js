@@ -42,6 +42,7 @@ function buildMaterialRiskView(result = {}) {
 		groups,
 		summary,
 		shortages: Array.isArray(result.shortages) ? result.shortages : [],
+		downstream_impacts: Array.isArray(result.downstream_impacts) ? result.downstream_impacts : [],
 		blockers: Array.isArray(result.blockers) ? result.blockers : [],
 		checked_at: result.checked_at || "",
 		zero_production: Number(result.production_required || 0) <= 0,
@@ -62,6 +63,33 @@ function quickOrderPreviewArgs(items, defaults, deliveryDate) {
 
 function asNativePromise(request) {
 	return Promise.resolve(request);
+}
+
+function downstreamImpactHtml(impacts = [], helpers) {
+	const esc = (value) => helpers.escapeHtml(String(value ?? ""));
+	const num = (value) => esc(helpers.formatNumber(Number(value || 0)));
+	const t = helpers.translate;
+	const details = impacts.map((impact) => `<div class="quick-downstream-order">
+		<strong>${esc(impact.sales_order)} · ${esc(t("交期"))} ${esc(impact.delivery_date)}</strong>
+		<p>${esc(impact.item_name || impact.item_code)}${Number(impact.lost_finished_stock_qty || 0) > 0 ? ` · ${esc(t("成品可分配量减少"))} ${num(impact.lost_finished_stock_qty)}${esc(t("，需重新安排生产"))}` : ""}</p>
+		${(impact.materials || []).length ? `<div class="quick-material-table-wrap"><table class="table">
+		<thead><tr><th>${esc(t("物料 / 仓库"))}</th><th>${esc(t("原缺口"))}</th><th>${esc(t("下单后缺口"))}</th><th>${esc(t("本次新增"))}</th></tr></thead>
+		<tbody>${impact.materials.map((m) => `<tr><td>${esc(m.item_name || m.item_code)}<small class="text-muted d-block">${esc(m.item_code)} · ${esc(m.warehouse)}</small></td><td data-label="${esc(t("原缺口"))}">${num(m.before_shortage_qty)}</td><td data-label="${esc(t("下单后缺口"))}">${num(m.after_shortage_qty)}</td><td data-label="${esc(t("本次新增"))}"><strong>${num(m.added_shortage_qty)} ${esc(m.stock_uom)}</strong></td></tr>`).join("")}</tbody></table></div>` : `<p>${esc(t("未发现新增采购缺口，请复核生产安排。"))}</p>`}
+	</div>`).join("");
+	return `<section class="quick-downstream-impact${impacts.length ? " has-impact" : ""}"><h4>${esc(t("对后续订单的影响"))}</h4>${details || `<p>${esc(t("未发现后续订单新增缺口或成品分配减少。"))}</p>`}<p class="text-muted">${esc(t("按交期对比下单前后的分配，扣除已有缺口及现有采购覆盖；已预留、已领用库存不在本次重新分配范围内。"))}</p></section>`;
+}
+
+function materialRiskSummaryHtml(view, helpers) {
+	const esc = (value) => helpers.escapeHtml(String(value ?? ""));
+	const t = helpers.translate;
+	if (view.stale || view.checking || view.blockers.length) {
+		return `<span class="indicator-pill orange">${esc(t(view.checking ? "正在检查本单缺料及后续订单影响" : "本单缺料及后续订单影响待重新检查"))}</span>`;
+	}
+	const impacts = view.downstream_impacts || [];
+	const count = new Set(impacts.map((row) => row.sales_order)).size;
+	const materialCount = new Set(impacts.flatMap((row) => row.materials || []).map((m) => `${m.item_code}\u0000${m.warehouse}`)).size;
+	return `<span class="indicator-pill ${view.shortages.length ? "red" : "green"}">${esc(t("本单缺料"))} ${view.shortages.length} ${esc(t("项"))}</span>
+		<span class="indicator-pill ${count ? "orange" : "green"}">${esc(t("对后续订单的影响"))} ${count} ${esc(t("单"))}${materialCount ? ` · ${esc(t("新增缺口"))} ${materialCount} ${esc(t("项"))}` : ""}</span>`;
 }
 
 function materialRiskHtml(view, helpers) {
@@ -98,7 +126,7 @@ function materialRiskHtml(view, helpers) {
 	if (view.zero_production) {
 		return `${banner}${blockers}<div class="quick-material-risk-zero">${escape(
 			translate("当前成品库存可覆盖，本单无需展开生产物料")
-		)}</div>`;
+		)}</div>${downstreamImpactHtml(view.downstream_impacts, helpers)}`;
 	}
 
 	const groupCards = view.groups
@@ -207,7 +235,7 @@ function materialRiskHtml(view, helpers) {
 		</section>`
 		: `<div class="quick-material-risk-empty">${escape(translate("当前没有需要采购的底层物料"))}</div>`;
 
-	return `${banner}${blockers}<div class="quick-material-groups">${groupCards}</div>${summary}`;
+	return `${banner}${blockers}${downstreamImpactHtml(view.downstream_impacts, helpers)}<h4>${escape(translate("本单缺料与生产用料"))}</h4><div class="quick-material-groups">${groupCards}</div>${summary}`;
 }
 
 function confirmationHtml(result, helpers) {
@@ -258,11 +286,12 @@ function confirmationHtml(result, helpers) {
 			<div><span>${escape(translate("可预留 / 需生产"))}</span><strong>${number(
 		result.available_to_reserve
 	)} / ${number(result.production_required)}</strong></div>
-			<div><span>${escape(translate("原料缺料"))}</span><strong>${number(result.shortage_item_count)} ${escape(
+			<div><span>${escape(translate("本单缺料"))}</span><strong>${number(result.shortage_item_count)} ${escape(
 		translate("项")
 	)}</strong></div>
 		</div>
 		${shortageDetail}
+		${downstreamImpactHtml(result.downstream_impacts, helpers)}
 		${
 			issues
 				? `<div class="quick-confirm-warning"><strong>${escape(
@@ -327,16 +356,24 @@ frappe.pages["quick-sales-order"].on_page_load = function (wrapper) {
 				<button class="btn btn-link btn-sm add-row add-row-inline">＋ ${__("添加一行")}</button>
 			</section>
 
-			<section class="quick-material-risk" aria-labelledby="quick-material-risk-title" tabindex="-1">
-				<div class="quick-material-risk-heading">
+			<details class="quick-material-risk" aria-labelledby="quick-material-risk-title" tabindex="-1">
+				<summary class="quick-material-risk-heading">
 					<div>
 						<h3 id="quick-material-risk-title">${__("生产与物料风险")}</h3>
 						<p>${__("按多级 BOM 逐层检查：半成品先用现货，不足部分转为生产需求，再检查下一层用料。")}</p>
+						<div class="quick-material-risk-summary" aria-live="polite">${__("本单缺料及后续订单影响尚未检查")}</div>
 					</div>
-					<span class="quick-material-risk-time">${__("尚未检查")}</span>
-				</div>
+					<div class="quick-material-risk-controls">
+						<span class="quick-material-risk-toggle">
+							<span class="quick-material-risk-expand">${__("展开详情")}</span>
+							<span class="quick-material-risk-collapse">${__("收起详情")}</span>
+							<span class="quick-material-risk-chevron" aria-hidden="true">⌄</span>
+						</span>
+						<span class="quick-material-risk-time">${__("尚未检查")}</span>
+					</div>
+				</summary>
 				<div class="quick-material-risk-body quick-material-risk-empty">${__("尚无可用的物料检查结果")}</div>
-			</section>
+			</details>
 
 			<section class="quick-order-guidance" aria-label="${__("快速开单适用范围")}">
 				<strong>${__("什么时候使用标准销售订单？")}</strong>
@@ -344,9 +381,9 @@ frappe.pages["quick-sales-order"].on_page_load = function (wrapper) {
 			</section>
 
 			<div class="quick-order-announcer sr-only" aria-live="polite"></div>
-			<footer class="quick-order-summary" aria-label="${__("订单汇总")}">
+			<details class="quick-availability-summary quick-order-card">
+				<summary>${__("查看库存与物料检查汇总")}</summary>
 				<div class="quick-summary-metrics">
-					<div><span>${__("订单金额")}</span><strong data-summary="total">0.00</strong></div>
 					<div><span>${__("可预留成品")}</span><strong data-summary="available">0</strong></div>
 					<div><span>${__("需生产")}</span><strong data-summary="production">0</strong></div>
 					<div><span>${__(
@@ -356,9 +393,14 @@ frappe.pages["quick-sales-order"].on_page_load = function (wrapper) {
 	)}</button></div>
 					<div><span>${__("最近检查")}</span><strong data-summary="checked_at">—</strong></div>
 				</div>
-				<div class="quick-summary-actions">
+				<div class="quick-check-actions">
 					<span class="quick-auto-check-hint">${__("自动检查库存、BOM 和缺料")}</span>
 					<button class="btn btn-link deep-check">${__("立即重新检查")}</button>
+				</div>
+			</details>
+			<footer class="quick-order-summary" aria-label="${__("订单汇总")}">
+				<div class="quick-summary-total"><span>${__("订单金额")}</span><strong data-summary="total">0.00</strong></div>
+				<div class="quick-summary-actions">
 					<button class="btn btn-primary confirm-order">${__("创建销售订单")}</button>
 				</div>
 			</footer>
@@ -392,6 +434,7 @@ frappe.pages["quick-sales-order"].on_page_load = function (wrapper) {
 		view.stale = stale;
 		view.checking = checking;
 		$root.find(".quick-material-risk").toggleClass("is-stale", stale);
+		$root.find(".quick-material-risk-summary").html(materialRiskSummaryHtml(view, pageHelpers));
 		$root
 			.find(".quick-material-risk-body")
 			.removeClass("quick-material-risk-empty")
@@ -411,6 +454,7 @@ frappe.pages["quick-sales-order"].on_page_load = function (wrapper) {
 
 	function setMaterialRiskStale() {
 		const $section = $root.find(".quick-material-risk");
+		$section.find(".quick-material-risk-summary").text(__("本单缺料及后续订单影响待重新检查"));
 		if (!$section.find(".quick-material-table, .quick-material-risk-zero").length) return;
 		$section.addClass("is-stale");
 		$section.find(".quick-material-risk-banner").remove();
@@ -494,15 +538,15 @@ frappe.pages["quick-sales-order"].on_page_load = function (wrapper) {
 	function rowTemplate(id) {
 		return $(`
 			<tr data-row-id="${id}">
-				<td class="product-cell">
+				<td class="product-cell" data-label="${__("产品")}">
 					<div data-field="item_code"></div>
 					<div class="quick-row-help text-muted"></div>
 				</td>
-				<td data-field="qty"></td>
-				<td data-field="rate"></td>
-				<td class="quick-line-amount text-right">0.00</td>
-				<td><div class="quick-fulfillment" role="status">${__("选择产品后显示库存情况")}</div></td>
-				<td><button class="btn btn-xs btn-default remove-row" title="${__("删除产品")}" aria-label="${__(
+				<td data-field="qty" data-label="${__("数量")}"></td>
+				<td data-field="rate" data-label="${__("成交单价")}"></td>
+				<td class="quick-line-amount text-right" data-label="${__("金额")}">0.00</td>
+				<td class="quick-fulfillment-cell"><div class="quick-fulfillment" role="status">${__("选择产品后显示库存情况")}</div></td>
+				<td class="quick-remove-cell"><button class="btn btn-xs btn-default remove-row" title="${__("删除产品")}" aria-label="${__(
 			"删除产品"
 		)}">×</button></td>
 			</tr>
@@ -832,7 +876,9 @@ frappe.pages["quick-sales-order"].on_page_load = function (wrapper) {
 					return result;
 				}
 				setStatus("ready_to_confirm");
-				announce(__("安全检查完成，可以确认下单。"));
+				announce(result.shortages?.length || result.downstream_impacts?.length
+					? __("检查完成，请核对本单缺料及后续订单影响后再确认下单。")
+					: __("检查完成，可以确认下单。"));
 				if (openConfirmation) showConfirmation(result, payload, editSequence);
 				return result;
 			})
@@ -948,6 +994,7 @@ frappe.pages["quick-sales-order"].on_page_load = function (wrapper) {
 	$root.on("click", ".confirm-order", () => runPreflight({ openConfirmation: true }).catch(() => {}));
 	$root.on("click", ".quick-summary-shortage-link", () => {
 		const section = $root.find(".quick-material-risk").get(0);
+		if (section) section.open = true;
 		section?.scrollIntoView({ behavior: "smooth", block: "start" });
 		section?.focus({ preventScroll: true });
 	});
@@ -972,5 +1019,7 @@ if (typeof module !== "undefined" && module.exports) {
 		clearRowStaleLabels,
 		quickOrderPreviewArgs,
 		asNativePromise,
+		downstreamImpactHtml,
+		materialRiskSummaryHtml,
 	};
 }

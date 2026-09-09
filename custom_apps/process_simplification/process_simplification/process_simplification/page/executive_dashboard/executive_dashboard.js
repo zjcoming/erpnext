@@ -285,7 +285,7 @@ class ProcessSimplificationExecutiveDashboard {
 			this.kpi_card({
 				label: __("逾期订单"),
 				value: psExecutiveFormatInteger(data.order_health.overdue_orders),
-				detail: `${__("待交付金额")} ${this.format_currency(data.order_health.pending_amount)}`,
+				detail: `${__("逾期待交付金额")} ${this.format_currency(data.order_health.overdue_amount)}`,
 				tone: data.order_health.overdue_orders ? "red" : "emerald",
 			}),
 			this.kpi_card({
@@ -325,7 +325,7 @@ class ProcessSimplificationExecutiveDashboard {
 		</div>${rows.map((row) => `<div class="ps-exec-health-row">
 			<div><span>${row.label}</span><strong>${Number(row.value || 0)}</strong></div>
 			<div class="ps-exec-health-track"><i class="ps-exec-health-${row.tone}" style="width:${Math.max((Number(row.value || 0) / maxValue) * 100, row.value ? 4 : 0)}%"></i></div>
-		</div>`).join("")}`);
+		</div>`).join("")}<p class="text-muted">${__("全部未交付金额")} ${this.format_currency(health.pending_amount)}</p><small class="text-muted">${__("按订单行剩余净额计算，税费和取整差额按净额比例分摊。")}</small>`);
 	}
 
 	render_overdue_orders() {

@@ -14,12 +14,26 @@ class TestQuickOrderV2(UnitTestCase):
 		# These unit fixtures have no competing orders; priority allocation has
 		# dedicated coverage and must not read the site's live order backlog here.
 		self.enterContext(patch("process_simplification.api.production.get_prior_material_demands", return_value=[]))
+		self.enterContext(patch("process_simplification.api.quick_order.evaluate_order_material_risk", side_effect=self._isolated_material_risk))
 		resolver = patch(
 			"process_simplification.api.shortage.resolve_production_source_warehouse",
 			side_effect=self._resolve_test_source_warehouse,
 		)
 		resolver.start()
 		self.addCleanup(resolver.stop)
+
+	@staticmethod
+	def _isolated_material_risk(company, delivery_date, rows):
+		# This class checks order validation and the current-order material view.
+		# Cross-order allocation is exercised by test_quick_order_impact and the
+		# native submit integration test, independently of the live site's backlog.
+		from process_simplification.api.shortage import calculate_multilevel_material_coverage
+		from process_simplification.api.quick_order import get_company_defaults
+		demands = [{"bom_no": r.get("bom_no"), "qty": r.get("production_required"),
+			"source": {"row": r["row"], "finished_item": r.get("item_code"), "sales_order_item_warehouse": r.get("warehouse")}}
+			for r in rows if r.get("production_required", 0) > 0 and r.get("bom_no")]
+		coverage = calculate_multilevel_material_coverage(demands, company, need_by_date=delivery_date, defaults=get_company_defaults()) if demands else {"materials": [], "shortages": []}
+		return {"coverage": coverage, "downstream_impacts": []}
 
 	@staticmethod
 	def _resolve_test_source_warehouse(company, *, defaults=None, sales_order_item_warehouse=None):
@@ -330,7 +344,7 @@ class TestQuickOrderV2(UnitTestCase):
 
 	@patch("process_simplification.api.quick_order._validate_commercial_rules", return_value=[])
 	@patch("process_simplification.api.quick_order._build_sales_order")
-	@patch("process_simplification.api.quick_order.calculate_multilevel_material_coverage")
+	@patch("process_simplification.api.shortage.calculate_multilevel_material_coverage")
 	@patch("process_simplification.api.quick_order.preview_quick_order_items")
 	@patch("process_simplification.api.quick_order._customer_po_issue", return_value=None)
 	@patch("process_simplification.api.quick_order._validate_customer", return_value=[])
@@ -447,7 +461,7 @@ class TestQuickOrderV2(UnitTestCase):
 
 	@patch("process_simplification.api.quick_order._validate_commercial_rules", return_value=[])
 	@patch("process_simplification.api.quick_order._build_sales_order")
-	@patch("process_simplification.api.quick_order.calculate_multilevel_material_coverage")
+	@patch("process_simplification.api.shortage.calculate_multilevel_material_coverage")
 	@patch("process_simplification.api.quick_order.preview_quick_order_items")
 	@patch("process_simplification.api.quick_order._customer_po_issue", return_value=None)
 	@patch("process_simplification.api.quick_order._validate_customer", return_value=[])
@@ -517,13 +531,13 @@ class TestQuickOrderV2(UnitTestCase):
 		)
 		self.assertEqual(result["shortage_item_count"], 0)
 
-	@patch("process_simplification.api.quick_order.calculate_multilevel_material_coverage")
+	@patch("process_simplification.api.shortage.calculate_multilevel_material_coverage")
 	@patch("process_simplification.api.quick_order.preview_quick_order_items")
 	@patch("process_simplification.api.quick_order._customer_po_issue", return_value=None)
 	@patch("process_simplification.api.quick_order._validate_customer", return_value=[])
 	@patch("process_simplification.api.quick_order.get_company_defaults")
 	@patch("process_simplification.api.quick_order.frappe.has_permission")
-	def test_bom_explosion_failure_blocks_each_affected_production_row(
+	def test_bom_explosion_failure_blocks_incomplete_cross_order_review(
 		self,
 		has_permission,
 		get_company_defaults,
@@ -574,12 +588,11 @@ class TestQuickOrderV2(UnitTestCase):
 				if issue["code"] == "BOM_EXPLOSION_FAILED"
 			},
 			{
-				("BOM_EXPLOSION_FAILED", "line", 1),
-				("BOM_EXPLOSION_FAILED", "line", 2),
+				("BOM_EXPLOSION_FAILED", "order", None),
 			},
 		)
 
-	@patch("process_simplification.api.quick_order.calculate_multilevel_material_coverage")
+	@patch("process_simplification.api.shortage.calculate_multilevel_material_coverage")
 	@patch("process_simplification.api.quick_order.preview_quick_order_items")
 	@patch("process_simplification.api.quick_order._customer_po_issue", return_value=None)
 	@patch("process_simplification.api.quick_order._validate_customer", return_value=[])
@@ -834,6 +847,7 @@ class TestQuickOrderV2(UnitTestCase):
 			"review_fingerprint": "review-1",
 			"company": "_Test Company",
 			"shortages": [{"item_code": "_Test Item"}],
+			"production_required": 1,
 			"_sales_order": order,
 		}
 		record = MagicMock(name="idempotency_record")
@@ -848,7 +862,7 @@ class TestQuickOrderV2(UnitTestCase):
 			patch("process_simplification.api.quick_order.frappe.db.savepoint"),
 			patch("process_simplification.api.quick_order.frappe.get_all", return_value=[]),
 			patch(
-				"process_simplification.notifications.notify_quick_order_shortage"
+				"process_simplification.notifications.notify_quick_order_submitted"
 			) as notify_shortage,
 		):
 			result = submit_quick_sales_order(data, "review-token", "request-1")
@@ -861,6 +875,8 @@ class TestQuickOrderV2(UnitTestCase):
 			"SO-0001",
 			"_Test Company",
 			[{"item_code": "_Test Item"}],
+			production_required=1,
+			downstream_impacts=[],
 		)
 		db_commit.assert_called_once_with()
 
@@ -893,6 +909,7 @@ class TestQuickOrderV2(UnitTestCase):
 		evaluate.return_value = {
 			"can_submit": True,
 			"review_fingerprint": "review-1",
+			"production_required": 0,
 			"_sales_order": order,
 		}
 		create_record.return_value = MagicMock(name="new_idempotency_record")
@@ -917,6 +934,7 @@ class TestQuickOrderV2(UnitTestCase):
 			patch("process_simplification.api.quick_order.frappe.get_doc", return_value=completed_record),
 			patch("process_simplification.api.quick_order.frappe.db.savepoint"),
 			patch("process_simplification.api.quick_order.frappe.get_all", return_value=[]),
+			patch("process_simplification.notifications.notify_quick_order_submitted") as notify_order,
 		):
 			first = submit_quick_sales_order(data, "review-token", "request-1")
 			retry = submit_quick_sales_order(data, "review-token", "request-1")
@@ -929,6 +947,9 @@ class TestQuickOrderV2(UnitTestCase):
 		evaluate.assert_called_once_with(data)
 		self.assertEqual(cache_lock.call_count, 2)
 		self.assertEqual(cache_lock.call_args_list[0], cache_lock.call_args_list[1])
+		notify_order.assert_called_once_with(
+			"SO-0001", order.company, [], production_required=0, downstream_impacts=[]
+		)
 
 	@patch("process_simplification.api.quick_order._create_idempotency_record")
 	@patch("process_simplification.api.quick_order._evaluate_quick_order")
@@ -1009,7 +1030,8 @@ class TestQuickOrderV2(UnitTestCase):
 		digest = api._quick_order_intent_digest(data)
 		order = MagicMock(name="sales_order", docstatus=1)
 		order.name = "SO-RETRIED"
-		current = {"can_submit": True, "review_fingerprint": "review-1", "_sales_order": order}
+		current = {"can_submit": True, "review_fingerprint": "review-1", "_sales_order": order,
+			"production_required": 0}
 		with (
 			patch.object(api.frappe, "has_permission"),
 			patch.object(api, "normalize_quick_order_payload", return_value=data),
@@ -1023,6 +1045,7 @@ class TestQuickOrderV2(UnitTestCase):
 			patch.object(api.frappe.db, "commit") as commit,
 			patch.object(api.frappe.db, "rollback") as rollback,
 			patch.object(api.frappe.db, "savepoint") as savepoint,
+			patch("process_simplification.notifications.notify_quick_order_submitted"),
 		):
 			yield frappe._dict(api=api, data=data, digest=digest, order=order, current=current,
 				exists=exists, evaluate=evaluate, create_record=create_record,

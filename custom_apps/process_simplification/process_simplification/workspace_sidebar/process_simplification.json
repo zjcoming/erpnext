@@ -157,6 +157,58 @@
    "type": "Link"
   },
   {
+   "type": "Section Break",
+   "label": "\u5e93\u5b58",
+   "collapsible": 1,
+   "child": 0,
+   "link_type": "DocType"
+  },
+  {
+   "label": "\u5e93\u623f\u5de5\u4f5c\u53f0",
+   "link_to": "warehouse-workbench",
+   "link_type": "Page",
+   "icon": "stock",
+   "type": "Link",
+   "child": 1,
+   "collapsible": 1
+  },
+  {
+   "label": "\u5e93\u5b58\u4f59\u989d",
+   "link_to": "Stock Balance",
+   "link_type": "Report",
+   "icon": "stock",
+   "type": "Link",
+   "child": 1,
+   "collapsible": 1
+  },
+  {
+   "label": "\u5e93\u5b58\u6d41\u6c34",
+   "link_to": "Stock Ledger",
+   "link_type": "Report",
+   "icon": "list",
+   "type": "Link",
+   "child": 1,
+   "collapsible": 1
+  },
+  {
+   "label": "\u6536\u53d1\u8bb0\u5f55",
+   "link_to": "Stock Entry",
+   "link_type": "DocType",
+   "icon": "stock",
+   "type": "Link",
+   "child": 1,
+   "collapsible": 1
+  },
+  {
+   "label": "\u53d1\u8d27\u8bb0\u5f55",
+   "link_to": "Delivery Note",
+   "link_type": "DocType",
+   "icon": "truck",
+   "type": "Link",
+   "child": 1,
+   "collapsible": 1
+  },
+  {
    "child": 0,
    "collapsible": 1,
    "indent": 0,
@@ -184,6 +236,24 @@
    "link_type": "Page",
    "link_to": "purchase-supplier-allocation",
    "icon": "users",
+   "child": 1,
+   "collapsible": 1
+  },
+  {
+   "label": "\u91c7\u8d2d\u8ba2\u5355",
+   "link_to": "Purchase Order",
+   "link_type": "DocType",
+   "icon": "shopping-cart",
+   "type": "Link",
+   "child": 1,
+   "collapsible": 1
+  },
+  {
+   "label": "\u91c7\u8d2d\u6536\u8d27",
+   "link_to": "Purchase Receipt",
+   "link_type": "DocType",
+   "icon": "package",
+   "type": "Link",
    "child": 1,
    "collapsible": 1
   },

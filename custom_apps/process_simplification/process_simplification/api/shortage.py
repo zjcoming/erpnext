@@ -958,13 +958,16 @@ def _remaining_supply_after_plan_readiness(readiness_by_sales_order_item):
 	}
 
 
-def _purchase_inputs_from_production_overview(company: str):
+def _purchase_inputs_from_production_overview(company: str, demands=None):
 	"""Load planned Work Order facts and still-unplanned Sales Order demand once."""
 	from process_simplification.api.production import get_production_overview
 
 	readiness = {}
 	unplanned_demands = []
-	for demand in get_production_overview(page_size=0).get("demands") or []:
+	if demands is None:
+		demands = get_production_overview(page_size=0).get("demands") or []
+	from process_simplification.api.workbench import order_item_priority_key
+	for demand in sorted(demands, key=order_item_priority_key):
 		if demand.get("company") != company:
 			continue
 		sales_order_item = demand.get("sales_order_item")
@@ -992,7 +995,7 @@ def _purchase_inputs_from_production_overview(company: str):
 	return readiness, unplanned_demands
 
 
-def calculate_company_purchase_shortages(company: str, selected_sales_order_items=None):
+def calculate_company_purchase_shortages(company: str, selected_sales_order_items=None, *, production_demands=None, coverage_result=None):
 	"""Combine Work Order remaining need with not-yet-planned Sales Order demand.
 
 	Planned demand keeps the direct Work Order facts (issued/reserved quantities,
@@ -1002,13 +1005,19 @@ def calculate_company_purchase_shortages(company: str, selected_sales_order_item
 	PO/MR line from being counted once for each side.
 	"""
 	selected_sales_order_items = set(selected_sales_order_items or [])
-	readiness, unplanned_demands = _purchase_inputs_from_production_overview(company)
+	readiness, unplanned_demands = (
+		_purchase_inputs_from_production_overview(company)
+		if production_demands is None
+		else _purchase_inputs_from_production_overview(company, production_demands)
+	)
 	planned_shortages = calculate_plan_purchase_shortages(readiness, selected_sales_order_items)
 	unplanned_coverage = calculate_multilevel_material_coverage(
 		unplanned_demands,
 		company,
 		initial_remaining_supply=_remaining_supply_after_plan_readiness(readiness),
 	)
+	if coverage_result is not None:
+		coverage_result.update(unplanned_coverage)
 	unplanned_shortage_rows = []
 	for row in unplanned_coverage.get("requirements") or []:
 		if (

@@ -123,3 +123,10 @@
 	.purchase-allocation .form-control { font-size: 16px; }
 	.purchase-allocation .purchase-check { min-height: 44px; }
 }
+.purchase-list-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 12px; }
+.purchase-list-pager { display: flex; justify-content: flex-end; gap: 12px; margin-top: 16px; }
+.purchase-followup-card { border: 1px solid var(--border-color); border-radius: 8px; margin-bottom: 16px; overflow: hidden; }
+.purchase-followup-card .purchase-order { display: flex; flex-wrap: wrap; gap: 12px; }
+.purchase-followup-card .purchase-order > div { flex: 1; min-width: 160px; }
+.purchase-followup-card td .purchase-error { display: block; }
+.purchase-followup-card > summary { cursor: pointer; padding: 8px; }

@@ -508,7 +508,7 @@ class TestSimplifiedFlow(UnitTestCase):
 			(
 				"active production",
 				{**base_row, "active_work_order_qty": 10},
-				("blue", 60, "生产中"),
+				("blue", 60, "已安排生产"),
 			),
 			(
 				"partial stock with no work order remains production uncovered",

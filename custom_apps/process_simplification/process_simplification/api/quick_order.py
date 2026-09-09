@@ -13,10 +13,10 @@ from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry impor
 	get_available_qty_to_reserve,
 )
 
+from process_simplification.api.quick_order_impact import evaluate_order_material_risk
 from process_simplification.api.setup import get_company_defaults, get_default_bom
 from process_simplification.api.shortage import (
 	MaterialCoverageBomExpansionError,
-	calculate_multilevel_material_coverage,
 )
 from process_simplification.api.utils import SimplifiedFlowError, normalize_qty, throw_chinese
 
@@ -403,6 +403,7 @@ def preview_quick_order_items(items, company: str | None = None, delivery_date=N
 				"row": index,
 				"qty": qty,
 				"available_to_reserve": coverage,
+				"available_stock_snapshot_qty": available_snapshot,
 				"production_required": production_required,
 				"issues": issues,
 				"blocked": any(issue["severity"] == "blocker" for issue in issues),
@@ -536,6 +537,7 @@ def quick_order_review_fingerprint(result) -> str:
 		"available_to_reserve": normalize_qty(result.get("available_to_reserve")),
 		"production_required": normalize_qty(result.get("production_required")),
 		"shortage_item_count": int(result.get("shortage_item_count") or 0),
+		"downstream_impacts": result.get("downstream_impacts") or [],
 		"blockers": [
 			(issue.get("code"), issue.get("scope"), issue.get("row")) for issue in result.get("blockers") or []
 		],
@@ -621,53 +623,15 @@ def _evaluate_quick_order(payload):
 		for issue in row["issues"]:
 			(blockers if issue["severity"] == "blocker" else warnings).append(issue)
 
-	demands = [
-		{
-			"bom_no": row.get("bom_no"),
-			"qty": row.get("production_required"),
-			"source": {
-				"row": row.get("row"),
-				"sales_order": "快速开单预检",
-				"sales_order_item": "第 {0} 行".format(row.get("row")),
-				"finished_item": row.get("item_code"),
-				"production_qty": row.get("production_required"),
-				"bom_no": row.get("bom_no"),
-				"sales_order_item_warehouse": row.get("warehouse"),
-			},
-		}
-		for row in preview["rows"]
-		if row.get("production_required") > 0 and row.get("bom_no")
-	]
 	coverage = frappe._dict({"materials": [], "shortages": []})
-	if company and demands:
+	downstream_impacts = []
+	if company and not blockers:
 		try:
-			from process_simplification.api.production import get_prior_material_demands
-
-			reallocatable_commitments = {}
-			prior_demands = get_prior_material_demands(
-				company,
-				target_delivery_date=data.delivery_date,
-				reallocatable_commitments=reallocatable_commitments,
-			)
-			coverage = calculate_multilevel_material_coverage(
-				demands,
-				company,
-				need_by_date=data.delivery_date,
-				defaults=defaults,
-				prior_demands=prior_demands,
-				fact_cache={"reallocatable_production_commitments": reallocatable_commitments},
-			)
+			risk = evaluate_order_material_risk(company, data.delivery_date, preview["rows"])
+			coverage = risk["coverage"]
+			downstream_impacts = risk.get("downstream_impacts") or []
 		except MaterialCoverageBomExpansionError:
-			for demand in demands:
-				blockers.append(
-					_issue(
-						"BOM_EXPLOSION_FAILED",
-						"blocker",
-						"BOM 层级读取失败，无法评估生产与采购风险，请检查 BOM 后重试。",
-						"line",
-						demand["source"]["row"],
-					)
-				)
+			blockers.append(_issue("BOM_EXPLOSION_FAILED", "blocker", "本单或其他未完成订单的 BOM 层级读取失败，无法评估本单缺料及后续影响，请检查 BOM 后重试。"))
 	material_coverage = coverage.get("materials") or []
 	material_requirements = coverage.get("requirements") or []
 	shortages = coverage.get("shortages") or []
@@ -719,6 +683,9 @@ def _evaluate_quick_order(payload):
 				"底层采购物料存在 {0} 项采购缺口，不阻止下单。".format(len(shortages)),
 			)
 		)
+	if downstream_impacts:
+		warnings.append(_issue("DOWNSTREAM_ORDER_IMPACT", "warning", "本单将影响 {} 张后续订单的供料，请同时确认新增缺口及生产安排。".format(
+			len({row["sales_order"] for row in downstream_impacts}))))
 
 	so = None
 	if company and not blockers:
@@ -759,6 +726,7 @@ def _evaluate_quick_order(payload):
 		"production_required": preview["production_required"],
 		"shortage_item_count": len(shortages),
 		"shortages": shortages,
+		"downstream_impacts": downstream_impacts,
 		"material_coverage": material_coverage,
 		"material_requirements": material_requirements,
 		"material_groups": material_groups,
@@ -909,15 +877,15 @@ def submit_quick_sales_order(payload=None, review_token: str | None = None, idem
 				record.sales_order = so.name
 				record.completed_at = now_datetime()
 				record.save(ignore_permissions=True)
-				shortages = current.get("shortages") or []
-				if shortages:
-					from process_simplification.notifications import notify_quick_order_shortage
+				from process_simplification.notifications import notify_quick_order_submitted
 
-					notify_quick_order_shortage(
-						so.name,
-						current.get("company") or so.company,
-						shortages,
-					)
+				notify_quick_order_submitted(
+					so.name,
+					current.get("company") or so.company,
+					current.get("shortages") or [],
+					production_required=current["production_required"],
+					downstream_impacts=current.get("downstream_impacts") or [],
+				)
 				# Hold the key lock until both the order and key are visible to retries.
 				frappe.db.commit()
 			except (frappe.QueryDeadlockError, frappe.QueryTimeoutError):

@@ -81,7 +81,7 @@ function workOrderAssignmentActionMeta(
 	const historyAction = Number(workOrder.worker_assignment_history_count || 0) > 0
 		? { label: translate("查看派工记录"), primary: false, mode: "history" }
 		: null;
-	if (!hasProductionPlan || isTerminal) {
+	if (!hasProductionPlan || isTerminal || workOrder.operation_state?.code === "completed" || ["requestable", "draft_pending", "received"].includes(workOrder.receipt_state?.code)) {
 		return historyAction;
 	}
 
@@ -244,6 +244,7 @@ function productionSummary(demands) {
 			summary.material_shortage_demands += Number(
 				Number(demand.material_summary?.shortage_item_count || 0) > 0
 			);
+			summary.unchecked_material_demands += Number(demand.material_summary?.status_code === "not_checked");
 			summary.in_production_demands += Number(
 				["in_production", "partially_completed"].includes(demand.status_code)
 			);
@@ -258,6 +259,7 @@ function productionSummary(demands) {
 			overdue_demands: 0,
 			due_within_7_days: 0,
 			material_shortage_demands: 0,
+			unchecked_material_demands: 0,
 			in_production_demands: 0,
 			awaiting_order_reservation_demands: 0,
 		}
@@ -486,11 +488,40 @@ function workOrderDirectMaterialsHtml(workOrder, helpers, hasProductionPlan) {
 		.join("")}</div>`;
 }
 
-function workOrderCardHtml(workOrder, sequence, helpers, hasProductionPlan) {
+function productionNextTask(demand, helpers) {
+	const candidates = [];
+	for (const workOrder of demand.work_orders || []) {
+		const action = workOrderNextActionMeta(workOrder, helpers.translate);
+		if (action && (action.action === "open_stock_entry"
+			? helpers.canReadStockEntries || helpers.canManageAssignments
+			: helpers.canManageAssignments)) {
+			const priority = { request_manufacture: 0, open_stock_entry: 1, request_material_issue: 2, create_replenishment: 4, request_material_issue_override: 5 };
+			candidates.push({ workOrder, ...action, priority: priority[action.action] ?? 9 });
+		}
+		const assignment = workOrderAssignmentActionMeta(workOrder, Boolean(demand.production_plans?.length), helpers.translate);
+		if (helpers.canManageAssignments && assignment?.mode === "assign") {
+			candidates.push({ workOrder, ...assignment, action: "assign", priority: 3 });
+		}
+	}
+	return candidates.sort((a, b) => a.priority - b.priority)[0] || null;
+}
+
+function productionTaskButtonHtml(task, helpers) {
+	if (!task) return "";
+	const esc = helpers.escapeHtml;
+	if (task.action === "assign") return `<button type="button" class="btn btn-primary production-assignment-action" data-work-order="${esc(task.workOrder.name)}" data-assignment-mode="assign">${esc(task.label)}</button>`;
+	return `<button type="button" class="btn btn-primary production-work-order-action" data-action="${esc(task.action)}" data-work-order="${esc(task.workOrder.name)}" data-work-order-item="${esc(task.workOrderItem || "")}" data-document="${esc(task.document || "")}" data-allow-partial="${task.allowPartial ? "1" : "0"}" data-override-priority="${task.overridePriority ? "1" : "0"}" data-qty="${esc(task.qty || "")}">${esc(task.label)}</button>`;
+}
+
+function workOrderCardHtml(workOrder, sequence, helpers, hasProductionPlan, expanded = false) {
 	const t = helpers.translate;
 	const esc = helpers.escapeHtml;
 	const number = helpers.formatNumber;
-	const readiness = !hasProductionPlan && !workOrder.readiness_status
+	const readiness = workOrder.receipt_state?.code === "requestable"
+		? { label: t("待申请入库"), indicator: "orange" }
+		: workOrder.receipt_state?.code === "draft_pending"
+			? { label: t("入库申请处理中"), indicator: "blue" }
+			: !hasProductionPlan && !workOrder.readiness_status
 		? { label: t("未纳入生产计划"), indicator: "red" }
 		: workOrderReadinessMeta(workOrder.readiness_status, t);
 	const bom = workOrder.bom_no
@@ -504,7 +535,10 @@ function workOrderCardHtml(workOrder, sequence, helpers, hasProductionPlan) {
 		? `<button type="button" class="btn btn-xs ${assignmentMeta.primary ? "btn-primary" : "btn-default"} production-assignment-action" data-work-order="${esc(workOrder.name || "")}" data-assignment-mode="${esc(assignmentMeta.mode || "assign")}">${esc(assignmentMeta.label)}</button>`
 		: "";
 	const nextActionMeta = workOrderNextActionMeta(workOrder, t);
-	const nextAction = helpers.canManageAssignments && nextActionMeta
+	const canRunNextAction = nextActionMeta?.action === "open_stock_entry"
+		? (helpers.canReadStockEntries || helpers.canManageAssignments)
+		: helpers.canManageAssignments;
+	const nextAction = canRunNextAction && nextActionMeta
 		? `<button type="button" class="btn btn-xs ${nextActionMeta.primary ? "btn-primary" : "btn-default"} production-work-order-action" data-action="${esc(nextActionMeta.action)}" data-work-order="${esc(workOrder.name || "")}" data-work-order-item="${esc(nextActionMeta.workOrderItem || "")}" data-document="${esc(nextActionMeta.document || "")}" data-allow-partial="${nextActionMeta.allowPartial ? "1" : "0"}" data-override-priority="${nextActionMeta.overridePriority ? "1" : "0"}" data-qty="${esc(nextActionMeta.qty || "")}">${esc(nextActionMeta.label)}</button>`
 		: "";
 	const withdrawalAction = helpers.canManageAssignments && nextActionMeta?.withdrawalDocument
@@ -518,9 +552,12 @@ function workOrderCardHtml(workOrder, sequence, helpers, hasProductionPlan) {
 		.filter(Boolean)
 		.map((meta) => `<span class="indicator-pill ${esc(meta.indicator)}">${esc(meta.label)}</span>`)
 		.join("");
-	return `<article class="production-work-order-card">
-		<div class="production-work-order-summary">
+	return `<details class="production-work-order-card" data-work-order-card="${esc(workOrder.name || "")}"${expanded ? " open" : ""}>
+		<summary>
 			<div class="production-work-order-heading"><span class="production-work-order-sequence">${esc(t("第"))} ${sequence} ${esc(t("步"))}</span><a href="/app/work-order/${encodeURIComponent(workOrder.name || "")}"><strong>${esc(workOrder.name || "")}</strong></a><span class="indicator-pill ${esc(readiness.indicator)}">${esc(readiness.label)}</span>${stateBadges}${nextAction}${withdrawalAction}${assignmentAction}</div>
+			<strong class="production-work-order-product">${esc(workOrder.production_item_name || workOrder.production_item || "")}</strong>
+		</summary>
+		<div class="production-work-order-summary">
 			<div data-label="${esc(t("生产物料"))}">${productionWorkbenchItemIdentity.itemIdentityHtml(
 				workOrder.production_item,
 				workOrder.production_item_name,
@@ -536,8 +573,8 @@ function workOrderCardHtml(workOrder, sequence, helpers, hasProductionPlan) {
 			<div data-label="${esc(t("成品仓"))}">${esc(workOrder.fg_warehouse || t("未设置"))}</div>
 		</div>
 		<div class="production-work-order-output">${outputTarget}</div>
-		<div class="production-work-order-materials"><div class="production-work-order-material-heading">${esc(t("本工单直接用料"))}</div>${workOrderDirectMaterialsHtml(workOrder, helpers, hasProductionPlan)}</div>
-	</article>`;
+		<details class="production-work-order-materials"><summary class="production-work-order-material-heading">${esc(t("查看本工单直接用料"))}</summary>${workOrderDirectMaterialsHtml(workOrder, helpers, hasProductionPlan)}</details>
+	</details>`;
 }
 
 function purchaseMaterialSummaryHtml(materials, helpers) {
@@ -606,6 +643,7 @@ function productionDemandHtml(demand, helpers) {
 	const esc = helpers.escapeHtml;
 	const number = helpers.formatNumber;
 	const date = helpers.formatDate;
+	const currentTask = productionNextTask(demand, helpers);
 	const quantityFacts = [
 		[t("订单待交"), demand.pending_qty],
 		[t("有效预留"), demand.reserved_qty],
@@ -639,7 +677,7 @@ function productionDemandHtml(demand, helpers) {
 		: `<div class="text-muted production-empty-section">${esc(t("尚未关联生产计划。"))}</div>`;
 	const workOrders = (demand.work_orders || []).length
 		? (demand.work_orders || [])
-				.map((row, index) => workOrderCardHtml(row, index + 1, helpers, hasProductionPlan))
+				.map((row, index) => workOrderCardHtml(row, index + 1, helpers, hasProductionPlan, row.name === currentTask?.workOrder.name))
 				.join("")
 		: `<div class="text-muted production-empty-section">${esc(t("尚未创建工单。"))}</div>`;
 	const emptyMaterialsMessage = !hasProductionPlan && (demand.work_orders || []).length
@@ -652,10 +690,11 @@ function productionDemandHtml(demand, helpers) {
 		: `<div class="text-muted production-empty-section">${esc(emptyMaterialsMessage)}</div>`;
 	const plannedStart = (demand.production_plans || []).find((plan) => plan.planned_date)?.planned_date;
 	const primaryAction = (demand.next_actions || []).find(
-		(row) => row.enabled !== false && row.action !== "view_sales_order"
+		(row) => row.enabled !== false && !["view_sales_order", "check_materials"].includes(row.action)
 	);
-	const nextActionLabel = primaryAction?.label
-		|| ((demand.work_orders || []).length ? t("查看工单进度") : demand.status_label)
+	const nextActionLabel = (currentTask ? `${currentTask.workOrder.production_item_name || currentTask.workOrder.production_item} · ${currentTask.label}` : null)
+		|| primaryAction?.label
+		|| demand.status_label
 		|| t("查看详情");
 	return `
 		<details class="production-demand production-risk-${esc(demand.risk_level || "gray")}" data-demand-key="${esc(demand.demand_key)}">
@@ -674,13 +713,13 @@ function productionDemandHtml(demand, helpers) {
 				<span class="production-demand-next-action"><small>${esc(t("下一步"))}</small><strong>${esc(t(nextActionLabel))}</strong></span>
 			</summary>
 			<div class="production-demand-details">
+				${currentTask ? `<div class="production-current-task"><div><small>${esc(t("当前待办"))}</small><strong>${esc(nextActionLabel)}</strong><a href="/app/work-order/${encodeURIComponent(currentTask.workOrder.name)}">${esc(currentTask.workOrder.name)}</a></div>${productionTaskButtonHtml(currentTask, helpers)}</div>` : ""}
 				<div class="production-demand-actions">${actions}</div>
-				<section><h5>${esc(t("数量关系"))}</h5><div class="production-quantity-grid">${quantityFacts
+				<section><h5>${esc(t("生产执行链"))}</h5><p class="text-muted">${esc(t("展开工单查看详情；当前待办默认展开，已完成工单保留追溯。"))}</p><div class="production-work-order-list">${workOrders}</div></section>
+				<details class="production-secondary-details"><summary>${esc(t("数量关系与生产计划"))}</summary><div class="production-quantity-grid">${quantityFacts
 					.map(([label, value]) => `<div data-label="${esc(label)}"><span>${esc(label)}</span><strong>${number(value)}</strong></div>`)
-					.join("")}</div></section>
-				<section><h5>${esc(t("关联生产计划"))}</h5><p class="text-muted">${esc(t("现货、原料与在途供应统一按订单行交付日期分配；计划开始仅用于生产排程。"))}</p><div class="production-plan-list">${productionPlans}</div></section>
-				<section><h5>${esc(t("生产执行链"))}</h5><p class="text-muted">${esc(t("按可执行顺序排列：下级半成品工单优先；每张工单只显示其 BOM 直接用料。"))}</p><div class="production-work-order-list">${workOrders}</div></section>
-				<section class="production-purchase-summary"><h5>${esc(t("底层采购物料汇总"))}</h5><p class="text-muted">${esc(t("只汇总采购件；半成品在上方生产执行链中由下级工单供应。采购动作提交前会再次复核。"))}</p>${purchaseMaterials}</section>
+					.join("")}</div><p class="text-muted">${esc(t("现货、原料与在途供应统一按订单行交付日期分配；计划开始仅用于生产排程。"))}</p><div class="production-plan-list">${productionPlans}</div></details>
+				<details class="production-purchase-summary production-secondary-details"><summary>${esc(t("底层采购物料汇总"))}</summary><p class="text-muted">${esc(t("只汇总采购件；半成品在上方生产执行链中由下级工单供应。采购动作提交前会再次复核。"))}</p>${purchaseMaterials}</details>
 			</div>
 		</details>`;
 }
@@ -700,6 +739,7 @@ function runProductionWorkbenchToolbarLoad(loadOverview) {
 }
 
 const productionWorkbenchApi = {
+	productionNextTask,
 	filterProductionDemands,
 	productionMaterialStatusMeta,
 	workOrderReadinessMeta,
@@ -768,6 +808,7 @@ if (typeof frappe !== "undefined") {
 			canManageAssignments: Boolean(
 				window.process_simplification?.can_manage_worker_assignments?.()
 			),
+			canReadStockEntries: Boolean(frappe.model.can_read("Stock Entry")),
 		});
 
 		function visibleDemands() {
@@ -779,13 +820,16 @@ if (typeof frappe !== "undefined") {
 				[__("未纳入生产计划"), summary.unplanned_demands, "orange"],
 				[__("已逾期生产"), summary.overdue_demands, "red"],
 				[__("7 天内到期"), summary.due_within_7_days, "orange"],
-				[__("原料短缺"), summary.material_shortage_demands, "red"],
+				[__("已核料缺料"), summary.material_shortage_demands, "red"],
 				[__("生产中"), summary.in_production_demands, "blue"],
 				[__("待回补订单"), summary.awaiting_order_reservation_demands, "green"],
 			];
 			$root.find(".production-kpis").html(
 				cards.map(([label, value, color]) => `<div class="production-kpi production-kpi-${color} ${Number(value || 0) ? "" : "is-zero"}"><span>${frappe.utils.escape_html(label)}</span><strong>${value}</strong></div>`).join("")
 			);
+			$("<span>").text(__("待核料") + " " + Number(summary.unchecked_material_demands || 0))
+				.appendTo($root.find(".production-kpi").eq(3).toggleClass("is-zero",
+					!Number(summary.material_shortage_demands || 0) && !Number(summary.unchecked_material_demands || 0)));
 		}
 
 		function renderOtherWorkOrders() {
@@ -809,9 +853,9 @@ if (typeof frappe !== "undefined") {
 				else $field.val(value || "");
 			}
 			$root.find(".production-demand-list").html(
-				demands.length
+				(state.data.access_notice ? `<div class="alert alert-warning">${frappe.utils.escape_html(__(state.data.access_notice))}</div>` : "") + (demands.length
 					? demands.map((row) => productionDemandHtml(row, helpers())).join("")
-					: `<div class="text-muted fulfillment-empty">${frappe.utils.escape_html(__("没有符合当前筛选条件的生产需求。"))}</div>`
+					: `<div class="text-muted fulfillment-empty">${frappe.utils.escape_html(__("没有符合当前筛选条件的生产需求。"))}</div>`)
 			);
 			$root.find(".production-demand").each((_, element) => {
 				const $demand = $(element);

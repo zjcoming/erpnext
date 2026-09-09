@@ -309,16 +309,15 @@ def _lock_summary_context(name: str):
 
 
 def _assert_complete_source_set(doc):
-	pending = len(
-		_month_report_rows(
-			doc.company,
-			doc.employee,
-			doc.month_start,
-			status="Pending Approval",
-			for_update=True,
+	rows = _month_report_rows(doc.company, doc.employee, doc.month_start, for_update=True)
+	unfinished = [row for row in rows if row.status in {"In Progress", "Paused"}]
+	if unfinished:
+		names = ", ".join(frappe.utils.escape_html(row.name) for row in unfinished[:5])
+		frappe.throw(
+			_("该员工本月还有 {0} 条未结束或暂停的作业：{1}。请先结束作业并完成报工审核，再重新生成工资汇总。跨月作业归属于开始作业的日期。")
+			.format(len(unfinished), names)
 		)
-	)
-	if pending:
+	if any(row.status == "Pending Approval" for row in rows):
 		frappe.throw(_("Review all pending work reports for this employee and month first."))
 	eligible = _eligible_reports(
 		doc.company,

@@ -721,6 +721,9 @@ def production_overview_summary(demands):
 		"material_shortage_demands": sum(
 			row["material_summary"]["shortage_item_count"] > 0 for row in demands or []
 		),
+		"unchecked_material_demands": sum(
+			row.get("material_summary", {}).get("status_code") == "not_checked" for row in demands or []
+		),
 		"in_production_demands": sum(
 			row["status_code"] in {"in_production", "partially_completed"} for row in demands or []
 		),
@@ -820,6 +823,7 @@ def get_production_overview(page=1, page_size=DEFAULT_WORKBENCH_PAGE_SIZE, filte
 	return {
 		"checked_at": checked_at,
 		"summary": production_overview_summary(filtered_demands),
+		"access_notice": fulfillment.get("access_notice"),
 		"pagination": pagination,
 		"customers": production_customers(filtered_demands),
 		"demands": paged_demands,

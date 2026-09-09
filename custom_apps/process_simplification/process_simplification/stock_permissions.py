@@ -4,6 +4,24 @@ import frappe
 from frappe.permissions import get_allowed_docs_for_doctype, get_user_permissions
 
 
+def ensure_company_warehouse_reference_permissions():
+	"""Company defaults are configuration references, not stock access grants.
+
+	Keep Company User Permissions effective while allowing a warehouse operator to
+	select their company even when its default WIP/FG warehouses belong to another
+	operator. Transaction warehouse fields and ledger row permissions stay intact.
+	"""
+	from frappe.custom.doctype.property_setter.property_setter import make_property_setter
+
+	for fieldname in (
+		"default_warehouse_for_sales_return", "default_in_transit_warehouse",
+		"default_wip_warehouse", "default_fg_warehouse", "default_scrap_warehouse",
+	):
+		field = frappe.get_meta("Company").get_field(fieldname)
+		if field and field.options == "Warehouse" and not field.ignore_user_permissions:
+			make_property_setter("Company", fieldname, "ignore_user_permissions", 1, "Check")
+
+
 def stock_entry_query(user=None):
 	user = user or frappe.session.user
 	allowed = get_allowed_docs_for_doctype(

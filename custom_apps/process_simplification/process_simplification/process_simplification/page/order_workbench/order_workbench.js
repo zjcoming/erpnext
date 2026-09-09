@@ -361,7 +361,8 @@ if (typeof frappe !== "undefined") {
 			const html = orders.length
 				? orders.map((order) => orderOverviewHtml(order, browserHelpers())).join("")
 				: `<div class="text-muted fulfillment-empty">${frappe.utils.escape_html(__("没有符合当前筛选条件的订单。"))}</div>`;
-			$root.find(".fulfillment-order-list").html(html);
+			const notice = state.data.access_notice ? `<div class="alert alert-warning">${frappe.utils.escape_html(__(state.data.access_notice))}</div>` : "";
+			$root.find(".fulfillment-order-list").html(notice + html);
 			$root.find(".fulfillment-pagination").html(workbenchPaginationHtmlSafe(state.data.pagination || state.pagination, browserHelpers()));
 			$root.find(".fulfillment-order").each((_, element) => {
 				const $order = $(element);

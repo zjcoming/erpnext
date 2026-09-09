@@ -13,6 +13,7 @@ from process_simplification.notifications import (
 	disable_standard_material_request_receipt_email,
 )
 from process_simplification.patches.v0_0.add_purchasing_navigation import execute as add_purchasing_navigation
+from process_simplification.patches.v0_0.add_warehouse_navigation import execute as add_warehouse_navigation
 from process_simplification.patches.v0_0.add_management_navigation import (
 	execute as add_management_navigation,
 )
@@ -50,6 +51,7 @@ def after_install():
 	add_worker_reporting_navigation()
 	add_management_navigation()
 	add_purchasing_navigation()
+	add_warehouse_navigation()
 	group_process_simplification_navigation()
 	disable_standard_material_request_receipt_email()
 	ensure_pwa_defaults()
@@ -66,6 +68,7 @@ def after_migrate():
 	add_worker_reporting_navigation()
 	add_management_navigation()
 	add_purchasing_navigation()
+	add_warehouse_navigation()
 	group_process_simplification_navigation()
 	disable_standard_material_request_receipt_email()
 	ensure_pwa_defaults()

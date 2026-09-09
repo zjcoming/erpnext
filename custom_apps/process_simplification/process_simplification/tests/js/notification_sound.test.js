@@ -139,3 +139,29 @@ test("an old page's failed-play timestamp cannot silence the upgraded page", asy
 	assert.equal(await createProcessNotificationSoundController(f.options).play(), true);
 	assert.deepEqual(f.sounds, ["process-notification"]);
 });
+
+test("realtime and polling the same notification sound once even after cooldown", async () => {
+	let at = 20000;
+	const f = fixture({ now: () => at }), controller = createProcessNotificationSoundController(f.options);
+	assert.equal(await controller.play({ notificationId: "NOTICE-1" }), true);
+	at += 10000;
+	assert.equal(await controller.play({ notificationId: "NOTICE-1" }), false);
+	assert.equal(await controller.play({ notificationId: "NOTICE-2" }), true);
+	assert.equal(f.sounds.length, 2);
+});
+
+test("foreground catch-up can play a notification skipped while hidden", async () => {
+	const f = fixture(), controller = createProcessNotificationSoundController(f.options);
+	f.documentRef.visibilityState = "hidden";
+	assert.equal(await controller.play({ notificationId: "NOTICE-1" }), false);
+	f.documentRef.visibilityState = "visible";
+	assert.equal(await controller.play({ notificationId: "NOTICE-1" }), true);
+});
+
+test("sound preview works for polling even when realtime is disabled", async () => {
+	const f = fixture();
+	f.frappeRef.realtime.socket = null;
+	f.frappeRef.realtime.disabled = true;
+	assert.equal(setupProcessNotificationSound(f.options), true);
+	assert.equal(await enableProcessNotificationSound(f.options), true);
+});

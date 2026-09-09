@@ -2776,6 +2776,38 @@ class TestWorkerReporting(IntegrationTestCase):
 			(production_moment + timedelta(days=1)).date(),
 		)
 
+	def _check_month_close_with_unfinished_session(self, paused):
+		previous_month = add_months(get_first_day(nowdate()), -1)
+		moment = datetime.combine(add_days(previous_month, 14), time(9, 0, 0, 123456))
+		with self.freeze_time(moment):
+			_, assignment = self._setup_flow(qty=10, wage_type="Time", rate=20, valid_from=previous_month)
+			approved = self._submit(assignment, 1, request_id="month-close-approved")
+			self._approve(approved)
+			with self.set_user(self.worker_user):
+				active = service.start_work_session(assignment.name, "month-close-active", started_at=moment + timedelta(minutes=5))
+				if paused:
+					active = service.pause_work_session(active.name, "month-close-paused", paused_at=moment + timedelta(minutes=10))
+		with self.set_user(self.wage_manager):
+			name = summary.build_monthly_summaries(self.TEST_COMPANY, previous_month, self.worker)["summaries"][0]
+			with self.assertRaisesRegex(frappe.ValidationError, active.name):
+				summary.confirm_monthly_summary(name)
+			self.assertEqual(frappe.db.get_value("Monthly Worker Wage Summary", name, "docstatus"), 0)
+		with self.freeze_time(moment + timedelta(hours=1)):
+			with self.set_user(self.worker_user):
+				finished = service.finish_work_session(active.name, 1, "month-close-finish", reported_minutes=10, ended_at=moment + timedelta(minutes=30))
+			self._approve(finished)
+		with self.set_user(self.wage_manager):
+			summary.build_monthly_summaries(self.TEST_COMPANY, previous_month, self.worker)
+			confirmed = summary.confirm_monthly_summary(name)
+		self.assertEqual(confirmed.docstatus, 1)
+		self.assertEqual({row.source_report for row in confirmed.details}, {approved.name, active.name})
+
+	def test_month_close_waits_for_running_session_and_can_then_complete(self):
+		self._check_month_close_with_unfinished_session(paused=False)
+
+	def test_month_close_waits_for_paused_session_and_can_then_complete(self):
+		self._check_month_close_with_unfinished_session(paused=True)
+
 	def test_monthly_summary_contains_approved_reports(self):
 		previous_month = add_months(get_first_day(nowdate()), -1)
 		production_day = add_days(previous_month, 14)

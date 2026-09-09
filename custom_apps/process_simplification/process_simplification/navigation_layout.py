@@ -16,10 +16,16 @@ WORKSPACE_CARD_LINKS = (
 		),
 	),
 	(
+		"库房与库存",
+		("warehouse-workbench", "Stock Balance", "Stock Ledger"),
+	),
+	(
 		"采购与工资",
 		(
 			"shortage-purchase-planning",
 			"purchase-supplier-allocation",
+			"Purchase Order",
+			"Purchase Receipt",
 			"purchase-receipt-notice",
 			"Operation Wage Rate",
 			"Monthly Worker Wage Summary",

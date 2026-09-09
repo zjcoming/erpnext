@@ -1,0 +1,21 @@
+{
+ "doctype": "Page",
+ "name": "warehouse-workbench",
+ "page_name": "warehouse-workbench",
+ "title": "库房工作台",
+ "module": "Process Simplification",
+ "standard": "Yes",
+ "roles": [
+  {
+   "role": "Process Simplification Warehouse Operator"
+  },
+  {
+   "role": "Process Simplification Owner"
+  },
+  {
+   "role": "System Manager"
+  }
+ ],
+ "modified": "2026-09-08 12:49:41.075077",
+ "modified_by": "Administrator"
+}

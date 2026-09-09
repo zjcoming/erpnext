@@ -10,6 +10,36 @@ from process_simplification.management_access import require_owner_access
 
 MAX_PERIOD_DAYS = 366
 
+
+def _order_amount_sql(prefix=""):
+	# A disabled rounded total is stored as zero by ERPNext, not NULL.
+	return (
+		f"case when ifnull({prefix}disable_rounded_total, 0) = 1 "
+		f"then ifnull({prefix}base_grand_total, 0) "
+		f"else coalesce({prefix}base_rounded_total, {prefix}base_grand_total, 0) end"
+	)
+
+
+def _pending_orders_sql():
+	# Remaining line net value determines the share of the order's taxes,
+	# charges and rounding adjustment. Quantity progress is not value progress.
+	return f"""
+		select so.name, so.customer, so.customer_name, so.delivery_date,
+		       so.per_delivered, so.creation,
+		       {_order_amount_sql('so.')} as order_amount,
+		       ({_order_amount_sql('so.')}) * case when so.base_net_total > 0
+		         then least(greatest(ifnull(pending_lines.pending_net, 0) / so.base_net_total, 0), 1)
+		         else 0 end as pending_amount
+		from `tabSales Order` so
+		left join (
+			select parent, sum(case when qty > 0 then base_net_amount
+			  * greatest(least(qty - ifnull(delivered_qty, 0), qty), 0) / qty else 0 end) as pending_net
+			from `tabSales Order Item` group by parent
+		) pending_lines on pending_lines.parent = so.name
+		where so.company = %(company)s and so.docstatus = 1
+		  and so.status not in ('Closed', 'Completed') and ifnull(so.per_delivered, 0) < 100
+	"""
+
 CATEGORY_META = {
 	"finished_goods": {"label": "成品库存", "color": "#2563eb"},
 	"semi_finished": {"label": "半成品库存", "color": "#7c3aed"},
@@ -114,9 +144,9 @@ def _resolve_company(company: str | None, companies):
 
 def _order_totals(company, period_from, period_to):
 	row = frappe.db.sql(
-		"""
+		f"""
 		select count(*) as order_count,
-		       coalesce(sum(coalesce(base_rounded_total, base_grand_total, 0)), 0) as order_amount
+		       coalesce(sum({_order_amount_sql()}), 0) as order_amount
 		from `tabSales Order`
 		where company = %(company)s
 		  and docstatus = 1
@@ -131,10 +161,10 @@ def _order_totals(company, period_from, period_to):
 def _order_trend(company, period_to):
 	trend_from = getdate(get_first_day(add_months(period_to, -5)))
 	rows = frappe.db.sql(
-		"""
+		f"""
 		select date_format(transaction_date, '%%Y-%%m') as month_key,
 		       count(*) as order_count,
-		       coalesce(sum(coalesce(base_rounded_total, base_grand_total, 0)), 0) as order_amount
+		       coalesce(sum({_order_amount_sql()}), 0) as order_amount
 		from `tabSales Order`
 		where company = %(company)s
 		  and docstatus = 1
@@ -288,19 +318,13 @@ def _stock_ageing(company, period_to):
 
 def _order_health(company, reference_date):
 	row = frappe.db.sql(
-		"""
+		f"""
 		select count(*) as open_orders,
 		       sum(case when delivery_date < %(today)s then 1 else 0 end) as overdue_orders,
 		       sum(case when delivery_date between %(today)s and %(within_7_days)s then 1 else 0 end) as due_within_7_days,
-		       coalesce(sum(
-		          coalesce(base_rounded_total, base_grand_total, 0)
-		          * greatest(100 - ifnull(per_delivered, 0), 0) / 100
-		       ), 0) as pending_amount
-		from `tabSales Order`
-		where company = %(company)s
-		  and docstatus = 1
-		  and status not in ('Closed', 'Completed')
-		  and ifnull(per_delivered, 0) < 100
+		       coalesce(sum(pending_amount), 0) as pending_amount,
+		       coalesce(sum(case when delivery_date < %(today)s then pending_amount else 0 end), 0) as overdue_amount
+		from ({_pending_orders_sql()}) pending_orders
 		""",
 		{
 			"company": company,
@@ -318,22 +342,17 @@ def _order_health(company, reference_date):
 		"due_within_7_days": due_within_7_days,
 		"other_open_orders": max(open_orders - overdue_orders - due_within_7_days, 0),
 		"pending_amount": flt(row.pending_amount, 2),
+		"overdue_amount": flt(row.overdue_amount, 2),
 	}
 
 
 def _overdue_orders(company, reference_date, limit=5):
 	return frappe.db.sql(
-		"""
+		f"""
 		select name, customer, customer_name, delivery_date, per_delivered,
-		       coalesce(base_rounded_total, base_grand_total, 0) as order_amount,
-		       coalesce(base_rounded_total, base_grand_total, 0)
-		          * greatest(100 - ifnull(per_delivered, 0), 0) / 100 as pending_amount
-		from `tabSales Order`
-		where company = %(company)s
-		  and docstatus = 1
-		  and status not in ('Closed', 'Completed')
-		  and ifnull(per_delivered, 0) < 100
-		  and delivery_date < %(today)s
+		       order_amount, pending_amount
+		from ({_pending_orders_sql()}) pending_orders
+		where delivery_date < %(today)s
 		order by delivery_date asc, creation asc
 		limit %(limit)s
 		""",

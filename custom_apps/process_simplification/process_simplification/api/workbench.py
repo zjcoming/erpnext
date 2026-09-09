@@ -312,8 +312,8 @@ def _status_and_actions(row: WorkbenchRow, has_bom: bool):
 		elif row.unplanned_production_qty > 0:
 			row.status = "待安排生产"
 		elif row.active_work_order_qty > 0 and row.status == "待处理":
-			row.status = "生产中"
-		row.next_actions.append(action("安排生产", "open_production_workbench"))
+			row.status = "已安排生产"
+		row.next_actions.append(action("安排生产" if row.unplanned_production_qty > 0 else "查看生产进度", "open_production_workbench"))
 
 	if not row.next_actions:
 		row.status = row.status if row.status != "待处理" else "待处理"
@@ -499,7 +499,7 @@ def _fulfillment_risk(
 			("orange", 80, _("临期生产未覆盖")),
 		),
 		(production_uncovered, ("orange", 70, _("生产未覆盖"))),
-		(active_production, ("blue", 60, _("生产中"))),
+		(active_production, ("blue", 60, _("已安排生产"))),
 		(partial_stock, ("orange", 40, _("库存部分覆盖"))),
 		(direct_ship, ("green", 20, _("可发货"))),
 	)
@@ -766,7 +766,12 @@ def get_fulfillment_overview(page=1, page_size=DEFAULT_WORKBENCH_PAGE_SIZE, filt
 			break
 		limit_start += page_length
 
+	listed_order_count = len(orders)
 	orders = filter_readable_sales_orders(orders)
+	access_notice = (
+		"当前仓库权限限制了部分订单的读取。请联系管理员核对负责的仓库范围；这不代表没有订单。"
+		if len(orders) < listed_order_count else None
+	)
 	order_by_name = {order.name: order for order in orders}
 	all_rows = []
 	for order in orders:
@@ -813,6 +818,7 @@ def get_fulfillment_overview(page=1, page_size=DEFAULT_WORKBENCH_PAGE_SIZE, filt
 	return {
 		"checked_at": checked_at,
 		"summary": fulfillment_summary(filtered_results),
+		"access_notice": access_notice,
 		"pagination": pagination,
 		"customers": fulfillment_customers(filtered_results),
 		"orders": paged_results,

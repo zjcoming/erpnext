@@ -14,6 +14,7 @@ from erpnext.stock.doctype.material_request.material_request import get_default_
 from process_simplification.api.utils import get_quantity_precision, normalize_purchase_qty
 from process_simplification.notifications import _user_matches_company
 from process_simplification.purchasing.receipts import lock_material_requests
+from process_simplification.purchasing.query import document_page, item_search_codes
 from process_simplification.request_transaction import retry_request_transaction
 
 BATCH = "Purchase Allocation Batch"
@@ -288,6 +289,12 @@ def get_allocation_context(material_request):
 	unique_orders = {
 		row.name: {key: row[key] for key in ("name", "supplier", "docstatus", "status")} for row in orders
 	}
+	readable_orders = []
+	if frappe.has_permission("Purchase Order", "read"):
+		for name in unique_orders:
+			po = frappe.get_doc("Purchase Order", name)
+			if frappe.has_permission("Purchase Order", "read", doc=po) and _user_matches_company(frappe.session.user, po.company):
+				readable_orders.append(_order_followup(po, material_request=doc.name, pending_only=False))
 	can_create = frappe.has_permission("Purchase Order", "create")
 	references = {}
 	if can_create:
@@ -309,7 +316,7 @@ def get_allocation_context(material_request):
 		"material_request": doc.name,
 		"company": doc.company,
 		"items": items,
-		"orders": list(unique_orders.values()),
+		"orders": readable_orders,
 		"currency": frappe.db.get_value("Company", doc.company, "default_currency"),
 		"reference_options": references,
 		"can_create": can_create,
@@ -318,35 +325,87 @@ def get_allocation_context(material_request):
 
 
 @frappe.whitelist()
+def get_request_page(start=0, page_length=20, search="", view="pending"):
+	if view not in {"pending", "history", "all"}:
+		frappe.throw("无效的采购申请范围。")
+	search = str(search or "").strip().lower()
+	item_codes = item_search_codes(search)
+	finished = ["Received", "Transferred", "Issued"]
+	filters = {"docstatus": 1, "material_request_type": "Purchase"}
+	filters["status"] = ["in", finished] if view == "history" else ["not in", ["Stopped", "Cancelled"] + (finished if view == "pending" else [])]
+	labels = {"Pending": "待下单", "Partially Ordered": "部分下单", "Ordered": "已下单", "Partially Received": "部分到货", "Received": "已到货"}
+	def project(doc):
+		if not any(flt(item.stock_qty) > 0 for item in doc.items):
+			return None
+		words = " ".join(str(doc.get(key) or "") for key in ("name", "company", "status")) + " " + labels.get(doc.status, "")
+		if search and search not in words.lower() and not any(item.item_code in item_codes for item in doc.items):
+			return None
+		return {key: doc.get(key) for key in ("name", "company", "status", "transaction_date")}
+	return document_page("Material Request", filters, project, start=start, page_length=page_length)
+
+
+@frappe.whitelist()
 def list_requests():
-	rows = frappe.get_list(
-		"Material Request",
-		filters={
-			"docstatus": 1,
-			"material_request_type": "Purchase",
-			"status": ["not in", ["Stopped", "Cancelled"]],
-		},
-		fields=["name", "company", "status", "transaction_date"],
-		order_by="modified desc",
-		limit=100,
+	"""Preserve the original list contract for existing clients without truncation."""
+	rows, start = [], 0
+	while start is not None:
+		page = get_request_page(start=start, page_length=50, view="all")
+		rows.extend(frappe._dict(row) for row in page["rows"])
+		start = page["next_start"]
+	return rows
+
+
+def _order_followup(doc, *, material_request=None, pending_only=True, search="", item_codes=None, overdue_only=False):
+	returned = {
+		row.purchase_order_item: flt(row.returned_stock_qty)
+		for row in frappe.db.sql(
+			"""select i.purchase_order_item, -sum(i.stock_qty) as returned_stock_qty
+			from `tabPurchase Receipt Item` i join `tabPurchase Receipt` p on p.name=i.parent
+			where i.purchase_order=%s and p.docstatus=1 and p.is_return=1
+			group by i.purchase_order_item""", doc.name, as_dict=True,
+		)
+	}
+	items = []
+	header_matches = not search or search in f"{doc.name} {doc.supplier} {doc.get('supplier_name') or ''}".lower()
+	for item in doc.items:
+		if material_request and item.material_request != material_request:
+			continue
+		pending_qty = max(normalize_purchase_qty(flt(item.qty) - flt(item.received_qty)), 0)
+		if pending_only and pending_qty <= 0:
+			continue
+		active = doc.docstatus == 1 and doc.status not in {"Closed", "On Hold", "Completed", "Cancelled"}
+		days = max((getdate(nowdate()) - getdate(item.schedule_date)).days, 0) if active and item.schedule_date and pending_qty > 0 else 0
+		if overdue_only and not days:
+			continue
+		if not header_matches and item.item_code not in (item_codes or set()) and search not in str(item.material_request or "").lower():
+			continue
+		items.append({
+			"item_code": item.item_code, "item_name": item.item_name,
+			"qty": flt(item.qty), "received_qty": flt(item.received_qty), "pending_qty": pending_qty,
+			"returned_qty": normalize_purchase_qty(returned.get(item.name, 0) / (flt(item.conversion_factor) or 1)),
+			"uom": item.uom, "schedule_date": item.schedule_date, "overdue_days": days,
+			"material_request": item.material_request,
+		})
+	from process_simplification.api.utils import apply_current_item_names
+	apply_current_item_names(items)
+	return {
+		**{key: doc.get(key) for key in ("name", "supplier", "company", "status", "docstatus", "per_received")},
+		"items": items, "can_submit": bool(doc.docstatus == 0 and frappe.has_permission("Purchase Order", "submit", doc=doc)),
+		"can_receive": bool(doc.docstatus == 1 and doc.status not in {"Closed", "On Hold", "Completed", "Cancelled"} and any(item["pending_qty"] > 0 for item in items) and frappe.has_permission("Purchase Receipt", "create")),
+	}
+
+
+@frappe.whitelist()
+def get_supplier_followup(start=0, page_length=20, search="", overdue_only=0):
+	search = str(search or "").strip().lower()
+	item_codes = item_search_codes(search)
+	def project(doc):
+		row = _order_followup(doc, search=search, item_codes=item_codes, overdue_only=frappe.utils.cint(overdue_only))
+		return row if row["items"] else None
+	return document_page(
+		"Purchase Order", {"docstatus": 1, "per_received": ["<", 100], "status": ["not in", ["Closed", "On Hold", "Completed", "Cancelled"]]},
+		project, start=start, page_length=page_length, order_by="schedule_date asc, creation asc, name asc",
 	)
-	positive_requests = (
-		{
-			item.parent
-			for item in frappe.get_all(
-				"Material Request Item",
-				filters={"parent": ["in", [row.name for row in rows]], "stock_qty": [">", 0]},
-				fields=["parent"],
-			)
-		}
-		if rows
-		else set()
-	)
-	return [
-		row
-		for row in rows
-		if row.name in positive_requests and _user_matches_company(frappe.session.user, row.company)
-	]
 
 
 @frappe.whitelist(methods=["POST"])

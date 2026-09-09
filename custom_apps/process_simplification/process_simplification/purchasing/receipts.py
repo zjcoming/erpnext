@@ -411,17 +411,35 @@ def get_notice(name):
 
 
 @frappe.whitelist()
-def list_notices():
-	# Scope rows before exposing even identifiers or status counts.
-	result = []
-	for row in frappe.get_all(
-		EVENT,
+def get_notice_page(start=0, page_length=20, search="", from_date=None, to_date=None):
+	# Company authorization precedes LIMIT; other companies cannot displace this
+	# company's records. Event DocType access alone is not the summary boundary.
+	companies = [name for name in frappe.get_all("Company", pluck="name") if _can_manage(name)]
+	start, page_length = max(cint(start), 0), min(max(cint(page_length), 1), 50)
+	if not companies:
+		return {"rows": [], "next_start": None, "page_length": page_length}
+	filters = [["company", "in", companies]]
+	if from_date:
+		filters.append(["occurred_at", ">=", get_datetime(from_date)])
+	if to_date:
+		filters.append(["occurred_at", "<", add_to_date(get_datetime(to_date), days=1)])
+	search = str(search or "").strip()
+	rows = frappe.get_all(
+		EVENT, filters=filters,
+		or_filters={key: ["like", f"%{search}%"] for key in ("receipt", "supplier", "snapshot")} if search else None,
 		fields=["name", "company", "receipt", "supplier", "event_type", "status", "occurred_at"],
-		order_by="occurred_at desc",
-		limit=300,
-	):
-		if _can_manage(row.company):
-			result.append(row)
+		order_by="occurred_at desc, name desc", limit_start=start, limit_page_length=page_length + 1,
+	)
+	return {"rows": rows[:page_length], "next_start": start + page_length if len(rows) > page_length else None, "page_length": page_length}
+
+
+@frappe.whitelist()
+def list_notices():
+	result, start = [], 0
+	while start is not None:
+		page = get_notice_page(start=start, page_length=50)
+		result.extend(page["rows"])
+		start = page["next_start"]
 	return result
 
 

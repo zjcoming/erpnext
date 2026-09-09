@@ -16,8 +16,8 @@ from process_simplification.management_access import (
 )
 from process_simplification.notifications import (
 	APP_NAME,
-	PROCUREMENT_RESPONSIBILITY,
 	PROCESS_NOTIFICATION_REALTIME_EVENT,
+	PROCUREMENT_RESPONSIBILITY,
 	PRODUCTION_DISPATCH_RESPONSIBILITY,
 	PURCHASE_RECEIPT_RESPONSIBILITY,
 	STANDARD_MATERIAL_REQUEST_RECEIPT_NOTIFICATION,
@@ -27,7 +27,7 @@ from process_simplification.notifications import (
 	notify_exception_approved,
 	notify_material_request_received,
 	notify_operation_completed,
-	notify_quick_order_shortage,
+	notify_quick_order_submitted,
 	notify_users,
 	notify_work_report_decision,
 	notify_work_report_submitted,
@@ -155,6 +155,36 @@ class TestProcessNotifications(IntegrationTestCase):
 		self.assertTrue(sound_calls[0].args[1]["play_sound"])
 		self.assertEqual(sound_calls[0].kwargs["user"], worker)
 		self.assertTrue(sound_calls[0].kwargs["after_commit"])
+
+	def test_mobile_snapshot_is_fresh_user_scoped_and_honors_notification_settings(self):
+		from process_simplification.api.notification_sync import get_notification_snapshot
+
+		worker = self._make_user("Production Worker")
+		other = self._make_user("Production Worker")
+		for user, name in ((worker, "SYNC-OWN"), (other, "SYNC-OTHER")):
+			notify_users([user], subject="报工已通过", description="测试同步",
+				document_type="Job Card Work Report", document_name=name,
+				link="/app/production-report-history")
+		frappe.set_user(worker)
+		result = get_notification_snapshot()
+		self.assertEqual([row.document_name for row in result["notification_logs"]], ["SYNC-OWN"])
+		self.assertEqual(result["unread_count"], 1)
+		self.assertTrue(result["play_sound"])
+		self.assertEqual(result["latest_process_notification"].name, result["notification_logs"][0].name)
+		log_name = result["notification_logs"][0].name
+		frappe.db.set_value("Notification Log", log_name, "read", 1)
+		self.assertEqual(get_notification_snapshot()["unread_count"], 0)
+		self.assertEqual(get_notification_snapshot()["notification_logs"][0].read, 1)
+		frappe.set_user("Administrator")
+		settings = frappe.get_doc("Notification Settings", worker)
+		settings.enabled = 0
+		settings.save(ignore_permissions=True)
+		frappe.set_user(worker)
+		self.assertFalse(get_notification_snapshot()["enabled"])
+		self.assertEqual(get_notification_snapshot()["notification_logs"], [])
+		frappe.set_user("Guest")
+		with self.assertRaises(frappe.PermissionError):
+			get_notification_snapshot()
 
 	def test_configured_recipient_is_added_to_default_chain(self):
 		configured = self._make_user(WAREHOUSE_OPERATOR_ROLE)
@@ -356,7 +386,20 @@ class TestProcessNotifications(IntegrationTestCase):
 			stock_entry="MAT-STE-NOTIFY-1",
 		)
 		notify_exception_approved(exception)
-		notify_quick_order_shortage("SAL-ORD-NOTIFY-1", self.company, [{"item_code": "RM-1"}])
+		for _ in range(2):
+			notify_quick_order_submitted(
+				"SAL-ORD-NOTIFY-1", self.company, [{"item_code": "RM-1"}], production_required=1
+			)
+		for user, action, link in (
+			(warehouse, "安排补料", "/app/shortage-purchase-planning"),
+			(production_manager, "安排排期", "/app/production-workbench"),
+		):
+			logs = frappe.get_all("Notification Log", filters={
+				"for_user": user, "document_name": "SAL-ORD-NOTIFY-1",
+			}, fields=["description", "link"])
+			self.assertEqual(len(logs), 1)
+			self.assertIn(action, logs[0].description)
+			self.assertEqual(logs[0].link, link)
 
 		worker_subjects = set(
 			frappe.get_all(
@@ -394,7 +437,7 @@ class TestProcessNotifications(IntegrationTestCase):
 			)
 		)
 		self.assertIn("待库存处理：余料退库", warehouse_subjects)
-		self.assertIn("销售订单有缺料待采购：SAL-ORD-NOTIFY-1", warehouse_subjects)
+		self.assertIn("新销售订单：SAL-ORD-NOTIFY-1", warehouse_subjects)
 		self.assertTrue(
 			frappe.db.exists(
 				"Notification Log",

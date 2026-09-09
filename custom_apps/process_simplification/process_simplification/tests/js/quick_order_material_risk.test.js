@@ -14,6 +14,8 @@ const {
 	clearRowStaleLabels,
 	quickOrderPreviewArgs,
 	asNativePromise,
+	materialRiskSummaryHtml,
+	downstreamImpactHtml,
 } = require("../../process_simplification/page/quick_sales_order/quick_sales_order.js");
 
 const escapeHtml = (value) =>
@@ -35,6 +37,26 @@ const helpers = {
 	formatDate: (value) => value,
 	formatCurrency: (value, currency) => `${currency || ""} ${Number(value || 0).toFixed(2)}`.trim(),
 };
+
+test("collapsed summary distinguishes own shortage and downstream impact", () => {
+	const view = buildMaterialRiskView({shortages: [], downstream_impacts: [{sales_order: "SO-2", materials: [{item_code: "RM", warehouse: "WH", added_shortage_qty: 4}]}]});
+	const html = materialRiskSummaryHtml(view, helpers);
+	assert.match(html, /本单缺料.*0/);
+	assert.match(html, /对后续订单的影响.*1/);
+	assert.match(html, /新增缺口.*1/);
+	assert.doesNotMatch(materialRiskSummaryHtml({...view, stale: true}, helpers), /green/);
+});
+
+test("stock-covered new order still shows downstream material gap and escaped labels", () => {
+	const impacts = [{sales_order: "SO-<later>", delivery_date: "2099-09-22", lost_finished_stock_qty: 2, materials: [{item_code: "<RM>", warehouse: "WH", stock_uom: "Nos", before_shortage_qty: 5, after_shortage_qty: 9, added_shortage_qty: 4}]}];
+	const html = materialRiskHtml(buildMaterialRiskView({production_required: 0, downstream_impacts: impacts}), helpers);
+	assert.match(html, /本单无需展开生产物料/);
+	assert.match(html, /SO-&lt;later&gt;/);
+	assert.match(html, /4.00 Nos/);
+	assert.match(html, /成品可分配量减少/);
+	assert.doesNotMatch(html, /<RM>/);
+	assert.match(confirmationHtml({downstream_impacts: impacts}, helpers), /SO-&lt;later&gt;/);
+});
 
 test("quick order automatically preflights valid edits while keeping creation as the primary action", () => {
 	const source = fs.readFileSync(

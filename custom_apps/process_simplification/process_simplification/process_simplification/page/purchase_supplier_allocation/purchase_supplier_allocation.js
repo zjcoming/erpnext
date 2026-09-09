@@ -11,18 +11,21 @@ function purchaseOrderStage(order) {
 	if (order.docstatus === 0) return { label: "待提交", tone: "warning", active: true };
 	if (["Completed", "To Bill"].includes(order.status)) return { label: "已收货", tone: "success", active: false };
 	if (order.status === "On Hold") return { label: "已暂停", tone: "muted", active: false };
+	if (Number(order.per_received) > 0 && Number(order.per_received) < 100) return { label: "部分到货", tone: "warning", active: true };
 	return { label: "待收货", tone: "info", active: true };
 }
 
 function purchaseOverview(model) {
 	const drafts = model.orders.filter((order) => purchaseOrderStage(order).label === "待提交").length;
-	const waiting = model.orders.filter((order) => purchaseOrderStage(order).label === "待收货").length;
+	const waiting = model.orders.filter((order) => ["待收货", "部分到货"].includes(purchaseOrderStage(order).label)).length;
 	const unallocated = model.items.filter((item) => item.available_qty > 0).length;
 	const received = model.items.filter((item) => item.stock_qty > 0 && item.received_qty >= item.stock_qty).length;
 	let title, hint;
 	if (drafts) {
 		title = `${drafts} 张采购单待提交`;
-		hint = "打开采购单，核对供应商、数量和价格后提交。草稿已占用申请数量，无需重复分配。";
+		hint = (model.can_submit || model.orders.some((order) => order.docstatus === 0 && order.can_submit)
+			? "打开采购单，核对供应商、数量和价格后提交。"
+			: "草稿已生成，待有采购单提交权限的负责人核对并提交。") + "草稿已占用申请数量，无需重复分配。";
 	} else if (unallocated) {
 		title = `${unallocated} 项物料待分配供应商`;
 		hint = "先选供应商，再确认数量和单价。同一物料可拆给多个供应商。";
@@ -45,7 +48,16 @@ function supplierAllocationProgress(item, target, rows) {
 	return { total, remaining: Number(target) - total, missingSupplier: rows.some((row) => Number(row.qty) > 0 && !String(row.supplier || "").trim()) };
 }
 
-if (typeof module !== "undefined" && module.exports) module.exports = { allocationStockTotal, purchaseOrderStage, purchaseOverview, supplierAllocationProgress };
+function purchaseFollowupHtml(orders, { esc, number }) {
+	return orders.map((po) => {
+		const state = purchaseOrderStage(po);
+		const href = `/desk/purchase-order/${encodeURIComponent(po.name)}`;
+		return `<details class="purchase-followup-card"${state.active ? " open" : ""}><summary><div class="purchase-order"><div><strong>${esc(po.supplier)}</strong><a href="${href}">${esc(po.name)}</a></div><span class="purchase-badge ${state.tone}">${state.label}</span><a class="btn btn-default" href="${href}">${po.docstatus === 0 && po.can_submit ? "核对并提交" : "查看采购单"}</a>${po.can_receive ? `<button class="btn btn-primary" data-receive-purchase-order="${esc(po.name)}">登记收货</button>` : ""}</div></summary>
+		<table class="purchase-table purchase-item-table"><thead><tr><th>物料 / 单位</th><th>订购</th><th>订单已收</th><th>累计退货</th><th>订单待收</th><th>承诺到货日</th></tr></thead><tbody>${(po.items || []).map((item) => `<tr><td><strong>${esc(item.item_name || item.item_code)}</strong><small>${esc(item.item_code)} · ${esc(item.uom)}</small>${item.material_request ? `<a href="/desk/purchase-supplier-allocation?material_request=${encodeURIComponent(item.material_request)}">${esc(item.material_request)}</a>` : ""}</td>${[["订购", item.qty], ["订单已收", item.received_qty], ["累计退货", item.returned_qty], ["订单待收", item.pending_qty]].map(([label, value]) => `<td data-label="${label}">${number(value)}</td>`).join("")}<td data-label="承诺到货日">${esc(item.schedule_date || "未设置")}${item.overdue_days ? `<strong class="purchase-error">逾期 ${number(item.overdue_days)} 天</strong>` : ""}</td></tr>`).join("")}</tbody></table><p class="purchase-footnote">待收以采购单剩余数量为准；累计退货单独列示。数量按每行采购单位显示。</p></details>`;
+	}).join("");
+}
+
+if (typeof module !== "undefined" && module.exports) module.exports = { allocationStockTotal, purchaseOrderStage, purchaseOverview, supplierAllocationProgress, purchaseFollowupHtml };
 
 if (typeof frappe !== "undefined") {
 frappe.pages["purchase-supplier-allocation"].on_page_load = function (wrapper) {
@@ -56,6 +68,7 @@ frappe.pages["purchase-supplier-allocation"].on_page_load = function (wrapper) {
 	const href = (doctype, name) => `/desk/${doctype}/${encodeURIComponent(name)}`;
 	const requestHref = (name) => `/desk/purchase-supplier-allocation?material_request=${encodeURIComponent(name)}`;
 	let model, selections, rows, requestKey, referenceOptions = {}, generation = 0;
+	const listState = { tab: "requests", view: "pending", search: "", overdue_only: false, start: 0, history: [] };
 	const key = () => window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 	const call = async (method, args = {}, freeze = false) => (await frappe.call({ method: api + method, args, type: "POST", freeze })).message;
 	const field = (parent, label, fieldtype, value, change, options) => {
@@ -134,10 +147,7 @@ frappe.pages["purchase-supplier-allocation"].on_page_load = function (wrapper) {
 		if (!model.items.some((item) => item.stock_qty > 0)) root.append('<div class="purchase-notice-warning">此申请的采购数量为 0，不能分配供应商。请切换到有实际采购数量的申请。</div>');
 		if (model.orders.length) {
 			const orders = $('<section class="purchase-section"><div class="purchase-section-heading"><h2>采购单</h2><span class="purchase-meta">按供应商分别下单、收货</span></div><div class="purchase-order-list"></div></section>').appendTo(root).find(".purchase-order-list");
-			[...model.orders].sort((a, b) => (a.docstatus !== 0) - (b.docstatus !== 0)).forEach((po) => {
-				const state = purchaseOrderStage(po);
-				orders.append(`<div class="purchase-order"><div><strong>${esc(po.supplier)}</strong><a href="${href("purchase-order", po.name)}">${esc(po.name)}</a></div><span class="purchase-badge ${state.tone}">${state.label}</span><a class="btn ${po.docstatus === 0 ? "btn-primary" : "btn-default"}" href="${href("purchase-order", po.name)}">打开采购单</a></div>`);
-			});
+			orders.html(purchaseFollowupHtml([...model.orders].sort((a, b) => (a.docstatus !== 0) - (b.docstatus !== 0)), { esc, number }));
 		}
 		if (model.can_create && summary.unallocated) renderEditors(root, openItems);
 		const section = $('<section class="purchase-section"><div class="purchase-section-heading"><h2>物料采购进度</h2><span class="purchase-meta">数量按各物料的库存单位显示</span></div></section>').appendTo(root);
@@ -208,25 +218,52 @@ frappe.pages["purchase-supplier-allocation"].on_page_load = function (wrapper) {
 		dialog.show();
 	}
 
-	function renderRequests(requests) {
+	function renderRequests() {
 		page.main.html('<div class="process-simplification-page purchase-allocation"><header class="purchase-hero"><div><span class="purchase-eyebrow">采购执行台</span><h1>供应商分配</h1><p class="purchase-meta">选择采购申请，分配供应商并跟进每批到货。</p></div><a class="btn btn-default" href="/desk/shortage-purchase-planning">缺料采购</a></header><section class="purchase-section"><div class="purchase-section-heading"><h2>已建采购申请</h2><span class="purchase-request-count"></span></div><div class="purchase-request-search"></div><div class="purchase-request-list"></div></section></div>');
 		const labels = { Pending: "待下单", "Partially Ordered": "部分下单", Ordered: "已下单", "Partially Received": "部分到货", Received: "已到货", Transferred: "已转移", Issued: "已领用" };
-		function show(query = "") {
-			const matches = requests.filter((row) => `${row.name} ${row.company} ${labels[row.status] || row.status}`.toLowerCase().includes(query.toLowerCase()));
-			page.main.find(".purchase-request-count").text(`${matches.length} 张申请`);
-			page.main.find(".purchase-request-list").html(matches.length ? `<table class="purchase-table purchase-request-table"><thead><tr><th>采购申请</th><th>公司</th><th>日期</th><th>状态</th><th></th></tr></thead><tbody>${matches.map((row) => `<tr><td><a href="${requestHref(row.name)}">${esc(row.name)}</a></td><td data-label="公司">${esc(row.company)}</td><td data-label="日期">${esc(row.transaction_date)}</td><td data-label="状态">${esc(labels[row.status] || row.status)}</td><td><a class="btn btn-default" href="${requestHref(row.name)}">分配 / 查看进度</a></td></tr>`).join("")}</tbody></table>` : '<div class="purchase-empty">没有匹配的采购申请。可从“缺料采购”生成新申请。</div>');
+		const controls = page.main.find(".purchase-request-search").addClass("purchase-list-filters");
+		if (frappe.model.can_read("Purchase Order")) {
+			field(controls, "查看内容", "Select", listState.tab === "requests" ? "采购申请" : "供应商待收货", (value) => { listState.tab = value === "采购申请" ? "requests" : "suppliers"; listState.start = 0; listState.history = []; renderRequests(); }, "采购申请\n供应商待收货");
 		}
-		let query = "";
-		const searchRoot = page.main.find(".purchase-request-search");
-		field(searchRoot, "搜索申请、公司或状态", "Data", "", (value) => { query = value; show(query); });
-		page.purchase_refresh = (options = {}) => frappe.ps_read_page(page, {
-			method: api + "list_requests", background: options.background,
-			apply(response) {
-				if (!searchRoot.get(0).isConnected) return false;
-				requests = response.message || [];
-				show(query);
-			},
-		});
+		if (listState.tab === "requests") {
+			const views = { 待处理: "pending", 已处理历史: "history", 全部: "all" };
+			field(controls, "申请范围", "Select", Object.keys(views).find((key) => views[key] === listState.view), (value) => { listState.view = views[value]; reload(); }, Object.keys(views).join("\n"));
+		} else {
+			field(controls, "到货范围", "Select", listState.overdue_only ? "仅逾期" : "全部待收", (value) => { listState.overdue_only = value === "仅逾期"; reload(); }, "全部待收\n仅逾期");
+		}
+		let timer;
+		field(controls, listState.tab === "requests" ? "搜索申请、公司、状态或物料" : "搜索供应商、物料、采购单或申请", "Data", listState.search, (value) => { listState.search = value; clearTimeout(timer); timer = setTimeout(reload, 250); });
+		const pager = $('<div class="purchase-list-pager">').appendTo(page.main.find(".purchase-section"));
+		function reload() { listState.start = 0; listState.history = []; show(); }
+		page.purchase_refresh = show;
+		async function show(options = {}) {
+			if (!controls.get(0).isConnected) return false;
+			const current = ++generation;
+			if (!options.background) {
+				pager.empty();
+				page.main.find(".purchase-request-list").html('<div class="purchase-empty">正在查询…</div>');
+			}
+			try {
+				return await frappe.ps_read_page(page, {
+					method: api + (listState.tab === "requests" ? "get_request_page" : "get_supplier_followup"),
+					args: { start: listState.start, page_length: 20, search: listState.search, ...(listState.tab === "requests" ? { view: listState.view } : { overdue_only: Number(listState.overdue_only) }) },
+					background: options.background,
+					apply: ({ message: result }) => {
+				if (!controls.get(0).isConnected) return false;
+				pager.empty();
+				const matches = result.rows || [];
+				page.main.find(".purchase-section-heading h2").text(listState.tab === "requests" ? "采购申请" : "供应商待收货");
+				page.main.find(".purchase-request-count").text(`第 ${listState.history.length + 1} 页 · 本页 ${matches.length} 张`);
+				page.main.find(".purchase-request-list").html(!matches.length ? '<div class="purchase-empty">当前范围没有匹配记录，可切换范围或修改搜索条件。</div>' : listState.tab === "suppliers" ? purchaseFollowupHtml(matches, { esc, number }) : `<table class="purchase-table purchase-request-table"><thead><tr><th>采购申请</th><th>公司</th><th>日期</th><th>状态</th><th></th></tr></thead><tbody>${matches.map((row) => `<tr><td><a href="${requestHref(row.name)}">${esc(row.name)}</a></td><td data-label="公司">${esc(row.company)}</td><td data-label="日期">${esc(row.transaction_date)}</td><td data-label="状态">${esc(labels[row.status] || row.status)}</td><td><a class="btn btn-default" href="${requestHref(row.name)}">分配 / 查看进度</a></td></tr>`).join("")}</tbody></table>`);
+				$('<button class="btn btn-default">上一页</button>').prop("disabled", !listState.history.length).appendTo(pager).on("click", () => { listState.start = listState.history.pop(); show(); });
+				$('<button class="btn btn-default">下一页</button>').prop("disabled", result.next_start === null).appendTo(pager).on("click", () => { listState.history.push(listState.start); listState.start = result.next_start; show(); });
+					},
+				});
+			} catch (error) {
+				if (options.background) throw error;
+				if (current === generation) page.main.find(".purchase-request-list").html('<div class="purchase-empty">查询失败，请点击“刷新进度”重试。</div>');
+			}
+		}
 		show();
 	}
 
@@ -245,8 +282,7 @@ frappe.pages["purchase-supplier-allocation"].on_page_load = function (wrapper) {
 		page.main.html('<div class="purchase-empty">正在读取采购进度…</div>');
 		try {
 			if (!request) {
-				const requests = await call("list_requests");
-				if (current === generation) renderRequests(requests);
+				renderRequests();
 				return;
 			}
 			const result = await call("get_allocation_context", { material_request: request });
@@ -261,6 +297,9 @@ frappe.pages["purchase-supplier-allocation"].on_page_load = function (wrapper) {
 		}
 	}
 	page.add_inner_button(__("刷新进度"), load);
+	page.main.on("click", "[data-receive-purchase-order]", (event) => {
+		frappe.model.open_mapped_doc({ method: "erpnext.buying.doctype.purchase_order.purchase_order.make_purchase_receipt", source_name: event.currentTarget.dataset.receivePurchaseOrder });
+	});
 	page.add_inner_button(__("采购申请列表"), () => frappe.set_route("purchase-supplier-allocation"));
 	page.add_inner_button(__("缺料采购"), () => frappe.set_route("shortage-purchase-planning"));
 	wrapper.load_purchase_allocation = load;

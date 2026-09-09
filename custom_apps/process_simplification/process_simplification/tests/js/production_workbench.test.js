@@ -155,6 +155,7 @@ test("visible production counters recalculate from filtered demands", () => {
 		overdue_demands: 0,
 		due_within_7_days: 1,
 		material_shortage_demands: 0,
+		unchecked_material_demands: 0,
 		in_production_demands: 1,
 		awaiting_order_reservation_demands: 0,
 	});
@@ -418,6 +419,61 @@ test("existing stock drafts open instead of creating duplicates", () => {
 	});
 	assert.match(html, /data-action="withdraw_stock_request"/);
 	assert.match(html, />撤回申请<\/button>/);
+});
+
+test("warehouse can open issue and receipt drafts without dispatch or withdrawal privileges", () => {
+	for (const field of ["issue_state", "receipt_state"]) {
+		const row = demand("WAREHOUSE");
+		row.work_orders[0][field] = { code: "draft_pending", draft_entry: { name: "STE-WAREHOUSE" } };
+		const html = productionWorkbench.productionDemandHtml(row, {
+			...helpers, canManageAssignments: false, canReadStockEntries: true,
+		});
+		assert.match(html, /data-action="open_stock_entry"/);
+		assert.match(html, /data-document="STE-WAREHOUSE"/);
+		assert.doesNotMatch(html, /data-action="withdraw_stock_request"/);
+		assert.doesNotMatch(html, /class="[^"]*production-assignment-action/);
+		const hidden = productionWorkbench.productionDemandHtml(row, {
+			...helpers, canManageAssignments: false, canReadStockEntries: false,
+		});
+		assert.doesNotMatch(hidden, /data-action="open_stock_entry"/);
+	}
+});
+
+test("stock viewing permission does not allow creating production requests", () => {
+	const row = demand("WAREHOUSE-REQUEST");
+	row.work_orders[0].issue_state = { code: "ready" };
+	const html = productionWorkbench.productionDemandHtml(row, {
+		...helpers, canManageAssignments: false, canReadStockEntries: true,
+	});
+	assert.doesNotMatch(html, /data-action="request_material_issue"/);
+});
+
+test("completed operations waiting for receipt show assignment history rather than new dispatch", () => {
+	assert.deepEqual(productionWorkbench.workOrderAssignmentActionMeta({ name: "WO", can_dispatch: true, operation_state: { code: "completed" }, receipt_state: { code: "requestable" }, worker_assignment_history_count: 1 }), { label: "查看派工记录", primary: false, mode: "history" });
+});
+
+test("next task points to receipt work ahead of generic material checks and completed steps", () => {
+	const row = demand("NEXT-RECEIPT");
+	row.next_actions = [{ action: "check_materials", label: "检查工单物料" }];
+	row.work_orders = [
+		{ ...row.work_orders[0], name: "DONE", status: "Completed", readiness_status: "completed" },
+		{ ...row.work_orders[0], name: "RECEIVE", production_item_name: "线圈", receipt_state: { code: "requestable" } },
+	];
+	const options = { ...helpers, canManageAssignments: true };
+	assert.equal(productionWorkbench.productionNextTask(row, options).workOrder.name, "RECEIVE");
+	const html = productionWorkbench.productionDemandHtml(row, options);
+	assert.match(html, /线圈 · 申请入库/);
+	assert.match(html, /data-work-order-card="DONE">/);
+	assert.match(html, /data-work-order-card="RECEIVE" open>/);
+	assert.ok(html.indexOf("production-current-task") < html.indexOf("production-work-order-list"));
+	assert.equal(productionWorkbench.productionNextTask(row, { ...options, canManageAssignments: false, canReadStockEntries: true }), null);
+});
+
+test("unchecked material demands remain distinct from checked shortages", () => {
+	const row = demand("UNCHECKED", { material_summary: { status_code: "not_checked", shortage_item_count: 0 } });
+	const summary = productionWorkbench.productionSummary([row]);
+	assert.equal(summary.material_shortage_demands, 0);
+	assert.equal(summary.unchecked_material_demands, 1);
 });
 
 test("workflow confirmations explain when inventory and worker notifications change", () => {
@@ -810,7 +866,7 @@ test("planned demand HTML shows Production Plan priority and Work Order readines
 	assert.match(html, /由下级工单/);
 	assert.ok(html.includes("/app/work-order/WO-SA"));
 	assert.match(html, /底层采购物料汇总/);
-	const purchaseSummary = html.match(/<section class="production-purchase-summary">([\s\S]*?)<\/section>/)?.[1] || "";
+	const purchaseSummary = html.match(/<details class="production-purchase-summary production-secondary-details">([\s\S]*?)<\/details>/)?.[1] || "";
 	assert.match(purchaseSummary, /物料编码：RM/);
 	assert.doesNotMatch(purchaseSummary, /<td data-label="物料"><strong>SA<\/strong>/);
 });

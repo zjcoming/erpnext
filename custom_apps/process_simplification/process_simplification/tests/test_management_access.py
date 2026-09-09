@@ -231,6 +231,28 @@ class TestManagementAccess(IntegrationTestCase):
 		self.assertEqual(self._top_level_permissions(target, "Company"), {self.company})
 		self.assertEqual(self._top_level_permissions(target, "Warehouse"), set())
 
+	def test_warehouse_report_company_selection_keeps_transaction_warehouse_scope(self):
+		from frappe.desk.query_report import validate_filters_permissions
+		from process_simplification.stock_permissions import ensure_company_warehouse_reference_permissions
+
+		other_warehouse = frappe.get_doc({
+			"doctype": "Warehouse", "warehouse_name": "Warehouse Scope " + random_string(8),
+			"company": self.company, "is_group": 0,
+			"parent_warehouse": frappe.db.get_value("Warehouse", {"company": self.company, "is_group": 1}, "name"),
+		}).insert(ignore_permissions=True).name
+		frappe.db.set_value("Company", self.company, "default_fg_warehouse", other_warehouse)
+		ensure_company_warehouse_reference_permissions()
+		user = self._make_user(WAREHOUSE_OPERATOR_ROLE)
+		self._set_access(user, [WAREHOUSE_OPERATOR_ROLE])
+		frappe.set_user(user)
+		self.assertTrue(frappe.has_permission("Company", "read", doc=self.company))
+		self.assertFalse(frappe.has_permission("Warehouse", "read", doc=other_warehouse))
+		self.assertFalse(frappe.has_permission("Purchase Order", "submit"))
+		validate_filters_permissions(
+			"Stock Ledger", {"company": self.company}, user,
+			[{"fieldname": "company", "fieldtype": "Link", "options": "Company"}],
+		)
+
 	def test_worker_rejects_foreign_company_before_binding(self):
 		worker = self._make_user()
 		employee = self._make_employee()

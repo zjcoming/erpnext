@@ -101,7 +101,7 @@ class TestQuickOrderIntegration(IntegrationTestCase):
 		self.assertIn(disabled_parent.name, result_item_codes)
 		self.assertNotIn(enabled_parent.name, result_item_codes)
 
-	def test_production_required_preflight_explains_material_risk_without_creating_documents(self):
+	def test_material_risk_preflight_and_cross_order_submission_use_shared_supply(self):
 		from erpnext.stock.doctype.stock_entry.stock_entry_utils import make_stock_entry
 
 		from process_simplification.api.quick_order import preflight_quick_sales_order
@@ -285,6 +285,55 @@ class TestQuickOrderIntegration(IntegrationTestCase):
 			},
 			before_counts,
 		)
+		# A later order initially has enough FG + raw material. A new earlier
+		# order takes the free FG, leaving a new raw-material gap only on the later
+		# order. Exercise native submit, the notification hook and retry together.
+		from process_simplification.api.quick_order import submit_quick_sales_order
+		from process_simplification.api.shortage import calculate_company_purchase_shortages
+		make_stock_entry(item_code=raw_material.name, to_warehouse=warehouse,
+			company=company.name, qty=9, basic_rate=5)
+		later = frappe.get_doc(dict(doctype="Sales Order", company=company.name,
+			customer=customer.name, delivery_date=add_days(nowdate(), 10), selling_price_list=price_list.name,
+			items=[dict(item_code=finished_good.name, qty=7, rate=25, warehouse=warehouse,
+				delivery_date=add_days(nowdate(), 10))])).insert()
+		later.submit()
+		self.assertEqual(calculate_company_purchase_shortages(company.name), [])
+		urgent = dict(payload, items=[dict(item_code=finished_good.name, qty=2, rate=25)])
+		ledger_count = frappe.db.count("Stock Ledger Entry", {"company": company.name})
+		with (
+			patch("process_simplification.api.quick_order.get_company_defaults", return_value=defaults),
+			patch("process_simplification.notifications.responsibility_recipients", side_effect=lambda company, role:
+				["production"] if role == "生产派工" else ["warehouse"]),
+			patch("process_simplification.notifications.notify_users", return_value=[]) as notify,
+		):
+			review = preflight_quick_sales_order(urgent)
+			notify.assert_not_called()
+			self.assertEqual(review["shortages"], [])
+			self.assertEqual(review["downstream_impacts"][0]["sales_order"], later.name)
+			self.assertEqual(review["downstream_impacts"][0]["materials"][0]["added_shortage_qty"], 4)
+			request_key = frappe.generate_hash(length=32)
+			make_stock_entry(item_code=raw_material.name, to_warehouse=warehouse,
+				company=company.name, qty=1, basic_rate=5)
+			ledger_count = frappe.db.count("Stock Ledger Entry", {"company": company.name})
+			changed = submit_quick_sales_order(urgent, review["review_token"], request_key)
+			self.assertEqual(changed["status"], "reconfirmation_required")
+			self.assertEqual(changed["downstream_impacts"][0]["materials"][0]["added_shortage_qty"], 3)
+			notify.assert_not_called()
+			submitted = submit_quick_sales_order(urgent, changed["review_token"], request_key)
+			replayed = submit_quick_sales_order(urgent, changed["review_token"], request_key)
+			self.assertEqual(notify.call_count, 2)
+			calls = {call.args[0][0]: call.kwargs for call in notify.call_args_list}
+			self.assertIn("后续缺口", calls["warehouse"]["description"])
+			self.assertIn("无需安排生产", calls["production"]["description"])
+			self.assertIn("后续订单排期", calls["production"]["description"])
+			for call in calls.values():
+				self.assertIn("影响后续 1 单", call["description"])
+			self.assertEqual(replayed["sales_order"], submitted["sales_order"])
+			self.assertTrue(replayed["idempotent_replay"])
+		after = calculate_company_purchase_shortages(company.name)
+		self.assertEqual(after[0]["shortage_qty"], 3)
+		self.assertEqual(frappe.db.count("Stock Ledger Entry", {"company": company.name}), ledger_count)
+		self.assertEqual(frappe.db.count("Stock Reservation Entry", {"company": company.name}), before_counts["Stock Reservation Entry"])
 
 	def test_stock_covered_order_preflights_and_submits_as_standard_sales_order(self):
 		from process_simplification.api.quick_order import (
@@ -380,6 +429,9 @@ class TestQuickOrderIntegration(IntegrationTestCase):
 			patch("process_simplification.api.quick_order.get_company_defaults", return_value=defaults),
 			patch("process_simplification.api.quick_order.get_available_qty_to_reserve", return_value=10),
 			patch("process_simplification.api.quick_order.get_default_bom", return_value=None),
+			patch("process_simplification.notifications.responsibility_recipients", side_effect=lambda company, role:
+				["production"] if role == "生产派工" else ["warehouse"]),
+			patch("process_simplification.notifications.notify_users", return_value=[]) as notify,
 			patch(
 				"process_simplification.api.quick_order._item_price",
 				return_value=frappe._dict(
@@ -390,6 +442,7 @@ class TestQuickOrderIntegration(IntegrationTestCase):
 			preflight = preflight_quick_sales_order(payload)
 			self.assertTrue(preflight["can_submit"])
 			self.assertEqual(preflight["production_required"], 0)
+			notify.assert_not_called()
 
 			# Production code commits while holding the concurrency lock. Suppress that
 			# commit here so IntegrationTestCase can roll the E2E document back.
@@ -399,6 +452,13 @@ class TestQuickOrderIntegration(IntegrationTestCase):
 					preflight["review_token"],
 					"QO-E2E-REQUEST-{0}".format(frappe.generate_hash(length=8)),
 				)
+			self.assertEqual(notify.call_count, 2)
+			calls = {call.args[0][0]: call.kwargs for call in notify.call_args_list}
+			self.assertIn("备货发货", calls["warehouse"]["description"])
+			self.assertIn("无需安排生产", calls["production"]["description"])
+			for call in calls.values():
+				self.assertEqual(call["document_name"], result["sales_order"])
+				self.assertEqual(call["link"], "/app/order-workbench?sales_order=" + result["sales_order"])
 
 		order = frappe.get_doc("Sales Order", result["sales_order"])
 		self.assertEqual(order.docstatus, 1)

@@ -16,6 +16,31 @@ test("each item uses its own unit conversion without sharing another item's fact
 
 const { purchaseOrderStage, purchaseOverview, supplierAllocationProgress } = require("../../process_simplification/page/purchase_supplier_allocation/purchase_supplier_allocation.js");
 
+test("draft guidance respects the current role's submit capability", () => {
+	const model = { orders: [{ docstatus: 0, status: "Draft" }], items: [], can_submit: false };
+	assert.match(purchaseOverview(model).hint, /待有采购单提交权限的负责人/);
+	assert.match(purchaseOverview({ ...model, can_submit: true }).hint, /核对供应商、数量和价格后提交/);
+});
+
+test("partly received orders remain in supplier followup", () => {
+	const po = { docstatus: 1, status: "To Receive and Bill", per_received: 50 };
+	assert.equal(purchaseOrderStage(po).label, "部分到货");
+	assert.equal(purchaseOverview({ orders: [po], items: [] }).waiting, 1);
+});
+
+test("supplier followup preserves per-line units, overdue days, escaping and receiving permission", () => {
+	const { purchaseFollowupHtml } = require("../../process_simplification/page/purchase_supplier_allocation/purchase_supplier_allocation.js");
+	const helpers = { esc: (text) => String(text || "").replaceAll("<", "&lt;").replaceAll('"', "&quot;"), number: (value) => String(value || 0) };
+	const order = { name: "PO-1", supplier: "<script>", docstatus: 1, status: "To Receive and Bill", can_receive: false, items: [{ item_code: "A", qty: 10, received_qty: 4, pending_qty: 6, returned_qty: 2, uom: "Box", schedule_date: "2026-09-01", overdue_days: 7 }] };
+	const html = purchaseFollowupHtml([order], helpers);
+	assert.match(html, /订单待收/);
+	assert.match(html, /Box/);
+	assert.match(html, /逾期 7 天/);
+	assert.match(html, /&lt;script>/);
+	assert.doesNotMatch(html, /data-receive-purchase-order/);
+	assert.match(purchaseFollowupHtml([{ ...order, can_receive: true }], helpers), /data-receive-purchase-order="PO-1"/);
+});
+
 test("draft orders take priority over remaining allocation in the next action", () => {
 	const view = purchaseOverview({ orders: [{ docstatus: 0, status: "Draft" }, { docstatus: 0, status: "Draft" }], items: [{ stock_qty: 90, available_qty: 10, received_qty: 0 }] });
 	assert.equal(view.title, "2 张采购单待提交");

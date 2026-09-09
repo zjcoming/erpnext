@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import wraps
+from urllib.parse import quote
 
 import frappe
 from frappe import _
@@ -18,7 +19,6 @@ from process_simplification.production_exceptions.constants import (
 	MATERIAL_SCRAP,
 	PROCESS_LOSS,
 )
-
 
 WAREHOUSE_RESPONSIBILITY = "库存处理"
 PROCUREMENT_RESPONSIBILITY = "缺料采购"
@@ -708,22 +708,71 @@ def notify_stock_entry_cancelled(doc):
 	return worker_emails + warehouse_emails
 
 
-@_notification_event
-def notify_quick_order_shortage(sales_order: str, company: str, shortages) -> list[str]:
-	shortage_count = len(shortages or [])
-	if not shortage_count:
-		return []
-	return notify_users(
-		responsibility_recipients(company, PROCUREMENT_RESPONSIBILITY),
-		subject="销售订单有缺料待采购：{0}".format(sales_order),
-		description="销售订单 {0} 存在 {1} 项采购缺口，请进入缺料采购计划处理。".format(
-			escape_html(sales_order),
-			shortage_count,
-		),
-		document_type="Sales Order",
-		document_name=sales_order,
-		link=SHORTAGE_ROUTE,
+def quick_order_shortage_description(shortage_count: int, affected_order_count: int) -> str:
+	return "本单缺料 {} 项；影响后续 {} 单。<br>点击查看缺料明细，安排补料与排期。".format(
+		shortage_count, affected_order_count
 	)
+
+
+@_notification_event
+def notify_quick_order_submitted(
+	sales_order: str, company: str, shortages, *, production_required: float, downstream_impacts=None
+) -> list[str]:
+	"""Tell both teams about every new order, with one actionable alert per user."""
+	shortage_count = len(shortages or [])
+	impacts = downstream_impacts or []
+	affected_order_count = len({row["sales_order"] for row in impacts if row.get("sales_order")})
+	has_purchase_gap = bool(shortage_count or any(row.get("materials") for row in impacts))
+	needs_production = flt(production_required) > 0
+	warehouse_users = set(responsibility_recipients(company, WAREHOUSE_RESPONSIBILITY))
+	if has_purchase_gap:
+		warehouse_users.update(responsibility_recipients(company, PROCUREMENT_RESPONSIBILITY))
+	production_users = set(responsibility_recipients(company, PRODUCTION_DISPATCH_RESPONSIBILITY))
+	order_route = f"/app/order-workbench?sales_order={quote(sales_order, safe='')}"
+	risk = f"本单缺料 {shortage_count} 项；影响后续 {affected_order_count} 单。"
+	if needs_production:
+		status = "新单需生产。" if has_purchase_gap else "新单需生产，暂未发现缺料。"
+	else:
+		status = "新单现货可供，无需安排生产。"
+	production_action = "请查看生产需求，安排排期。" if needs_production else "点击查看订单。"
+	if affected_order_count:
+		production_action = "请复核本单及后续排期。" if needs_production else "请复核后续订单排期。"
+	warehouse_action = "请跟进备料及后续发货。" if needs_production else "请安排备货发货。"
+	if has_purchase_gap:
+		warehouse_action = "请查看缺口并安排补料。" if needs_production else "请安排备货，并跟进后续缺口。"
+
+	notified = []
+	# Intersecting responsibilities share one alert, preserving both action prompts.
+	for users, warehouse, production in (
+		(warehouse_users - production_users, True, False),
+		(production_users - warehouse_users, False, True),
+		(warehouse_users & production_users, True, True),
+	):
+		if not users:
+			continue
+		parts = [status]
+		if has_purchase_gap or affected_order_count:
+			parts.append(risk)
+		actions = []
+		if warehouse:
+			actions.append(warehouse_action)
+		if production and (not warehouse or needs_production or affected_order_count):
+			actions.append(production_action)
+		parts.append("".join(actions))
+		link = order_route
+		if warehouse and has_purchase_gap:
+			link = SHORTAGE_ROUTE
+		elif production and (needs_production or affected_order_count):
+			link = PRODUCTION_WORKBENCH_ROUTE
+		notified.extend(notify_users(
+			sorted(users),
+			subject=f"新销售订单：{sales_order}",
+			description="<br>".join(parts),
+			document_type="Sales Order",
+			document_name=sales_order,
+			link=link,
+		))
+	return sorted(set(notified))
 
 
 @_notification_event
