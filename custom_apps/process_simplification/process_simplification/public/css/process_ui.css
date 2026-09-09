@@ -16,6 +16,17 @@
 	padding: 16px 0 40px;
 }
 
+.ps-refresh-status {
+	max-width: 1480px;
+	margin: 0 auto 8px;
+	font-size: var(--text-sm, 12px);
+	line-height: 1.6;
+}
+
+.ps-refresh-status[hidden] {
+	display: none !important;
+}
+
 .process-simplification-page :is(.btn, .form-control) {
 	min-height: 40px;
 }

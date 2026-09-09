@@ -155,3 +155,130 @@ test("a changing calculation can display a snapshot while retaining the pending 
 	assert.equal(await read({}, {method:'orders',apply: r => { displayed = r.message.rows; }}), false);
 	assert.deepEqual(displayed, [1]);
 });
+
+function trackedReader(f, call, isCurrent = () => true) {
+	return createPageReadLoader(call, isCurrent, {
+		begin: (page) => f.controller.beginRead(page),
+		end: (ticket, result) => f.controller.endRead(ticket, result),
+	});
+}
+
+test("entering a page reuses its initial version check and finishes with one business read", async () => {
+	const f = fixture(), statuses = [];
+	f.page.interval = 30000;
+	f.page.lastRead = 1000000;
+	f.page.status = (state) => statuses.push(state);
+	let resolveVersion, resolveData, requests = 0;
+	f.options.check = () => new Promise((resolve) => { resolveVersion = resolve; });
+	const read = trackedReader(f, () => { requests++; return new Promise((resolve) => { resolveData = resolve; }); });
+	f.controller.activate(f.page);
+	const initial = read(f.page, { method: "production", apply() {} });
+	await drain();
+	assert.equal(requests, 0);
+	resolveVersion({ versions: { tasks: "A" } }); await drain();
+	assert.equal(requests, 1);
+	resolveData({ message: { rows: [1] } }); assert.equal(await initial, true); await drain();
+	assert.equal(f.page.dirty, false);
+	assert.equal(statuses.at(-1), "fresh");
+	assert.equal(statuses.includes("waiting"), false);
+	await f.tick(30000);
+	assert.equal(f.counters().loads, 0);
+	assert.equal(requests, 1);
+});
+
+test("manual reads clear a waiting banner and cancel the redundant automatic read", async () => {
+	const f = fixture(), statuses = [];
+	f.page.status = (state) => statuses.push(state);
+	f.controller.activate(f.page); await drain(); await f.tick(3000);
+	const baseline = f.counters();
+	f.controller.event({ topics: ["tasks"] });
+	assert.equal(statuses.at(-1), "waiting");
+	const read = trackedReader(f, async () => ({ message: {} }));
+	await read(f.page, { method: "tasks", apply() {} }); await drain();
+	assert.equal(statuses.at(-1), "fresh");
+	assert.equal(f.page.dirty, false);
+	await f.tick(30000);
+	assert.deepEqual(f.counters(), baseline);
+});
+
+test("initial business reads do not wait for a slow notification dropdown", async () => {
+	const f = fixture(); let resolveNotifications, requests = 0;
+	f.options.notifications = () => new Promise((resolve) => { resolveNotifications = resolve; });
+	const read = trackedReader(f, async () => { requests++; return { message: {} }; });
+	f.controller.activate(f.page);
+	await read(f.page, { method: "tasks", apply() {} });
+	assert.equal(requests, 1);
+	assert.equal(f.page.dirty, false);
+	resolveNotifications(); await drain();
+	await f.tick(3000); assert.equal(f.counters().loads, 0);
+});
+
+test("a real change during the initial read still schedules exactly one follow-up", async () => {
+	const f = fixture(); let resolveData, applied = 0;
+	const read = trackedReader(f, () => new Promise((resolve) => { resolveData = resolve; }));
+	f.controller.activate(f.page);
+	const initial = read(f.page, { method: "tasks", apply() { applied++; } }); await drain();
+	for (let i = 0; i < 20; i++) f.controller.event({ topics: ["tasks"] });
+	await f.tick(10000); assert.equal(f.counters().loads, 0);
+	resolveData({ message: {} }); await initial; await drain();
+	assert.equal(applied, 1);
+	assert.equal(f.page.dirty, true);
+	await f.tick(2999); assert.equal(f.counters().loads, 0);
+	await f.tick(1); assert.equal(f.counters().loads, 1);
+});
+
+test("switching routes during a version check uses the new route's baseline", async () => {
+	const f = fixture(), pending = [], requests = [], statuses = [];
+	let current = f.page;
+	f.options.check = ({ topics }) => new Promise((resolve) => pending.push({ topics, resolve }));
+	const second = { topics: ["production"], interval: 30000, status: (s) => statuses.push(s) };
+	const read = trackedReader(f, async ({ method }) => { requests.push(method); return { message: {} }; }, (page) => page === current);
+	f.controller.activate(f.page);
+	const firstRead = read(f.page, { method: "tasks", apply() { throw Error("old route"); } }); await drain();
+	current = second;
+	f.controller.activate(second);
+	const secondRead = read(second, { method: "production", apply() {} }); await drain();
+	pending[0].resolve({ versions: { tasks: "A" } }); await drain();
+	assert.equal(await firstRead, false);
+	assert.deepEqual(pending[1].topics, ["notifications", "production"]);
+	assert.equal(requests.length, 0);
+	pending[1].resolve({ versions: { production: "B" } });
+	assert.equal(await secondRead, true); await drain();
+	assert.deepEqual(requests, ["production"]);
+	assert.equal(second.dirty, false);
+	assert.equal(statuses.at(-1), "fresh");
+});
+
+test("backend stale snapshots keep the pending state after a successful display", async () => {
+	const f = fixture();
+	const read = trackedReader(f, async () => ({ message: { rows: [1], _refresh_stale: true } }));
+	f.controller.activate(f.page);
+	assert.equal(await read(f.page, { method: "tasks", apply() {} }), false); await drain();
+	assert.equal(f.page.dirty, true);
+	await f.tick(3000); assert.equal(f.counters().loads, 1);
+});
+
+test("failed reads retain the error message throughout retry backoff", async () => {
+	const f = fixture(), statuses = [];
+	f.page.status = (s) => statuses.push(s);
+	f.page.load = async () => { throw Error("offline"); };
+	f.controller.activate(f.page); await drain(); await f.tick(1000);
+	assert.equal(statuses.at(-1), "error");
+	await f.tick(29999); assert.equal(statuses.at(-1), "error");
+});
+
+test("manual read failure can recover without leaving an obsolete error or retry timer", async () => {
+	const f = fixture(), statuses = [];
+	f.page.status = (s) => statuses.push(s);
+	f.controller.activate(f.page); await drain(); await f.tick(3000);
+	let fail = true;
+	const read = trackedReader(f, async () => { if (fail) throw Error("offline"); return { message: {} }; });
+	await assert.rejects(read(f.page, { method: "tasks", apply() {} })); await drain();
+	assert.equal(statuses.at(-1), "error");
+	fail = false;
+	await read(f.page, { method: "tasks", apply() {} }); await drain();
+	assert.equal(statuses.at(-1), "fresh");
+	assert.equal(f.page.failures, 0);
+	const baseline = f.counters().loads;
+	await f.tick(30000); assert.equal(f.counters().loads, baseline);
+});

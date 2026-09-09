@@ -8,6 +8,7 @@ function createPageRefreshController(options) {
 	const later = options.setTimeout || setTimeout;
 	const cancel = options.clearTimeout || clearTimeout;
 	let active = null, timer = null, checkTimer = null, checking = null;
+	let versionsPending = null, versionPage = null;
 	let disposed = false, failures = 0, checkAgain = false;
 	const known = {};
 	const visible = () => !disposed && options.visible();
@@ -24,19 +25,58 @@ function createPageRefreshController(options) {
 		if (timer !== null) cancel(timer);
 		timer = null;
 		const page = active;
-		if (!visible() || !page?.dirty || page.pending) return;
+		if (!visible() || !page || page.pending || page.reading) return;
+		if (!page.dirty) { page.dueAt = null; page.status?.("fresh"); return; }
 		if (page.editable?.() || page.manual) {
-			page.status?.("changed");
+			page.status?.(page.failures ? "error" : "changed");
 			return;
 		}
 		page.dueAt = page.dueAt || Math.max(clock() + 1000, (page.lastRead || 0) + page.interval, page.retryAt || 0);
 		const wait = Math.max(0, page.dueAt - clock());
-		page.status?.("waiting");
+		page.status?.(page.retryAt > clock() ? "error" : "waiting");
 		timer = later(() => refresh(false), wait);
+	}
+	function failedRead(page) {
+		page.dirty = true;
+		page.failures = (page.failures || 0) + 1;
+		page.retryAt = clock() + Math.min(120000, 30000 * (2 ** (page.failures - 1)));
+		page.dueAt = null;
+		page.status?.("error");
+	}
+	async function beginRead(page) {
+		if (!page) return;
+		page.reading = (page.reading || 0) + 1;
+		if (page === active) { schedulePage(); page.status?.("loading"); }
+		// Reuse the route's version check before taking the business snapshot.
+		// An initial version is then covered by this read, not a second timed read.
+		while (versionsPending && page === active) {
+			const coversPage = versionPage === page;
+			await versionsPending.catch(() => {});
+			if (coversPage) break;
+			// A fast route switch may have queued this page behind another check.
+			await checking;
+		}
+		return { page, revision: page.revision };
+	}
+	function endRead(ticket, result) {
+		if (!ticket) return;
+		const { page, revision } = ticket;
+		page.reading = Math.max(0, (page.reading || 0) - 1);
+		if (result.applied) {
+			page.lastRead = clock();
+			page.failures = 0;
+			page.retryAt = 0;
+			page.dueAt = null;
+			if (result.stale) page.dirty = true;
+			else if (revision === page.revision) page.dirty = false;
+		} else if (result.error && !page.pending) {
+			failedRead(page);
+		}
+		if (page === active) schedulePage();
 	}
 	async function refresh(manual = false) {
 		const page = active;
-		if (!visible() || !page?.load || page.pending) return page?.pending;
+		if (!visible() || !page?.load || page.pending || page.reading) return page?.pending;
 		if (page.editable?.()) { page.status?.("changed"); return; }
 		page.dirty = false;
 		page.dueAt = null;
@@ -48,10 +88,7 @@ function createPageRefreshController(options) {
 			if (applied === false) page.dirty = true;
 			page.status?.(page.dirty ? "waiting" : "fresh");
 		}, () => {
-			page.dirty = true;
-			page.failures = (page.failures || 0) + 1;
-			page.retryAt = clock() + Math.min(120000, 30000 * (2 ** (page.failures - 1)));
-			page.status?.("error");
+			failedRead(page);
 		}).finally(() => {
 			page.pending = null;
 			if (page === active) schedulePage();
@@ -70,22 +107,32 @@ function createPageRefreshController(options) {
 		if (checking) { checkAgain = true; return checking; }
 		const page = active;
 		const topics = [...new Set(["notifications", ...(page?.topics || [])])];
-		checking = Promise.resolve().then(() => options.check({ topics, known: { ...known } })).then(async (data) => {
+		versionPage = page;
+		versionsPending = Promise.resolve().then(() => options.check({ topics, known: { ...known } })).then((data) => {
 			if (!visible()) return;
 			failures = 0;
 			const changed = Object.keys(data.versions || {}).filter((topic) => known[topic] !== data.versions[topic]);
 			if (page === active) invalidate(changed.filter((topic) => topic !== "notifications"));
+			for (const topic of Object.keys(data.versions || {})) {
+				if (topic !== "notifications") known[topic] = data.versions[topic];
+			}
+			return { data, changed };
+		});
+		checking = versionsPending.then(async (result) => {
+			if (!result) return;
+			const { data, changed } = result;
 			if (changed.includes("notifications")) await options.notifications?.();
-			Object.assign(known, data.versions || {});
+			if (data.versions?.notifications !== undefined) known.notifications = data.versions.notifications;
 		}).catch(() => { failures++; }).finally(() => {
 			checking = null;
+			versionsPending = null;
 			if (checkAgain && visible()) { checkAgain = false; check(); }
 			else scheduleCheck();
 		});
 		return checking;
 	}
 	return {
-		check, refresh, invalidate, resumePage: schedulePage,
+		check, refresh, invalidate, beginRead, endRead, resumePage: schedulePage,
 		activate(page) {
 			if (timer !== null) cancel(timer);
 			timer = null;
@@ -104,7 +151,7 @@ function createPageRefreshController(options) {
 	};
 }
 
-function createPageReadLoader(call, isCurrent) {
+function createPageReadLoader(call, isCurrent, lifecycle = {}) {
 	const states = new WeakMap();
 	return function read(page, options) {
 		let state = states.get(page);
@@ -123,24 +170,34 @@ function createPageReadLoader(call, isCurrent) {
 		function run(current) {
 			state.running = current;
 			const opts = current.options;
-			Promise.resolve().then(() => call({
-				method: opts.method, args: current.args, type: opts.type || "POST",
-				freeze: !opts.background, freeze_message: opts.freeze_message,
-				silent: Boolean(opts.background), timeout: 120000,
-			})).then(async (response) => {
+			let ticket, responseData, applied = false;
+			Promise.resolve().then(async () => {
+				if (lifecycle.begin) ticket = await lifecycle.begin(page);
+				if (current !== state.desired || !isCurrent(page)) return;
+				return call({
+					method: opts.method, args: current.args, type: opts.type || "POST",
+					freeze: !opts.background, freeze_message: opts.freeze_message,
+					silent: Boolean(opts.background), timeout: 120000,
+				});
+			}).then(async (response) => {
 				if (current !== state.desired || !isCurrent(page)) return false;
+				if (!response) return false;
+				responseData = response.message;
 				if (opts.background && page.ps_refresh?.editable?.()) return false;
 				if (response.message?._refresh_pending) {
 					if (page.ps_refresh) page.ps_refresh.dirty = true;
 					return false;
 				}
-				return (await opts.apply(response)) !== false && !response.message?._refresh_stale;
+				applied = (await opts.apply(response)) !== false;
+				if (applied && !opts.background) page.ps_refresh?.resetDirty?.();
+				return applied && !response.message?._refresh_stale;
 			}).catch((error) => {
 				if (current !== state.desired || !isCurrent(page)) return false;
 				throw error;
-			}).then((value) => { finish(); current.resolve(value); }, (error) => { finish(); current.reject(error); });
-			function finish() {
+			}).then((value) => { finish(); current.resolve(value); }, (error) => { finish(error); current.reject(error); });
+			function finish(error) {
 				state.running = null;
+				lifecycle.end?.(ticket, { applied, stale: Boolean(responseData?._refresh_stale), error });
 				if (state.desired === current) state.desired = null;
 				const next = state.queued;
 				state.queued = null;
@@ -229,7 +286,15 @@ function setupPageRefresh(frappeRef, win, doc, $) {
 	const read = frappeRef.ps_read_page;
 	function register(page, options) {
 		if (page.ps_refresh) { page.ps_refresh.configure(options); return page.ps_refresh; }
-		const banner = $('<div class="ps-refresh-status text-muted" role="status" hidden></div>').prependTo(page.main);
+		const banner = $('<div class="ps-refresh-status text-muted" role="status" aria-live="polite" hidden></div>');
+		function placeBanner() {
+			const updated = page.main.find(".production-update-time").first();
+			if (updated.length) banner.insertAfter(updated);
+			else {
+				const content = page.main.find(".process-simplification-page, .warehouse-workbench").first();
+				banner.prependTo(content.length ? content : page.main);
+			}
+		}
 		let inputDirty = false;
 		page.main.on("input.ps-refresh change.ps-refresh", "input, select, textarea", (event) => {
 			// Frappe also emits change while setting initial/default control values.
@@ -240,12 +305,13 @@ function setupPageRefresh(frappeRef, win, doc, $) {
 			editable: () => Boolean(win.cur_dialog?.display || inputDirty || options.editable?.() ||
 				(page.main[0]?.contains(doc.activeElement) && /^(INPUT|SELECT|TEXTAREA)$/.test(doc.activeElement.tagName))),
 			status(state) {
-				if (!doc.contains(banner[0])) banner.prependTo(page.main);
+				if (state === "fresh") { banner.prop("hidden", true).empty(); return; }
+				if (!doc.contains(banner[0])) placeBanner();
 				const texts = {
 					changed: options.manual && !options.protectInputs ? "数据有更新，可使用页面的“刷新”重新查询。" :
 						"数据有更新，当前填写内容已保留。完成操作后可刷新查看。",
-					waiting: "数据有更新，正在自动同步…", loading: "正在更新数据…",
-					fresh: "已更新 " + new Date().toLocaleTimeString(), error: "暂时未能更新，将自动重试。",
+					waiting: "数据有更新，稍后自动更新。", loading: "正在更新数据…",
+					error: "暂时未能更新，将自动重试。",
 				};
 				banner.prop("hidden", false).text(texts[state]);
 				if (state === "changed" && !inputDirty && options.load) {
@@ -308,9 +374,11 @@ if (typeof module !== "undefined" && module.exports) {
 }
 if (typeof frappe !== "undefined" && typeof window !== "undefined") {
 	const read = createPageReadLoader((args) => frappe.call(args),
-		(page) => frappe.container?.page?.page === page);
+		(page) => frappe.container?.page?.page === page, {
+			begin: (page) => window.__ps_page_refresh?.beginRead(page.ps_refresh),
+			end: (ticket, result) => window.__ps_page_refresh?.endRead(ticket, result),
+		});
 	frappe.ps_read_page = (page, options) => {
-		const revision = page.ps_refresh?.revision;
 		return read(page, { ...options, async apply(response) {
 		const root = page.main?.[0];
 		const scrollY = window.scrollY;
@@ -320,12 +388,6 @@ if (typeof frappe !== "undefined" && typeof window !== "undefined") {
 		const detailsKey = (node) => node.id || JSON.stringify(node.dataset) + (node.querySelector("summary")?.textContent || "");
 		const expanded = new Set(Array.from(root?.querySelectorAll("details[open]") || []).map(detailsKey));
 		const applied = await options.apply(response);
-		if (applied !== false && !options.background && page.ps_refresh) {
-			page.ps_refresh.resetDirty();
-			page.ps_refresh.lastRead = Date.now();
-			if (response.message?._refresh_stale) page.ps_refresh.dirty = true;
-			else if (revision === page.ps_refresh.revision) page.ps_refresh.dirty = false;
-		}
 		if (options.background) {
 			for (const node of root?.querySelectorAll("input, select, textarea") || []) {
 				const key = node.id || node.getAttribute("data-filter") || node.getAttribute("aria-label");
