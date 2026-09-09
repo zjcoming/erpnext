@@ -565,6 +565,25 @@
 }
 
 @media (max-width: 767px) {
+	/* Keep Frappe's single content scroller inside the visible phone viewport,
+	 * including when the browser's address/bottom bars are expanded. */
+	body:is([data-route="my-production-reporting"], [data-route="active-production-work"], [data-route="production-report-history"]) {
+		height: 100vh;
+		height: 100dvh;
+		overflow: hidden;
+	}
+
+	body:is([data-route="my-production-reporting"], [data-route="active-production-work"], [data-route="production-report-history"]) .main-section {
+		height: 100%;
+		min-height: 0;
+		overflow-y: auto;
+	}
+
+	.worker-reporting-page,
+	.worker-history-page {
+		padding-bottom: calc(40px + env(safe-area-inset-bottom, 0px));
+	}
+
 	.quick-sales-order .quick-order-items .table-responsive { overflow: visible; }
 	.quick-sales-order .quick-items, .quick-sales-order .quick-items tbody { display: block; width: 100%; min-width: 0; }
 	.quick-sales-order .quick-items thead { display: none; }

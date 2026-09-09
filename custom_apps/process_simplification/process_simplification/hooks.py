@@ -14,7 +14,7 @@ required_apps = ["erpnext"]
 
 app_include_css = [
 	"/assets/process_simplification/css/process_simplification.css?v=18",
-	"/assets/process_simplification/css/process_ui.css?v=10",
+	"/assets/process_simplification/css/process_ui.css?v=11",
 	"/assets/process_simplification/css/purchasing.css?v=4",
 	"/assets/process_simplification/css/warehouse.css?v=2",
 	"/assets/process_simplification/css/process_pwa.css?v=1",
