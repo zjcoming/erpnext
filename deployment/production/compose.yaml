@@ -31,7 +31,7 @@ x-configured-app-service: &configured_app_service
 
 services:
   db:
-    image: docker.io/mariadb@sha256:e564bcaefb87c3d2b8b09b539ea791d34f4b62c05e2e7cb03f5d6388bdc54f2c
+    image: docker.io/library/mariadb:11.8.8@sha256:e564bcaefb87c3d2b8b09b539ea791d34f4b62c05e2e7cb03f5d6388bdc54f2c
     platform: linux/amd64
     restart: unless-stopped
     stop_grace_period: 90s
@@ -62,7 +62,7 @@ services:
     logging: *app_logging
 
   redis-cache:
-    image: docker.io/redis@sha256:0379bcae62e9b8617705f6ca814681e4680762b0312b059fb0cc14e3de5ae041
+    image: docker.io/library/redis:8.8.2-alpine@sha256:0379bcae62e9b8617705f6ca814681e4680762b0312b059fb0cc14e3de5ae041
     platform: linux/amd64
     restart: unless-stopped
     command:
@@ -85,7 +85,7 @@ services:
     logging: *app_logging
 
   redis-queue:
-    image: docker.io/redis@sha256:0379bcae62e9b8617705f6ca814681e4680762b0312b059fb0cc14e3de5ae041
+    image: docker.io/library/redis:8.8.2-alpine@sha256:0379bcae62e9b8617705f6ca814681e4680762b0312b059fb0cc14e3de5ae041
     platform: linux/amd64
     restart: unless-stopped
     command:
