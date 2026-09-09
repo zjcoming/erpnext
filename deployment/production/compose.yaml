@@ -1,0 +1,275 @@
+name: hengsuan-erp
+
+x-app-image: &app_image
+  image: ${ERP_IMAGE:?Set ERP_IMAGE in .env}
+  pull_policy: ${PULL_POLICY:-never}
+  platform: linux/amd64
+
+x-app-service: &app_service
+  <<: *app_image
+  init: true
+  restart: unless-stopped
+  stop_grace_period: 90s
+  volumes:
+    - sites:/home/frappe/frappe-bench/sites
+    - logs:/home/frappe/frappe-bench/logs
+  networks:
+    - internal
+  logging: &app_logging
+    driver: local
+    options:
+      max-size: 20m
+      max-file: "5"
+
+x-configured-app-service: &configured_app_service
+  <<: *app_service
+  depends_on:
+    configurator:
+      condition: service_completed_successfully
+    migrate:
+      condition: service_completed_successfully
+
+services:
+  db:
+    image: docker.io/mariadb@sha256:e564bcaefb87c3d2b8b09b539ea791d34f4b62c05e2e7cb03f5d6388bdc54f2c
+    platform: linux/amd64
+    restart: unless-stopped
+    stop_grace_period: 90s
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --skip-character-set-client-handshake
+      - --innodb-buffer-pool-size=2G
+      - --innodb-log-file-size=256M
+      - --max-connections=200
+      - --slow-query-log=1
+      - --long-query-time=2
+    environment:
+      MARIADB_ROOT_PASSWORD_FILE: /run/secrets/db_root_password
+      MARIADB_AUTO_UPGRADE: "1"
+    secrets:
+      - db_root_password
+    volumes:
+      - db_data:/var/lib/mysql
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      start_period: 30s
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    logging: *app_logging
+
+  redis-cache:
+    image: docker.io/redis@sha256:0379bcae62e9b8617705f6ca814681e4680762b0312b059fb0cc14e3de5ae041
+    platform: linux/amd64
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --maxmemory
+      - 384mb
+      - --maxmemory-policy
+      - allkeys-lru
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    logging: *app_logging
+
+  redis-queue:
+    image: docker.io/redis@sha256:0379bcae62e9b8617705f6ca814681e4680762b0312b059fb0cc14e3de5ae041
+    platform: linux/amd64
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --maxmemory
+      - 512mb
+      - --maxmemory-policy
+      - noeviction
+    volumes:
+      - redis_queue_data:/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    logging: *app_logging
+
+  configurator:
+    <<: *app_image
+    init: true
+    restart: "no"
+    entrypoint: ["bash", "-Eeuc"]
+    command:
+      - |
+        ls -1 apps > sites/apps.txt
+        bench set-config -g db_host db
+        bench set-config -gp db_port 3306
+        bench set-config -g redis_cache redis://redis-cache:6379
+        bench set-config -g redis_queue redis://redis-queue:6379
+        bench set-config -g redis_socketio redis://redis-queue:6379
+        bench set-config -gp socketio_port 9000
+        bench set-config -g chromium_path /usr/bin/chromium-headless-shell
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+      - logs:/home/frappe/frappe-bench/logs
+    networks:
+      - internal
+    depends_on:
+      db:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      redis-queue:
+        condition: service_healthy
+    logging: *app_logging
+
+  site-init:
+    <<: *app_image
+    init: true
+    restart: "no"
+    entrypoint: ["bash", "-Eeuc"]
+    command:
+      - |
+        site_name="$${SITE_NAME}"
+        db_password="$$(cat /run/secrets/db_root_password)"
+        admin_password="$$(cat /run/secrets/admin_password)"
+        if [[ ! -f "sites/$${site_name}/site_config.json" ]]; then
+          bench new-site "$${site_name}" \
+            --mariadb-user-host-login-scope='%' \
+            --db-root-username=root \
+            --db-root-password="$${db_password}" \
+            --admin-password="$${admin_password}" \
+            --install-app=erpnext
+        fi
+        if ! bench --site "$${site_name}" list-apps --format json | jq -e --arg site "$${site_name}" '.[$$site] | index("process_simplification") != null' >/dev/null; then
+          bench --site "$${site_name}" install-app process_simplification
+        fi
+    environment:
+      SITE_NAME: ${SITE_NAME:?Set SITE_NAME in .env}
+    secrets:
+      - db_root_password
+      - admin_password
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+      - logs:/home/frappe/frappe-bench/logs
+    networks:
+      - internal
+    depends_on:
+      configurator:
+        condition: service_completed_successfully
+    logging: *app_logging
+
+  migrate:
+    <<: *app_image
+    init: true
+    restart: "no"
+    entrypoint: ["bash", "-Eeuc"]
+    command:
+      - |
+        bench --site "$${SITE_NAME}" migrate
+        bench --site "$${SITE_NAME}" set-config host_name "https://$${SITE_NAME}"
+        bench --site "$${SITE_NAME}" set-config --parse allow_tests False
+        bench --site "$${SITE_NAME}" set-config --parse developer_mode 0
+        bench --site "$${SITE_NAME}" enable-scheduler
+    environment:
+      SITE_NAME: ${SITE_NAME:?Set SITE_NAME in .env}
+    volumes:
+      - sites:/home/frappe/frappe-bench/sites
+      - logs:/home/frappe/frappe-bench/logs
+    networks:
+      - internal
+    depends_on:
+      site-init:
+        condition: service_completed_successfully
+    logging: *app_logging
+
+  backend:
+    <<: *configured_app_service
+    environment:
+      GUNICORN_WORKERS: ${GUNICORN_WORKERS:-2}
+      GUNICORN_THREADS: ${GUNICORN_THREADS:-4}
+      GUNICORN_TIMEOUT: ${GUNICORN_TIMEOUT:-120}
+      GUNICORN_MAX_REQUESTS: ${GUNICORN_MAX_REQUESTS:-2000}
+      GUNICORN_MAX_REQUESTS_JITTER: ${GUNICORN_MAX_REQUESTS_JITTER:-200}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -H 'Host: ${SITE_NAME}' http://127.0.0.1:8000/api/method/ping >/dev/null"]
+      start_period: 90s
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  frontend:
+    <<: *configured_app_service
+    command: ["nginx-entrypoint.sh"]
+    environment:
+      BACKEND: backend:8000
+      SOCKETIO: websocket:9000
+      FRAPPE_SITE_NAME_HEADER: ${SITE_NAME:?Set SITE_NAME in .env}
+      UPSTREAM_REAL_IP_ADDRESS: 127.0.0.1
+      UPSTREAM_REAL_IP_HEADER: X-Forwarded-For
+      UPSTREAM_REAL_IP_RECURSIVE: "off"
+      PROXY_READ_TIMEOUT: ${PROXY_READ_TIMEOUT:-180}
+      CLIENT_MAX_BODY_SIZE: ${CLIENT_MAX_BODY_SIZE:-100m}
+    ports:
+      - ${FRONTEND_BIND:-127.0.0.1:8080}:8080
+    depends_on:
+      backend:
+        condition: service_healthy
+      websocket:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -H 'Host: ${SITE_NAME}' http://127.0.0.1:8080/api/method/ping >/dev/null"]
+      start_period: 30s
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  websocket:
+    <<: *configured_app_service
+    command: ["node", "/home/frappe/frappe-bench/apps/frappe/socketio.js"]
+    environment:
+      FRAPPE_REDIS_CACHE: redis://redis-cache:6379
+      FRAPPE_REDIS_QUEUE: redis://redis-queue:6379
+
+  queue-short:
+    <<: *configured_app_service
+    command: ["bench", "worker", "--queue", "short,default"]
+
+  queue-long:
+    <<: *configured_app_service
+    command: ["bench", "worker", "--queue", "long,default,short"]
+
+  scheduler:
+    <<: *configured_app_service
+    command: ["bench", "schedule"]
+
+volumes:
+  db_data:
+  redis_queue_data:
+  sites:
+  logs:
+
+networks:
+  internal:
+    driver: bridge
+
+secrets:
+  db_root_password:
+    file: ${DB_ROOT_PASSWORD_FILE:-./secrets/db_root_password.txt}
+  admin_password:
+    file: ${ADMIN_PASSWORD_FILE:-./secrets/admin_password.txt}
