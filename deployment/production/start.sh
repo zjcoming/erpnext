@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-gunicorn_workers="${GUNICORN_WORKERS:-2}"
+gunicorn_workers="${GUNICORN_WORKERS:-3}"
 gunicorn_threads="${GUNICORN_THREADS:-4}"
 gunicorn_timeout="${GUNICORN_TIMEOUT:-120}"
 gunicorn_max_requests="${GUNICORN_MAX_REQUESTS:-2000}"

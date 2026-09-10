@@ -36,8 +36,8 @@ SITE_NAME=${site_name}
 FRONTEND_BIND=127.0.0.1:18080
 DB_ROOT_PASSWORD_FILE=${acceptance_dir}/secrets/db_root_password.txt
 ADMIN_PASSWORD_FILE=${acceptance_dir}/secrets/admin_password.txt
-GUNICORN_WORKERS=2
-GUNICORN_THREADS=2
+GUNICORN_WORKERS=3
+GUNICORN_THREADS=4
 EOF
 
 docker image inspect "${image}" >/dev/null

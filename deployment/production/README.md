@@ -2,6 +2,12 @@
 
 本目录把应用代码固化进不可变镜像，并用单机 Docker Compose 运行 ERPNext 所需的 Web、WebSocket、后台队列、调度器、MariaDB 和 Redis。生产服务器只保存 Compose 配置、密钥和持久化卷，不在容器启动时拉取或编译源码。
 
+## 当前生产并发基线：3×4
+
+当前腾讯云 **4 核 / 8 GB** 单机部署固定使用 **3 个 Gunicorn Web 工作进程、每进程 4 线程**（`GUNICORN_WORKERS=3`、`GUNICORN_THREADS=4`）。2026-09-10 同镜像对照中，4×4 在 50、100 并发下响应更慢，已恢复 3×4；用户确认后续常规发布沿用此配置。环境示例、Compose、镜像启动脚本和镜像验收均采用此基线。
+
+发布新镜像时保留服务器 `.env` 中的这两个值，不根据空闲内存自动增加 Web 进程。适用范围、压测结果及检查命令见 [Web 并发配置约定](web-concurrency.md)。
+
 ## 构建与验收
 
 镜像默认从当前 Git 提交的归档构建；未提交文件、站点数据和本机密钥不会进入构建上下文。
@@ -64,7 +70,7 @@ docker compose exec -T backend bench --site erp.hengsuankeji.com backup --with-f
 
 ## 发布更新
 
-新版本使用新标签构建并验收。服务器先导入新镜像，修改 `.env` 中的 `ERP_IMAGE`，再运行：
+新版本使用新标签构建并验收。服务器先导入新镜像，修改 `.env` 中的 `ERP_IMAGE`，保留 `GUNICORN_WORKERS=3` 和 `GUNICORN_THREADS=4`，再运行：
 
 ```bash
 docker compose up -d --wait
