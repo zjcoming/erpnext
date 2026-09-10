@@ -26,10 +26,10 @@ from contextlib import contextmanager
 import frappe
 from frappe.utils import now_datetime
 
+from process_simplification.production_workflow.planning_stock import commit_plan_stock, net_subassemblies
 from process_simplification.production_workflow.stock_reservation import (
 	allow_guided_stock_reservations_for,
 )
-
 
 _AUTO_SUBMIT_SAVEPOINT = "production_task_auto_submit"
 _AUTO_JOB_CARD_WORK_ORDER_FLAG = "simplified_flow_job_card_work_order"
@@ -175,7 +175,8 @@ def create_work_orders_via_production_plan(
 		# Persist first so expanded sub-assembly rows receive stable names and
 		# Work Orders can keep valid Production Plan back-references.
 		plan.insert()
-		plan.get_sub_assembly_items()
+		commitments = net_subassemblies(plan)
+		plan.reserve_stock = 0
 		plan.save()
 		with allow_guided_stock_reservations_for("Production Plan", plan.name):
 			plan.submit()
@@ -187,6 +188,9 @@ def create_work_orders_via_production_plan(
 		work_orders = _work_orders_for_plan(plan.name)
 		_apply_guided_source_warehouse(work_orders, source_warehouse)
 		_submit_work_orders(work_orders)
+		commit_plan_stock(plan, work_orders, commitments)
+	except frappe.QueryDeadlockError:
+		raise
 	except Exception:
 		frappe.db.rollback(save_point=_AUTO_SUBMIT_SAVEPOINT)
 		raise
@@ -235,8 +239,9 @@ def create_replenishment_work_orders_via_production_plan(
 		if not plan.po_items:
 			frappe.throw("补产申请没有可生成生产任务的物料。")
 		plan.insert()
-		plan.get_sub_assembly_items()
+		commitments = net_subassemblies(plan)
 		_populate_raw_material_reservation_rows(plan, source_warehouse)
+		plan.reserve_stock = 0
 		plan.save()
 		with allow_guided_stock_reservations_for("Production Plan", plan.name):
 			plan.submit()
@@ -257,6 +262,9 @@ def create_replenishment_work_orders_via_production_plan(
 		if len(replenishment_work_orders) != 1:
 			frappe.throw("补产申请必须且只能生成一个直接目标工单，请检查生产计划明细。")
 		_submit_work_orders(work_orders)
+		commit_plan_stock(plan, work_orders, commitments, reserve_raw=True)
+	except frappe.QueryDeadlockError:
+		raise
 	except Exception:
 		frappe.db.rollback(save_point=_AUTO_SUBMIT_SAVEPOINT)
 		raise

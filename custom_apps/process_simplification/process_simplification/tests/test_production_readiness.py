@@ -820,6 +820,7 @@ class TestWorkOrderReadiness(UnitTestCase):
 				{"name": "WO-FG", "production_item": "FG", "production_plan_item": "PPI-1", "status": "Not Started"},
 				{
 					"name": "WO-SA",
+					"qty": 5, "fg_warehouse": "Stores - TC",
 					"production_item": "SA",
 					"production_plan_sub_assembly_item": "PPSA-1",
 					"status": "Not Started",
@@ -1265,6 +1266,7 @@ class TestWorkOrderReadiness(UnitTestCase):
 				},
 				{
 					"name": "WO-SA",
+					"qty": 1, "fg_warehouse": "Stores - TC",
 					"production_item": "SA",
 					"production_plan_sub_assembly_item": "PPSA-SA",
 					"status": "Not Started",
@@ -1662,7 +1664,8 @@ class TestWorkOrderReadiness(UnitTestCase):
 			{("SA-MISSING", "Stores - TC"): {"available_qty": 0, "actual_qty": 0}},
 		)[0].work_orders_by_name["WO-FG"]
 
-		self.assertEqual(work_order.readiness_status, "production_task_missing")
+		self.assertEqual(work_order.readiness_status, "replenishment_required")
+		self.assertTrue(work_order.required_items[0].replenishment_required)
 		self.assertEqual(work_order.required_items[0].supply_type, "manufactured")
 
 	def test_fully_transferred_direct_materials_do_not_consume_stock_again(self):
@@ -1754,6 +1757,7 @@ class TestProductionReadinessLoading(UnitTestCase):
 				),
 				frappe._dict(
 					name="WO-SA",
+					fg_warehouse="Stores - TC",
 					production_item="SA",
 					bom_no="BOM-SA-001",
 					production_plan="PP-001",

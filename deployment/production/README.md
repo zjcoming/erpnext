@@ -14,6 +14,8 @@
 
 默认发布标签是 `hengsuan/erpnext:v16.33.0-hs.20260909.1`。正式构建应保留脚本输出的镜像 ID、源码提交和压缩包 SHA-256。
 
+构建会对固定版本 Frappe 应用 `patches/` 中的事务并发补丁，并核对修改前后的文件 SHA-256；上游文件变化时会停止构建。镜像保留 `frappe-patches.json`，`release.env` 记录其校验值，验收脚本同时检查实际源码。升级 Frappe 时需重新审查补丁，不能跳过校验。2026-09-10 的工作台与事务修复验证见 [专项报告](../../custom_apps/process_simplification/docs/performance_fix_validation_20260910.md)。包含这些修复的发布必须使用新镜像标签，并先将拟发布代码纳入对应 Git 提交；当前构建脚本不会打包未提交改动。
+
 ## 服务器目录
 
 ```text

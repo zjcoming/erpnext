@@ -1,0 +1,269 @@
+--- a/frappe/app.py
++++ b/frappe/app.py
+@@ -202,6 +202,11 @@
+ 	make_form_dict(request)
+ 
+ 	if request.method != "OPTIONS":
++		from frappe.auth import lock_login_credentials
++
++		lock_login_credentials()
++
++	if request.method != "OPTIONS":
+ 		frappe.local.http_request = HTTPRequest()
+ 
+ 	for before_request_task in frappe.get_hooks("before_request"):
+--- a/frappe/auth.py
++++ b/frappe/auth.py
+@@ -28,6 +28,68 @@
+ SAFE_HTTP_METHODS = frozenset(("GET", "HEAD", "OPTIONS"))
+ UNSAFE_HTTP_METHODS = frozenset(("POST", "PUT", "DELETE", "PATCH"))
+ MAX_PASSWORD_SIZE = 512
++
++
++def lock_login_credentials():
++	"""Lock login candidates before the request establishes a consistent snapshot.
++
++	This only serializes authentication for the same indexed identity. The original
++	login flow still chooses the user, checks enabled/alias settings/password/2FA and
++	runs every hook once. No credentials are authenticated by this lock lookup.
++	"""
++	if frappe.db.db_type != "mariadb" or frappe.flags.read_only:
++		return
++	if not (
++		frappe.form_dict.get("cmd") == "login" or frappe.request.path == "/api/method/login"
++	):
++		return
++	# init_request calls us before HTTPRequest and before the first DB query. Never
++	# acquire a late lock and pretend that an existing snapshot has become fresh.
++	if (
++		frappe.db._conn is not None
++		or frappe.db.transaction_writes
++		or frappe.db._disable_transaction_control
++		or any(
++			manager._functions
++			for manager in (
++				frappe.db.before_commit,
++				frappe.db.after_commit,
++				frappe.db.before_rollback,
++				frappe.db.after_rollback,
++			)
++		)
++	):
++		return
++	user, password = get_cached_user_pass()
++	if not (user and password):
++		user = frappe.form_dict.get("usr")
++	if not isinstance(user, str) or not user or len(user) > 140:
++		return
++	# This prefix owns ONLY the identifier lookup: no HTTPRequest, authentication,
++	# document hooks, writes or transaction callbacks have run. Discard its read
++	# view before acquiring locks. An OR locking query can lock unrelated users
++	# when the optimizer chooses a table scan, so use sorted primary-key locks.
++	lookup = (
++		"SELECT `name` FROM `tabUser` "
++		"WHERE `name` = %s OR `username` = %s OR `mobile_no` = %s"
++	)
++	parameters = (user, user, user)
++	frappe.db.begin(read_only=True)
++	candidates = sorted({name for (name,) in frappe.db.sql(lookup, parameters)})
++	frappe.db.rollback()
++	for name in candidates:
++		frappe.db.sql("SELECT `name` FROM `tabUser` WHERE `name` = %s FOR UPDATE", (name,))
++	for name in candidates:
++		# Password resets must not race a login using a stale password snapshot.
++		frappe.db.sql(
++			"SELECT `name` FROM `__Auth` "
++			"WHERE `doctype` = 'User' AND `name` = %s AND `fieldname` = 'password' FOR UPDATE",
++			(name,),
++		)
++	# Identity hints are not authentication. If an alias changed during the lookup,
++	# abort before any login hook rather than authenticate an unlocked account.
++	if candidates != sorted({name for (name,) in frappe.db.sql(lookup, parameters)}):
++		raise frappe.AuthenticationError(_("Invalid login credentials. Please try again."))
+ 
+ 
+ class HTTPRequest:
+--- a/frappe/database/database.py
++++ b/frappe/database/database.py
+@@ -234,7 +234,11 @@
+ 		if not run:
+ 			return query
+ 
+-		query_type = get_query_type(query)
++		# The counter patch uses a statement-local current read. Classify the
++		# enclosed DML so write accounting and table-cache invalidation still run.
++		query_type = get_query_type(
++			query.removeprefix("SET STATEMENT innodb_snapshot_isolation=OFF FOR ")
++		)
+ 
+ 		if explain:
+ 			if debug and query_type == "select":
+--- a/frappe/model/naming.py
++++ b/frappe/model/naming.py
+@@ -405,7 +405,26 @@
+ 	return w
+ 
+ 
++def _series_current_read(query, values):
++	# A counter must use the latest committed value, even when the document's
++	# business reads use an older snapshot. This is one statement, on the SAME
++	# connection/transaction: its row lock, increments and decrements still roll
++	# back with the document. MariaDB restores the setting even on SQL errors.
++	return frappe.db.sql("SET STATEMENT innodb_snapshot_isolation=OFF FOR " + query, values)
++
++
+ def getseries(key, digits):
++	if frappe.db.db_type == "mariadb":
++		current = _series_current_read(
++			"INSERT INTO `tabSeries` (`name`, `current`) VALUES (%s, 1) "
++			"ON DUPLICATE KEY UPDATE `current` = `current` + 1 RETURNING `current`",
++			(key,),
++		)[0][0]
++		if current is None:
++			# Keep the original failure for a corrupt existing NULL counter.
++			frappe.db.sql("INSERT INTO `tabSeries` (`name`, `current`) VALUES (%s, 1)", (key,))
++		return ("%0" + str(digits) + "d") % cint(current)
++
+ 	# series created ?
+ 	# Using frappe.qb as frappe.get_values does not allow order_by=None
+ 	series = DocType("Series")
+@@ -471,6 +490,14 @@
+ 		prefix = name[:boundary]
+ 	else:
+ 		count = cint(name.replace(prefix, ""))
++	if frappe.db.db_type == "mariadb":
++		_series_current_read(
++			"UPDATE `tabSeries` SET `current` = `current` - 1 "
++			"WHERE `name` = %s AND `current` = %s",
++			(prefix, count),
++		)
++		return
++
+ 	series = DocType("Series")
+ 	current = (frappe.qb.from_(series).where(series.name == prefix).for_update().select("current")).run()
+ 
+--- a/frappe/sessions.py
++++ b/frappe/sessions.py
+@@ -8,6 +8,7 @@
+ """
+ 
+ import json
++from contextlib import nullcontext
+ from datetime import UTC, datetime
+ from urllib.parse import unquote
+ 
+@@ -312,7 +313,9 @@
+ 				)
+ 			)
+ 		).run()
+-		frappe.cache.hset("session", self.data.sid, self.data)
++		# Never publish a SID that only exists in an uncommitted/rolled-back DB
++		# transaction. Session.start commits before returning the login cookie.
++		frappe.db.after_commit.add(lambda: frappe.cache.hset("session", self.data.sid, self.data))
+ 
+ 	def resume(self):
+ 		"""non-login request: load a session"""
+@@ -426,6 +429,10 @@
+ 			self.data.data.lang = str(frappe.lang)
+ 			self.data.data.session_ip = frappe.local.request_ip
+ 
++			# Match login/password-reset lock order before updating a Sessions row.
++			from frappe.utils.password import _lock_user_password_owner
++
++			_lock_user_password_owner("User", frappe.session.user)
+ 			Sessions = frappe.qb.DocType("Sessions")
+ 			# update sessions table
+ 			(
+@@ -460,12 +467,12 @@
+ 	last_active: str | None = None,
+ 	run_notifications: bool = False,
+ ):
+-	"""Best-effort update of a user's session metadata (``last_login``, ``last_ip``, ``last_active``).
+-
+-	A user can be logged in from many sessions/tabs at once, so these writes frequently
+-	contend on the same User row and can deadlock. The data is non-critical -- the next
+-	request refreshes it -- so the write is wrapped in a savepoint and any failure is
+-	swallowed rather than aborting the surrounding transaction.
++	"""Update session metadata in the caller's transaction.
++
++	MariaDB deadlocks/snapshot conflicts roll back the WHOLE transaction. A savepoint
++	cannot recover it. Propagate the original conflict to the transaction owner so a
++	lost Sessions row or other writes cannot be reported as committed successfully.
++	Normal password login acquires the User lock before its first snapshot.
+ 	"""
+ 	values = {}
+ 	if last_login is not None:
+@@ -478,7 +485,8 @@
+ 	if user == "Guest" or not values:
+ 		return
+ 
+-	with savepoint(frappe.QueryDeadlockError):
++	context = nullcontext() if frappe.db.db_type == "mariadb" else savepoint(frappe.QueryDeadlockError)
++	with context:
+ 		user_doctype = frappe.qb.DocType("User")
+ 		query = frappe.qb.update(user_doctype).where(user_doctype.name == user)
+ 		for field, value in values.items():
+--- a/frappe/utils/password.py
++++ b/frappe/utils/password.py
+@@ -48,7 +48,20 @@
+ 		)
+ 
+ 
++def _lock_user_password_owner(doctype, name=None):
++	# Login takes User -> __Auth. Password writers must use the same order so a
++	# concurrent reset cannot hold __Auth while waiting for the login's User row.
++	# This is an ordinary locking read; stale snapshots still fail safely.
++	if doctype != "User" or frappe.db.db_type != "mariadb":
++		return
++	if name is None:
++		frappe.db.sql("SELECT `name` FROM `tabUser` ORDER BY `name` FOR UPDATE")
++	else:
++		frappe.db.sql("SELECT `name` FROM `tabUser` WHERE `name` = %s FOR UPDATE", (name,))
++
++
+ def set_encrypted_password(doctype, name, pwd, fieldname="password"):
++	_lock_user_password_owner(doctype, name)
+ 	query = frappe.qb.into(Auth).columns(
+ 		Auth.doctype, Auth.name, Auth.fieldname, Auth.password, Auth.encrypted
+ 	)
+@@ -77,6 +90,7 @@
+ 
+ 
+ def remove_encrypted_password(doctype, name, fieldname="password"):
++	_lock_user_password_owner(doctype, name)
+ 	frappe.db.delete("__Auth", {"doctype": doctype, "name": name, "fieldname": fieldname})
+ 
+ 
+@@ -128,6 +142,7 @@
+ 	:param logout_all_session: delete all other session
+ 	"""
+ 	hashPwd = passlibctx.hash(pwd)
++	_lock_user_password_owner(doctype, user)
+ 
+ 	query = frappe.qb.into(Auth).columns(
+ 		Auth.doctype, Auth.name, Auth.fieldname, Auth.password, Auth.encrypted
+@@ -161,6 +176,7 @@
+ 
+ 
+ def delete_all_passwords_for(doctype, name):
++	_lock_user_password_owner(doctype, name)
+ 	try:
+ 		frappe.db.delete("__Auth", {"doctype": doctype, "name": name})
+ 	except Exception as e:
+@@ -169,6 +185,8 @@
+ 
+ 
+ def rename_password(doctype, old_name, new_name):
++	for name in sorted({old_name, new_name}):
++		_lock_user_password_owner(doctype, name)
+ 	# NOTE: fieldname is not considered, since the document is renamed
+ 	frappe.qb.update(Auth).set(Auth.name, new_name).where(
+ 		(Auth.doctype == doctype) & (Auth.name == old_name)
+@@ -176,6 +194,7 @@
+ 
+ 
+ def rename_password_field(doctype, old_fieldname, new_fieldname):
++	_lock_user_password_owner(doctype)
+ 	frappe.qb.update(Auth).set(Auth.fieldname, new_fieldname).where(
+ 		(Auth.doctype == doctype) & (Auth.fieldname == old_fieldname)
+ 	).run()

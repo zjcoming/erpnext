@@ -122,6 +122,83 @@ const fixture = [
 	}),
 ];
 
+function replenishmentDemand() {
+	return demand("SUPPLEMENT", {
+		production_required_qty: 10, active_work_order_qty: 10, unplanned_production_qty: 0,
+		work_orders: [
+			{ name: "TARGET", qty: 10, status: "In Process", issue_state: { code: "partially_issued" } },
+			{ name: "LEAF", qty: 1, status: "Stock Reserved", is_replenishment: true,
+				replenishment_root: "ROOT", replenishment_target: "TARGET", bom_level: 2,
+				operation_state: { code: "pending" }, issue_state: { code: "ready" } },
+			{ name: "MIDDLE", qty: 1, status: "Stock Reserved", is_replenishment: true,
+				replenishment_root: "ROOT", replenishment_target: "TARGET", bom_level: 1,
+				operation_state: { code: "pending" }, issue_state: { code: "waiting_material" } },
+			{ name: "ROOT", qty: 1, status: "Stock Reserved", is_replenishment: true,
+				replenishment_root: "ROOT", replenishment_target: "TARGET", bom_level: 0,
+				supply_target_work_order: "TARGET", production_plan: "PP-SUPPLEMENT",
+				operation_state: { code: "pending" }, issue_state: { code: "ready" },
+				replenishment_progress: { code: "in_progress", received_qty: 0, reserved_qty: 0, fed_qty: 0 } },
+		],
+	});
+}
+
+test("existing supplement chain is visible once under its original target with executable cards", () => {
+	const row = replenishmentDemand();
+	const html = productionWorkbench.productionDemandHtml(row, { ...helpers, canManageAssignments: true });
+	assert.ok(html.indexOf('data-work-order-card="TARGET"') < html.indexOf('data-replenishment-root="ROOT"'));
+	for (const name of ["TARGET", "LEAF", "MIDDLE", "ROOT"]) {
+		assert.equal((html.match(new RegExp(`data-work-order-card="${name}"`, "g")) || []).length, 1);
+	}
+	assert.match(html, /data-action="request_material_issue" data-work-order="ROOT"/);
+	assert.match(html, /核对尚未开工的上游补产任务/);
+	assert.equal(row.production_required_qty, 10);
+	assert.equal(row.active_work_order_qty, 10);
+	assert.equal(productionWorkbench.filterProductionDemands([row], { search: "LEAF" }).length, 1);
+	assert.doesNotMatch(productionWorkbench.productionDemandHtml(row, helpers), /data-action="request_material_issue"/);
+});
+
+test("ready final supplement is actionable before unnecessary upstream work", () => {
+	const row = replenishmentDemand();
+	const manage = { ...helpers, canManageAssignments: true };
+	assert.equal(productionWorkbench.productionNextTask(row, manage).workOrder.name, "ROOT");
+	row.work_orders[3].issue_state.code = "waiting_material";
+	assert.equal(productionWorkbench.productionNextTask(row, manage).workOrder.name, "LEAF");
+	row.work_orders[3].receipt_state = { code: "requestable" };
+	assert.equal(productionWorkbench.productionNextTask(row, manage).action, "request_manufacture");
+	row.work_orders[3].status = "Completed";
+	row.work_orders[0].issue_state.code = "ready";
+	assert.equal(productionWorkbench.productionNextTask(row, manage).workOrder.name, "TARGET");
+	row.work_orders[0].issue_state.code = "issued";
+	row.work_orders[0].can_dispatch = true;
+	row.work_orders[3].replenishment_progress.code = "fed";
+	assert.equal(productionWorkbench.productionNextTask(row, manage).action, "assign");
+	assert.equal(productionWorkbench.productionNextTask(row, manage).workOrder.name, "TARGET");
+});
+
+test("supplement creation or repeated click locates the original demand despite stale filters", () => {
+	for (const reused of [false, true]) {
+		const state = { filters: { shortageOnly: true, unplannedOnly: true }, pagination: { page: 3 }, expandedDemands: new Set() };
+		const message = productionWorkbench.replenishmentCreatedFeedback(
+			{ work_order: "ROOT", production_plan: "PP-SUPPLEMENT", reused }, replenishmentDemand(), state, helpers.translate);
+		assert.match(message, /ROOT/);
+		assert.match(message, /PP-SUPPLEMENT/);
+		assert.deepEqual(state.filters, { search: "SUPPLEMENT" });
+		assert.equal(state.pagination.page, 1);
+		assert.equal(state.focusWorkOrder, "ROOT");
+		assert.ok(state.expandedDemands.has("SUPPLEMENT"));
+	}
+});
+
+test("receipt alone is never displayed as completed material handoff", () => {
+	const row = replenishmentDemand();
+	row.work_orders[3].replenishment_progress = { code: "ready_to_feed", received_qty: 1, reserved_qty: 1, fed_qty: 0 };
+	const html = productionWorkbench.productionDemandHtml(row, helpers);
+	assert.match(html, /已入库并预留，待原工单领料/);
+	assert.match(html, /原工单已领用补产 0.00/);
+	assert.doesNotMatch(html, /补产已领用/);
+	assert.match(productionWorkbench.replenishmentProgressMeta("unreserved_output", helpers.translate).label, /未定向预留/);
+});
+
 test("filters production demand by search, status, shortage, and unplanned state", () => {
 	assert.deepEqual(
 		productionWorkbench.filterProductionDemands(fixture, { search: "active" }).map((row) => row.demand_key),
@@ -226,6 +303,33 @@ test("material rows show authoritative net issue instead of repeated gross child
 	const directHtml = productionWorkbench.productionDemandHtml(issuedDemand, helpers);
 	assert.match(directHtml, /data-label="已消耗">6\.00/);
 	assert.doesNotMatch(directHtml, /data-label="已消耗">10\.00/);
+});
+
+test("stock-only coverage displays reservation and does not claim a missing child", () => {
+	const row = demand("STOCK-COVERED");
+	row.work_orders[0].required_items = [{
+		item_code: "SEMI", supply_type: "manufactured", status: "ready_now",
+		original_required_qty: 10, required_qty: 10, available_qty: 10,
+		effective_reserved_qty: 10, current_gap_qty: 0,
+		linked_pending_output_qty: 0, uncovered_supply_qty: 0,
+	}];
+	const html = productionWorkbench.productionDemandHtml(row, helpers);
+	assert.match(html, /库存覆盖，无需下级工单/);
+	assert.match(html, /其中已预留.*10\.00/);
+	assert.doesNotMatch(html, /缺少下级工单/);
+});
+
+test("material shortage distinguishes pending output from uncovered supply", () => {
+	const row = demand("PENDING-OUTPUT");
+	row.work_orders[0].required_items = [{
+		item_code: "SEMI", supply_type: "manufactured", status: "waiting_subassembly",
+		original_required_qty: 10, required_qty: 10, available_qty: 1,
+		effective_reserved_qty: 1, current_gap_qty: 9, child_work_order: "WO-CHILD",
+		linked_pending_output_qty: 8, uncovered_supply_qty: 1,
+	}];
+	const html = productionWorkbench.productionDemandHtml(row, helpers);
+	assert.match(html, /关联工单待入库.*8\.00/);
+	assert.match(html, /未覆盖缺口.*1\.00/);
 });
 
 test("completed child work orders are shown as supply history instead of missing", () => {

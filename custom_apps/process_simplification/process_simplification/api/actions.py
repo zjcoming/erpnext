@@ -4,23 +4,19 @@ import frappe
 from frappe import _
 from frappe.utils import flt, parse_json
 
-from process_simplification.request_transaction import retry_request_transaction
-
 from erpnext.selling.doctype.sales_order.sales_order import make_delivery_note
 from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
 	get_available_qty_to_reserve,
 )
-
+from process_simplification.api.production import get_allocated_production_row
 from process_simplification.api.production_plan_adapter import (
 	create_work_orders_via_production_plan,
 )
-
 from process_simplification.api.setup import (
 	get_company_defaults,
 	get_default_bom,
 	resolve_production_source_warehouse,
 )
-from process_simplification.api.production import get_allocated_production_row
 from process_simplification.api.utils import (
 	delivered_stock_qty,
 	get_item_uom_details,
@@ -38,6 +34,11 @@ from process_simplification.api.workbench import (
 	get_order_workbench,
 	get_work_orders,
 )
+from process_simplification.production_workflow.stock_reservation import (
+	allow_guided_stock_reservations_for,
+	locked_available_qty,
+)
+from process_simplification.request_transaction import retry_request_transaction
 
 
 def _payload(data):
@@ -144,10 +145,27 @@ def reserve_stock(sales_order: str, sales_order_item: str, qty: float | None = N
 
 
 @frappe.whitelist(methods=["POST"])
+@retry_request_transaction
 def create_work_order(sales_order: str, sales_order_item: str, qty: float | None = None):
+	# The finished-stock commitment and all generated production documents are
+	# one atomic action, also when called outside Frappe's HTTP rollback wrapper.
+	frappe.db.savepoint("guided_order_plan")
+	try:
+		return _create_work_order(sales_order, sales_order_item, qty)
+	except frappe.QueryDeadlockError:
+		# InnoDB has already rolled back the transaction, including savepoints.
+		raise
+	except Exception:
+		frappe.db.rollback(save_point="guided_order_plan")
+		raise
+
+
+def _create_work_order(sales_order: str, sales_order_item: str, qty: float | None = None):
 	for doctype in ("Production Plan", "Work Order"):
 		for permission_type in ("create", "submit"):
 			frappe.has_permission(doctype, permission_type, throw=True)
+	if qty not in (None, "") and flt(qty) <= 0:
+		throw_chinese("本次生产数量不能超过当前尚未覆盖数量，且必须大于零。")
 	row = _row_from_workbench(sales_order, sales_order_item)
 	unplanned_qty = row.get("unplanned_production_qty")
 	if unplanned_qty is None:
@@ -164,8 +182,15 @@ def create_work_order(sales_order: str, sales_order_item: str, qty: float | None
 	unplanned_qty = flt(allocated_row.get("unplanned_production_qty")) if allocated_row else 0
 	if unplanned_qty <= 0:
 		throw_chinese("按订单交期分配当前成品库存后，该订单行已无需新增生产任务。")
-
 	item = get_sales_order_item(sales_order_item)
+	# Rebuild under the physical pool lock: no netted stock can move before
+	# the derived SRE exists. The first snapshot above is only a fast rejection.
+	locked_available_qty(item.item_code, item.warehouse)
+	allocated_row = get_allocated_production_row(sales_order, sales_order_item)
+	unplanned_qty = flt(allocated_row.get("unplanned_production_qty")) if allocated_row else 0
+	if unplanned_qty <= 0:
+		throw_chinese("库存分配已变化，该订单行已无需新增生产任务，请刷新。")
+
 	so = frappe.get_doc("Sales Order", sales_order)
 	bom_no = item.get("bom_no") or get_default_bom(item.item_code)
 	if not bom_no:
@@ -188,6 +213,17 @@ def create_work_order(sales_order: str, sales_order_item: str, qty: float | None
 		throw_chinese("缺少 WIP 仓，请在 Company 中设置 Default WIP Warehouse。")
 	if not fg_warehouse:
 		throw_chinese("缺少成品仓，请在 Company 或订单行中设置仓库。")
+	stock_qty = max(flt(allocated_row.get("available_to_reserve")), 0)
+	stock_reservation = None
+	if stock_qty > 0:
+		with allow_guided_stock_reservations_for("Sales Order", sales_order):
+			stock_reservation = _new_sre(
+				sales_order=sales_order, sales_order_item=sales_order_item,
+				item_code=item.item_code, warehouse=fg_warehouse, qty=stock_qty,
+				company=so.company, voucher_qty=item_stock_qty(item),
+			)
+		if stock_reservation.docstatus != 1 or flt(stock_reservation.reserved_qty) + 1e-9 < stock_qty:
+			throw_chinese("抵扣排产的成品库存未能完整预留，本次计划未创建，请刷新后重试。")
 
 	# Create the finished-good Work Order plus one Work Order per in-house
 	# sub-assembly level via the standard Production Plan engine, while the
@@ -211,6 +247,8 @@ def create_work_order(sales_order: str, sales_order_item: str, qty: float | None
 		"sub_assembly_count": result.get("sub_assembly_count", 0),
 		"production_plan": result.get("production_plan"),
 		"qty": work_order_qty,
+		"reserved_finished_qty": stock_qty,
+		"stock_reservation_entry": stock_reservation.name if stock_reservation else None,
 	}
 
 

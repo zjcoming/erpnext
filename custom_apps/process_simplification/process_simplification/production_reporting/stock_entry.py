@@ -10,7 +10,6 @@ from process_simplification.production_stock_facts import (
 	load_work_order_stock_facts,
 )
 
-
 MANUFACTURING_STOCK_ENTRY_PURPOSES = {
 	"Manufacture",
 	"Material Consumption for Manufacture",
@@ -698,9 +697,15 @@ class SubassemblyReservationStockEntryMixin:
 		if (
 			self.get("purpose") == "Manufacture"
 			and self.get("work_order")
-			and self.get("custom_process_workflow_action") == "Receipt Request"
 		):
-			return None
+			if self.get("custom_process_workflow_action") == "Receipt Request":
+				return None
+			# Internal output is reserved once, by its exact BOM edge after stock
+			# posting. Native item-level matching can select another branch.
+			order = frappe.db.get_value("Work Order", self.get("work_order"),
+				["production_plan_sub_assembly_item", "custom_replenishes_work_order"], as_dict=True)
+			if order and (order.production_plan_sub_assembly_item or order.custom_replenishes_work_order):
+				return None
 		return super().make_stock_reserve_for_wip_and_fg()
 
 	def on_submit(self):

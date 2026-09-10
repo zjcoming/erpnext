@@ -8,9 +8,7 @@ from erpnext.manufacturing.doctype.work_order.work_order import make_stock_entry
 from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
 	get_available_qty_to_reserve,
 )
-
 from process_simplification.api.setup import get_default_bom
-from process_simplification.request_transaction import retry_request_transaction
 from process_simplification.production_reporting.domain import (
 	require_reviewer,
 	reviewer_companies,
@@ -19,7 +17,7 @@ from process_simplification.production_stock_facts import (
 	get_work_order_stock_fact,
 	load_work_order_stock_facts,
 )
-
+from process_simplification.request_transaction import retry_request_transaction
 
 RECEIPT_ACTION = "Receipt Request"
 ISSUE_ACTION = "Material Issue Request"
@@ -645,6 +643,7 @@ def _new_work_order_reservation(
 	voucher_qty: float | None = None,
 	warehouse: str | None = None,
 	from_stock_entry=None,
+	from_production_plan=None,
 	from_detail=None,
 ):
 	if qty <= 0:
@@ -679,8 +678,8 @@ def _new_work_order_reservation(
 				if details.get("has_serial_no") or details.get("has_batch_no")
 				else "Qty"
 			),
-			"from_voucher_type": "Stock Entry" if from_stock_entry else None,
-			"from_voucher_no": from_stock_entry,
+			"from_voucher_type": "Stock Entry" if from_stock_entry else ("Production Plan" if from_production_plan else None),
+			"from_voucher_no": from_stock_entry or from_production_plan,
 			"from_voucher_detail_no": from_detail,
 		}
 	)
@@ -1063,6 +1062,7 @@ def _target_work_order_item(work_order: str, row_name: str):
 			"transferred_qty",
 			"returned_qty",
 			"stock_reserved_qty",
+			"consumed_qty",
 		],
 		as_dict=True,
 		for_update=True,
@@ -1091,10 +1091,13 @@ def _target_work_order_item_group(work_order: str, seed_item):
 	return rows
 
 
-def _target_group_gap(target_items, stock_facts=None) -> tuple[float, float]:
+def _target_group_gap(target_items, stock_facts=None, *, work_order=None) -> tuple[float, float]:
 	required = sum(flt(item.required_qty) for item in target_items)
 	first = frappe._dict(target_items[0]) if target_items else frappe._dict()
 	work_order_name = first.get("parent")
+	skip_transfer = bool(work_order and work_order.get("skip_transfer"))
+	warehouse = (work_order.get("wip_warehouse") if skip_transfer and work_order.get("from_wip_warehouse")
+		else first.get("source_warehouse"))
 	if stock_facts is None and work_order_name:
 		stock_facts = load_work_order_stock_facts([work_order_name])
 		facts_loaded = True
@@ -1105,18 +1108,18 @@ def _target_group_gap(target_items, stock_facts=None) -> tuple[float, float]:
 			stock_facts,
 			work_order_name,
 			first.get("item_code"),
-			first.get("source_warehouse"),
+			warehouse,
 		)
-		net_transferred = max(flt(fact.net_issued_qty), 0)
+		net_transferred = max(flt(fact.consumed_qty if skip_transfer else fact.net_issued_qty), 0)
 	else:
 		net_transferred = max(
 			[
-				max(flt(item.transferred_qty) - flt(item.returned_qty), 0)
+				max(flt(item.get("consumed_qty")) if skip_transfer else flt(item.transferred_qty) - flt(item.returned_qty), 0)
 				for item in target_items
 			]
 			or [0]
 		)
-	reserved = sum(_active_work_order_item_reserved_qty(item) for item in target_items)
+	reserved = sum(_active_work_order_item_reserved_qty(item, warehouse=warehouse) for item in target_items)
 	return max(required - net_transferred - reserved, 0), required
 
 
@@ -1151,9 +1154,21 @@ def _replenishment_bom(parent_work_order, item_code: str):
 
 
 @frappe.whitelist(methods=["POST"])
+@retry_request_transaction
 def create_replenishment_work_order(
 	work_order: str, work_order_item: str, qty: float | None = None
 ):
+	frappe.db.savepoint("guided_replenishment_plan")
+	try:
+		return _create_replenishment_work_order(work_order, work_order_item, qty)
+	except frappe.QueryDeadlockError:
+		raise
+	except Exception:
+		frappe.db.rollback(save_point="guided_replenishment_plan")
+		raise
+
+
+def _create_replenishment_work_order(work_order: str, work_order_item: str, qty: float | None = None):
 	"""Create a new, traceable supplement task; never reopen a completed task."""
 	parent = _work_order_for_action(work_order)
 	if parent.status in TERMINAL_WORK_ORDER_STATUSES:
@@ -1164,9 +1179,17 @@ def create_replenishment_work_order(
 		parent.name, [target_item.name for target_item in target_items]
 	)
 	if existing:
-		return {"work_order": existing.name, "reused": True}
+		return {
+			"work_order": existing.name,
+			"production_plan": existing.production_plan,
+			"material_request": existing.material_request,
+			"reused": True,
+		}
 	_require_stock_reservation_enabled()
-	remaining, _group_required = _target_group_gap(target_items)
+	remaining, _group_required = _target_group_gap(target_items, work_order=parent)
+	from process_simplification.production_workflow.replenishment import pending_internal_supply
+
+	remaining = max(remaining - pending_internal_supply(parent, item), 0)
 	requested_qty = flt(qty) if qty not in (None, "") else remaining
 	if requested_qty <= 0 or requested_qty > remaining + 1e-9:
 		_throw("补产数量必须大于零，且不能超过当前未覆盖缺口。")
@@ -1181,13 +1204,15 @@ def create_replenishment_work_order(
 	mr.schedule_date = nowdate()
 	mr.custom_replenishes_work_order = parent.name
 	mr.custom_replenishes_work_order_item = item.name
+	receipt_warehouse = (parent.wip_warehouse if parent.skip_transfer and parent.from_wip_warehouse
+		else item.source_warehouse)
 	mr.append(
 		"items",
 		{
 			"item_code": item.item_code,
 			"qty": requested_qty,
 			"schedule_date": nowdate(),
-			"warehouse": item.source_warehouse,
+			"warehouse": receipt_warehouse,
 			"bom_no": bom_no,
 		},
 	)
@@ -1234,13 +1259,21 @@ def reserve_replenishment_output(stock_entry):
 			"name",
 			"company",
 			"production_item",
+			"production_plan",
+			"fg_warehouse",
 			"custom_replenishes_work_order",
 			"custom_replenishes_work_order_item",
 		],
 		as_dict=True,
 	)
-	if not supply_work_order or not supply_work_order.custom_replenishes_work_order_item:
+	if not supply_work_order:
 		return None
+	if not supply_work_order.custom_replenishes_work_order_item:
+		from process_simplification.production_workflow.replenishment import resolve_internal_receipt_target
+
+		supply_work_order = resolve_internal_receipt_target(supply_work_order)
+		if not supply_work_order:
+			return None
 	target_name = supply_work_order.custom_replenishes_work_order
 	# Keep one lock order everywhere: parent Work Order first, then its item row.
 	target_state = frappe.db.get_value(
@@ -1276,16 +1309,18 @@ def reserve_replenishment_output(stock_entry):
 		target_work_order.name, supply_work_order.custom_replenishes_work_order_item
 	)
 	target_items = _target_work_order_item_group(target_work_order.name, target_item)
+	reservation_warehouse = (target_work_order.wip_warehouse
+		if target_work_order.skip_transfer and target_work_order.from_wip_warehouse else target_item.source_warehouse)
 	finished_rows = [
 		row
 		for row in stock_entry.get("items") or []
 		if row.get("is_finished_item")
 		and row.get("item_code") == target_item.item_code
-		and row.get("t_warehouse") == target_item.source_warehouse
+		and row.get("t_warehouse") == reservation_warehouse
 	]
 	if not finished_rows:
 		_throw("补产入库物料或仓库与目标工单不一致，不能提交。")
-	remaining, group_required = _target_group_gap(target_items)
+	remaining, group_required = _target_group_gap(target_items, work_order=target_work_order)
 	if remaining <= 0:
 		result.reason = "target_gap_filled"
 		return result
@@ -1307,6 +1342,7 @@ def reserve_replenishment_output(stock_entry):
 			work_order_item=target_item,
 			qty=row_qty,
 			voucher_qty=group_required,
+			warehouse=reservation_warehouse,
 			from_stock_entry=stock_entry.name,
 			from_detail=finished_row.name,
 		)
@@ -1317,7 +1353,7 @@ def reserve_replenishment_output(stock_entry):
 			break
 	result.surplus_qty = max(result.received_qty - result.reserved_qty, 0)
 	if result.reserved_qty + 1e-9 < qty:
-		result.reason = "reservation_shortfall"
+		_throw("补产入库未能完整预留给目标工单，请刷新后重试；本次入库未提交。")
 	return result
 
 

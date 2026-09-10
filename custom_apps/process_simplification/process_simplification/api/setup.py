@@ -6,6 +6,7 @@ from frappe.utils import cint, parse_json
 from erpnext import get_default_company
 
 from process_simplification.defaults import get_company_manufacturing_defaults
+from process_simplification.workbench_read import reuse_workbench_read
 
 
 def _message(status: str, label: str, detail: str, fieldname: str | None = None):
@@ -55,6 +56,7 @@ def resolve_production_source_warehouse(
 	return frappe._dict({"warehouse": warehouse, "can_use": not reason, "reason": reason})
 
 
+@reuse_workbench_read
 def get_default_bom(item_code: str) -> str | None:
 	if not item_code:
 		return None

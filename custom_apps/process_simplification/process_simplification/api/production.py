@@ -23,6 +23,7 @@ from process_simplification.management_access import (
 	user_has_capability,
 )
 from process_simplification.request_transaction import retry_request_transaction
+from process_simplification.workbench_read import workbench_read
 
 
 STATUS_LABELS = {
@@ -622,7 +623,7 @@ def get_all_material_demands(company: str):
 	return _material_demands(demands)
 
 
-def _other_work_orders():
+def _other_work_orders(associated_work_orders=()):
 	rows = frappe.get_list(
 		"Work Order",
 		filters={"docstatus": 1, "status": ["not in", ["Completed", "Stopped", "Closed", "Cancelled"]]},
@@ -640,7 +641,12 @@ def _other_work_orders():
 		order_by="expected_delivery_date asc, creation asc",
 		limit=0,
 	)
-	other_rows = [dict(row) for row in rows if not row.get("sales_order") or not row.get("sales_order_item")]
+	associated = set(associated_work_orders)
+	other_rows = [
+		dict(row) for row in rows
+		if row.get("name") not in associated
+		and (not row.get("sales_order") or not row.get("sales_order_item"))
+	]
 	item_codes = sorted({row.get("production_item") for row in other_rows if row.get("production_item")})
 	item_names = {
 		row.get("name"): row.get("item_name")
@@ -771,6 +777,7 @@ def attach_visible_worker_assignment_counts(demands):
 
 @frappe.whitelist()
 @retry_request_transaction
+@workbench_read
 def get_production_overview(page=1, page_size=DEFAULT_WORKBENCH_PAGE_SIZE, filters=None, include_assignment_counts=True):
 	frappe.has_permission("Sales Order", "read", throw=True)
 	frappe.has_permission("Work Order", "read", throw=True)
@@ -827,7 +834,11 @@ def get_production_overview(page=1, page_size=DEFAULT_WORKBENCH_PAGE_SIZE, filte
 		"pagination": pagination,
 		"customers": production_customers(filtered_demands),
 		"demands": paged_demands,
-		"other_work_orders": _other_work_orders(),
+		"other_work_orders": _other_work_orders(
+			work_order.get("name")
+			for demand in covered_demands
+			for work_order in demand.get("work_orders") or []
+		),
 	}
 
 

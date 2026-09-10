@@ -31,6 +31,12 @@ RUN --mount=type=cache,target=/home/frappe/.cache/pip,uid=1000,gid=1000 \
 
 WORKDIR /home/frappe/frappe-bench
 
+# Apply the version-pinned transaction fix before installing the custom app.
+# The applicator checks every source hash and fails closed on upstream drift.
+COPY --chown=frappe:frappe deployment/production/patches /tmp/frappe-patches
+RUN ./env/bin/python /tmp/frappe-patches/apply_frappe_patches.py apps/frappe && \
+    cp /tmp/frappe-patches/frappe-patches.json ./frappe-patches.json
+
 # Copy only the custom app's install metadata and package. The build context is
 # produced with git archive, so local sites, credentials and dirty files cannot
 # enter the image.
@@ -52,6 +58,7 @@ RUN rm -rf \
       apps/erpnext/banking/node_modules \
       apps/erpnext/node_modules \
       /home/frappe/.cache \
+      /tmp/frappe-patches \
       /tmp/apps.json && \
     find sites/assets -type f -name '*.map' -delete && \
     find apps -mindepth 1 -path '*/.git' -prune -exec rm -rf '{}' + && \
@@ -84,6 +91,7 @@ RUN cp -a sites/assets ./assets && \
       "SOURCE_REVISION=${SOURCE_REVISION}" \
       "FRAPPE_COMMIT=${FRAPPE_COMMIT}" \
       "ERPNEXT_COMMIT=${ERPNEXT_COMMIT}" \
+      "FRAPPE_PATCH_MANIFEST_SHA256=$(sha256sum frappe-patches.json | cut -d ' ' -f 1)" \
       > /home/frappe/frappe-bench/release.env
 
 VOLUME ["/home/frappe/frappe-bench/sites", "/home/frappe/frappe-bench/logs"]

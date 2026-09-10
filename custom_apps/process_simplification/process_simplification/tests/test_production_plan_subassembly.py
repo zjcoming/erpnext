@@ -23,6 +23,14 @@ class TestProductionPlanSubassemblyAdapter(UnitTestCase):
 
 		return production_plan_adapter
 
+	def setUp(self):
+		super().setUp()
+		# Stock netting/commitment behavior has real-stock tests; these tests
+		# isolate the adapter's native document construction and submit sequence.
+		self.enterContext(patch.object(self._adapter(), "net_subassemblies",
+			side_effect=lambda plan: (plan.get_sub_assembly_items(), [])[1]))
+		self.commit_stock = self.enterContext(patch.object(self._adapter(), "commit_plan_stock"))
+
 	@patch(
 		"erpnext.manufacturing.doctype.production_plan.production_plan.get_items_for_material_requests"
 	)

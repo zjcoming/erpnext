@@ -14,6 +14,7 @@ from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry impor
 )
 
 from process_simplification.api.setup import get_default_bom
+from process_simplification.workbench_read import reuse_workbench_read, workbench_read
 from process_simplification.api.utils import (
 	ACTIVE_WORK_ORDER_STATUSES,
 	TERMINAL_WORK_ORDER_STATUSES,
@@ -161,6 +162,7 @@ def get_effective_reserved_qty(sales_order: str, sales_order_item: str) -> float
 	return sum(_remaining_reserved_qty(entry) for entry in entries)
 
 
+@reuse_workbench_read
 def get_work_orders(sales_order: str, sales_order_item: str, item_code: str | None = None):
 	filters = {"sales_order": sales_order, "sales_order_item": sales_order_item, "docstatus": 1}
 	if item_code:
@@ -326,6 +328,7 @@ def _duplicate_supported_items(items):
 
 
 @frappe.whitelist()
+@workbench_read
 def get_order_workbench(sales_order: str):
 	ensure_submitted_sales_order(sales_order)
 	so = frappe.get_doc("Sales Order", sales_order)
@@ -741,6 +744,7 @@ def filter_readable_sales_orders(orders):
 
 
 @frappe.whitelist()
+@workbench_read
 def get_fulfillment_overview(page=1, page_size=DEFAULT_WORKBENCH_PAGE_SIZE, filters=None, include_readiness=True):
 	"""Return readable unfinished Sales Orders recalculated through the item workbench."""
 	frappe.has_permission("Sales Order", "read", throw=True)

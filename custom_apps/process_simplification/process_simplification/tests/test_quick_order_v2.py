@@ -1698,6 +1698,9 @@ class TestQuickOrderV2(UnitTestCase):
 			"process_simplification.api.actions._locked_row_from_workbench",
 			return_value=row_from_workbench.return_value,
 		))
+		lock_stock = self.enterContext(patch(
+			"process_simplification.api.actions.locked_available_qty", return_value=0,
+		))
 		get_allocated_production_row.return_value = frappe._dict({"unplanned_production_qty": 4})
 		get_sales_order_item.return_value = frappe._dict(
 			{
@@ -1725,6 +1728,7 @@ class TestQuickOrderV2(UnitTestCase):
 		}
 
 		result = create_work_order("SO-001", "SOI-001", 4)
+		lock_stock.assert_called_once_with("FG-001", "Finished Goods - TC")
 
 		# The BOM snapshotted on the Sales Order Item wins over get_default_bom,
 		# and the resolved source warehouse is used to check sub-assembly stock.

@@ -13,7 +13,6 @@ from process_simplification.production_stock_facts import (
 	load_work_order_stock_facts,
 )
 
-
 TERMINAL_WORK_ORDER_STATUSES = {"Completed", "Stopped", "Closed", "Cancelled"}
 COMPLETED_JOB_CARD_STATUS = "Completed"
 MANUFACTURE_PURPOSE = "Manufacture"
@@ -34,16 +33,16 @@ def work_order_priority_key(plan, work_order) -> tuple:
 	"""Prioritize order-linked work by its customer delivery commitment."""
 	plan = frappe._dict(plan or {})
 	work_order = frappe._dict(work_order or {})
-	if work_order.get("sales_order") or work_order.get("sales_order_item"):
+	if work_order.get("context_sales_order_item") or work_order.get("sales_order") or work_order.get("sales_order_item"):
 		return (
 			False,
 			*order_item_priority_key(
 				{
 					"delivery_date": work_order.get("order_delivery_date"),
 					"order_creation": work_order.get("order_creation"),
-					"sales_order": work_order.get("sales_order"),
+					"sales_order": work_order.get("context_sales_order") or work_order.get("sales_order"),
 					"sales_order_item_idx": work_order.get("sales_order_item_idx"),
-					"sales_order_item": work_order.get("sales_order_item"),
+					"sales_order_item": work_order.get("context_sales_order_item") or work_order.get("sales_order_item"),
 				}
 			),
 		)
@@ -259,9 +258,13 @@ def attach_replenishment_work_orders(required_items, supply_work_orders=None):
 			matches = list(
 				by_target_and_code.get((item.get("parent"), item.get("item_code")), [])
 			)
+		matches = [row for row in matches if not row.get("fg_warehouse")
+			or row.get("fg_warehouse") == (item.get("issue_warehouse") or item.get("source_warehouse"))]
 		matches.sort(key=lambda row: (str(row.get("creation") or ""), str(row.get("name") or "")))
 		item["supply_work_orders"] = [row.get("name") for row in matches if row.get("name")]
 		item["replenishment_in_progress"] = bool(item["supply_work_orders"])
+		item["pending_replenishment_qty"] = sum(max(flt(row.get("qty")) - flt(row.get("produced_qty"))
+			- flt(row.get("process_loss_qty")), 0) for row in matches)
 	return required_items
 
 
@@ -453,6 +456,22 @@ def build_work_order_graph(
 
 	sub_assembly_rows = [frappe._dict(row) for row in sub_assemblies or []]
 	sub_assembly_by_name = {row.get("name"): row for row in sub_assembly_rows}
+	# Native rows are in BOM preorder. Preserve the branch identity when the
+	# same parent item occurs twice at the same depth under one finished good.
+	parent_subrows = {}
+	stacks = defaultdict(list)
+	for sub in sorted(sub_assembly_rows, key=lambda row: int(row.get("idx") or 0)):
+		if not sub.get("idx") or not sub.get("production_item"):
+			continue
+		stack = stacks[sub.get("production_plan_item")]
+		level = int(sub.get("bom_level") or 0)
+		while stack and int(stack[-1].get("bom_level") or 0) >= level:
+			stack.pop()
+		if level == 0:
+			parent_subrows[sub.name] = None
+		elif stack and stack[-1].get("production_item") == sub.get("parent_item_code"):
+			parent_subrows[sub.name] = stack[-1].name
+		stack.append(sub)
 	plan_reservations = defaultdict(float)
 	for row in sub_assembly_rows:
 		item_code = row.get("production_item")
@@ -510,6 +529,10 @@ def build_work_order_graph(
 			value = row.get(fieldname)
 			if value:
 				parents = [parent for parent in parents if parent.get(fieldname) == value]
+		sub_name = row.get("production_plan_sub_assembly_item")
+		if sub_name in parent_subrows:
+			parents = [parent for parent in parents
+				if (parent.get("production_plan_sub_assembly_item") or None) == parent_subrows[sub_name]]
 		parents = [
 			parent
 			for parent in parents
@@ -584,6 +607,7 @@ def _work_order_readiness_status(work_order):
 		"",
 		"Submitted",
 		"Not Started",
+		"Stock Reserved",
 	}:
 		return "in_progress"
 
@@ -926,6 +950,7 @@ def allocate_work_order_readiness(plans, stock_snapshots, supply_documents=None)
 	"""Allocate stock and inbound supply once by Sales Order Item delivery priority."""
 	result = [deepcopy(plan) for plan in plans or []]
 	supply_documents = supply_documents or {}
+	remaining_pending_output = {}
 	reserved_stock = defaultdict(float)
 	loaded_commitments = defaultdict(float)
 	loaded_plan_reservations = defaultdict(float)
@@ -1052,6 +1077,7 @@ def allocate_work_order_readiness(plans, stock_snapshots, supply_documents=None)
 				),
 			)
 			reserved = min(_source_reserved_qty(item), remaining_required)
+			item.effective_reserved_qty = reserved
 			allocated_free = min(max(remaining_required - reserved, 0), available)
 			allocated = reserved + allocated_free
 			remaining_stock[key] = max(available - allocated_free, 0)
@@ -1098,9 +1124,19 @@ def allocate_work_order_readiness(plans, stock_snapshots, supply_documents=None)
 			if item.supply_type == "manufactured":
 				item.shortage_qty = 0
 				item.status = "waiting_subassembly" if item.current_gap_qty > 0 else "ready_now"
+				item.linked_pending_output_qty = sum(
+					max(flt(child.get("qty")) - flt(child.get("produced_qty")) - flt(child.get("process_loss_qty")), 0)
+					for child in (plan.work_orders_by_name[name] for name in work_order.get("child_work_orders") or [])
+					if child.get("production_item") == item.item_code and child.get("fg_warehouse") == item.issue_warehouse
+					and child.get("status") not in TERMINAL_WORK_ORDER_STATUSES
+				) + flt(item.get("pending_replenishment_qty"))
+				pending_key = (work_order.name, item.item_code, item.issue_warehouse)
+				pending = remaining_pending_output.setdefault(pending_key, item.linked_pending_output_qty)
+				item.linked_pending_output_qty = min(item.current_gap_qty, pending)
+				remaining_pending_output[pending_key] = max(pending - item.linked_pending_output_qty, 0)
+				item.uncovered_supply_qty = max(item.current_gap_qty - item.linked_pending_output_qty, 0)
 				item.replenishment_required = bool(
-					item.current_gap_qty > 0
-					and item.completed_child_work_orders
+					item.uncovered_supply_qty > QTY_EPSILON
 					and not item.replenishment_in_progress
 				)
 			else:
@@ -1198,7 +1234,10 @@ def _serialize_readiness_plan(plan, sales_order_item=None):
 		name
 		for name in plan.get("execution_order") or []
 		if not sales_order_item
-		or plan.work_orders_by_name[name].get("sales_order_item") == sales_order_item
+		or (
+			plan.work_orders_by_name[name].get("context_sales_order_item")
+			or plan.work_orders_by_name[name].get("sales_order_item")
+		) == sales_order_item
 	]
 	projected_work_orders = {
 		name: plan.work_orders_by_name[name]
@@ -1221,6 +1260,7 @@ def _serialize_readiness_plan(plan, sales_order_item=None):
 		"material_priority_date": min(material_priority_dates) if material_priority_dates else None,
 		"posting_date": plan.get("posting_date"),
 		"status": plan.get("status"),
+		"is_replenishment": any(row.get("is_replenishment") for row in projected_work_orders.values()),
 		"summary": projected_summary,
 		"work_orders": [
 			plan.work_orders_by_name[name]
@@ -1268,6 +1308,8 @@ def get_production_plan_readiness(company=None, sales_order_items=None):
 			"planned_start_date",
 			"expected_delivery_date",
 			"creation",
+			"custom_replenishes_work_order",
+			"custom_replenishes_work_order_item",
 		],
 		limit=0,
 	)
@@ -1312,6 +1354,8 @@ def get_production_plan_readiness(company=None, sales_order_items=None):
 			"delivered_qty",
 			"transferred_qty",
 			"consumed_qty",
+			"from_voucher_type",
+			"from_voucher_no",
 		],
 		limit=0,
 	)
@@ -1385,6 +1429,7 @@ def get_production_plan_readiness(company=None, sales_order_items=None):
 			"name",
 			"parent",
 			"production_item",
+			"idx",
 			"parent_item_code",
 			"bom_level",
 			"schedule_date",
@@ -1538,7 +1583,9 @@ def get_production_plan_readiness(company=None, sales_order_items=None):
 		_po_documents,
 		get_material_stock_snapshot,
 	)
+	from process_simplification.production_workflow.replenishment import attach_replenishment_context
 
+	attach_replenishment_context(graphs)
 	stock_snapshots = {}
 	supply_documents = {}
 	for graph in graphs:
@@ -1558,13 +1605,14 @@ def get_production_plan_readiness(company=None, sales_order_items=None):
 					]
 
 	readiness_plans = allocate_work_order_readiness(graphs, stock_snapshots, supply_documents)
+	_attach_replenishment_progress(readiness_plans, stock_reservation_entries)
 	result = defaultdict(list)
 	requested_order_items = set(sales_order_items or [])
 	for plan in readiness_plans:
 		order_item_names = {
-			row.get("sales_order_item")
+			row.get("context_sales_order_item") or row.get("sales_order_item")
 			for row in plan.work_orders_by_name.values()
-			if row.get("sales_order_item")
+			if row.get("context_sales_order_item") or row.get("sales_order_item")
 		}
 		if not order_item_names:
 			order_item_names = {
@@ -1579,3 +1627,55 @@ def get_production_plan_readiness(company=None, sales_order_items=None):
 				_serialize_readiness_plan(plan, sales_order_item=order_item_name)
 			)
 	return dict(result)
+
+
+def _attach_replenishment_progress(plans, reservations):
+	"""Report receipt and hand-off separately, using receipt-derived source SREs."""
+	by_name = {name: row for plan in plans for name, row in plan.work_orders_by_name.items()}
+	roots = {
+		name: row for name, row in by_name.items()
+		if row.get("is_replenishment") and row.get("replenishment_root") == name
+	}
+	if not roots:
+		return
+	receipts = frappe.get_all(
+		"Stock Entry", filters={"work_order": ["in", list(roots)], "purpose": "Manufacture", "docstatus": 1},
+		fields=["name", "work_order"], limit=0,
+	)
+	receipt_to_root = {entry.name: entry.work_order for entry in receipts}
+	for name, root in roots.items():
+		target = by_name.get(root.get("supply_target_work_order"))
+		owned = [
+			entry for entry in reservations
+			if entry.get("from_voucher_type") == "Stock Entry"
+			and receipt_to_root.get(entry.get("from_voucher_no")) == name
+			and entry.get("voucher_no") == root.get("supply_target_work_order")
+			and entry.get("voucher_detail_no") == root.get("supply_target_work_order_item")
+			and entry.get("warehouse") == root.get("fg_warehouse")
+		]
+		reserved = sum(max(flt(e.reserved_qty) - flt(e.transferred_qty) - flt(e.consumed_qty) - flt(e.delivered_qty), 0) for e in owned)
+		issued = sum(max(flt(e.transferred_qty) + flt(e.consumed_qty), 0) for e in owned)
+		received = max(flt(root.get("produced_qty")), 0)
+		target_items = [
+			item for item in (target or {}).get("required_items") or []
+			if item.get("item_code") == root.get("production_item")
+			and item.get("source_warehouse") == root.get("fg_warehouse")
+		]
+		pending = sum(max(flt(item.get("required_qty")), 0) for item in target_items)
+		if root.get("status") == "Completed" and issued + QTY_EPSILON >= received and received > 0:
+			code = "fed"
+		elif not target or target.get("status") in TERMINAL_WORK_ORDER_STATUSES:
+			code = "target_closed"
+		elif pending <= QTY_EPSILON:
+			code = "target_covered"
+		elif reserved > QTY_EPSILON:
+			code = "ready_to_feed"
+		elif received > issued + QTY_EPSILON:
+			code = "unreserved_output"
+		elif root.get("status") in TERMINAL_WORK_ORDER_STATUSES:
+			code = "stopped"
+		else:
+			code = "in_progress"
+		root.replenishment_progress = frappe._dict(
+			code=code, received_qty=received, reserved_qty=reserved, fed_qty=issued, target_pending_qty=pending,
+		)

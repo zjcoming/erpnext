@@ -1012,7 +1012,7 @@ class TestSimplifiedFlow(UnitTestCase):
 			create_work_order("SO-TEST", "SO-ITEM-TEST", qty=0)
 
 		create_work_orders.assert_not_called()
-		self.assertEqual(row_from_workbench.call_count, 2)
+		row_from_workbench.assert_not_called()
 
 	@patch("process_simplification.api.actions._new_sre")
 	@patch("process_simplification.api.actions.get_available_qty_to_reserve", return_value=5)

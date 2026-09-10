@@ -53,6 +53,8 @@ docker compose --project-name "${project_name}" --env-file "${env_file}" --file 
   backend \
   bash -Eeuc '
     grep -qx "SOURCE_REVISION=$EXPECTED_SOURCE_REVISION" release.env
+    grep -qx "FRAPPE_PATCH_MANIFEST_SHA256=$(sha256sum frappe-patches.json | cut -d " " -f 1)" release.env
+    ./env/bin/python -c "import hashlib,json,pathlib; m=json.loads(pathlib.Path(\"frappe-patches.json\").read_text()); assert all(hashlib.sha256((pathlib.Path(\"apps/frappe\") / p).read_bytes()).hexdigest() == h[\"patched\"] for p,h in m[\"files\"].items()), \"Frappe patch checksum mismatch\""
     apps="$(bench --site "$SITE_NAME" list-apps --format text)"
     grep -qw frappe <<<"$apps"
     grep -qw erpnext <<<"$apps"

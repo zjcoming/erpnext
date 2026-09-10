@@ -1,0 +1,30 @@
+{
+  "frappe_commit": "5cba016e86b54b57f34a3864282b92300ef20fb0",
+  "patch": "frappe-v16.32.0-transaction-contention.patch",
+  "files": {
+    "frappe/app.py": {
+      "original": "5701c5f2a9556e8874860546828b5dcc2f85533cf52383381f1d2012bf04f2ec",
+      "patched": "dcff66e00a7cc5ae8395d097a666d6dd59e5fc7d3cc707acea91328b2700f019"
+    },
+    "frappe/auth.py": {
+      "original": "30783d5da46d0b6f2cfc1cede2b6de15463c3a173cbdf88e998801979462309d",
+      "patched": "14a6ca5d92ed3ad8f5f92e0fca4755bcb41eec11e5d9a0ab63940df6423aff41"
+    },
+    "frappe/database/database.py": {
+      "original": "45f269d55aeed098460e537053d5d78c4be5820acd0e09d3fa1247a704d4e329",
+      "patched": "a5267df6413c2337bed2733ee772dd8551ffa63bf5237804de6720cdf89df6a4"
+    },
+    "frappe/model/naming.py": {
+      "original": "32eb99106ed5c832e44ab8df44ab443b5fa7b02e17f872eb4e4a7681b764b733",
+      "patched": "1187b52f9dbf28db8d3bbf226028dceb3ec58aceb7d562f926489b2566ec9ec5"
+    },
+    "frappe/sessions.py": {
+      "original": "6bf965d99cd9dd03d9bd212d38e9f48724d6f649c4ce1d6ad491144c8ca2c894",
+      "patched": "83d6125aedc17ae6f4242771465f7cd2049740e2a70535ff930a7adde26e1cea"
+    },
+    "frappe/utils/password.py": {
+      "original": "083942571bcfa0ae9642b182146f8384eaa73a0b687061fd3a26af60332c2b1b",
+      "patched": "f0a78d30973884b0210cdfcda14562f01fb0a30593109a4ea872311c1e2878b1"
+    }
+  }
+}
