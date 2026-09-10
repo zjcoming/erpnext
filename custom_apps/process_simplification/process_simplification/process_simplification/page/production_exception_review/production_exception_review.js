@@ -2,7 +2,7 @@ function exceptionStatusMeta(status, translate = (message) => message) {
 	const statuses = {
 		"Pending Approval": { label: translate("待主管审核"), indicator: "orange" },
 		Approved: { label: translate("已批准，待生成库存单"), indicator: "blue" },
-		"Awaiting Stock Entry": { label: translate("待仓管过账"), indicator: "blue" },
+		"Awaiting Stock Entry": { label: translate("待库房提交"), indicator: "blue" },
 		Applied: { label: translate("已写入过程损耗"), indicator: "green" },
 		Completed: { label: translate("库存已过账"), indicator: "green" },
 		Rejected: { label: translate("已驳回"), indicator: "red" },
@@ -53,6 +53,7 @@ function exceptionPaginationHtml(pagination = {}, helpers = {}) {
 	const page = Number(pagination.page || 1);
 	const pageLength = Number(pagination.page_length || 20);
 	const totalPages = Number(pagination.total_pages || 0);
+	if (!Number(pagination.total_count || 0) && !pagination.has_prev && !pagination.has_next) return "";
 	return `<div class="report-review-pagination" aria-label="${escapeHtml(translate("分页"))}"><div>${escapeHtml(translate("第"))} ${page} / ${totalPages || 1} ${escapeHtml(translate("页"))} · ${escapeHtml(translate("共"))} ${Number(pagination.total_count || 0)} ${escapeHtml(translate("条"))}</div><div class="report-review-pagination-actions"><button class="btn btn-default btn-sm exception-page-action" data-page="${Math.max(page - 1, 1)}" ${pagination.has_prev ? "" : "disabled"}>${escapeHtml(translate("上一页"))}</button><button class="btn btn-default btn-sm exception-page-action" data-page="${totalPages ? Math.min(page + 1, totalPages) : page + 1}" ${pagination.has_next ? "" : "disabled"}>${escapeHtml(translate("下一页"))}</button><select class="form-control input-sm exception-page-size" aria-label="${escapeHtml(translate("每页条数"))}">${[20, 50, 100].map((size) => `<option value="${size}" ${size === pageLength ? "selected" : ""}>${size} ${escapeHtml(translate("条/页"))}</option>`).join("")}</select></div></div>`;
 }
 
@@ -77,12 +78,13 @@ if (typeof frappe !== "undefined") {
 		page.main.html(`
 			<div class="process-simplification-page production-exception-page">
 				<section class="review-hero exception-review-hero">
-					<div class="review-hero-copy"><span class="review-eyebrow">${__("异常闭环台")}</span><h2>${__("主管定责，仓管落账")}</h2><p>${__("退料、报废与过程损耗分开处理，库存变化和生产损耗保持可追溯。")}</p></div>
-					<div class="review-kpi-grid"><div class="review-kpi is-urgent"><span>${__("待主管审核")}</span><strong class="exception-kpi-pending">0</strong><small>${__("需要批准或驳回")}</small></div><div class="review-kpi is-info"><span>${__("待仓管过账")}</span><strong class="exception-kpi-stock">0</strong><small>${__("库存尚未变化")}</small></div><div class="review-kpi is-success"><span>${__("历史记录")}</span><strong class="exception-kpi-history">0</strong><small>${__("已完成闭环")}</small></div></div>
+					<div class="review-hero-copy"><span class="review-eyebrow">${__("异常闭环台")}</span><h2>${__("生产异常处理")}</h2><p>${__("主管审核原因与数量，库房核对后提交库存单。")}</p></div>
+					<div class="review-kpi-grid"><div class="review-kpi is-urgent"><span>${__("待主管审核")}</span><strong class="exception-kpi-pending">0</strong><small>${__("需要批准或驳回")}</small></div><div class="review-kpi is-info"><span>${__("待库房提交")}</span><strong class="exception-kpi-stock">0</strong><small>${__("库存尚未变化")}</small></div><div class="review-kpi is-success"><span>${__("历史记录")}</span><strong class="exception-kpi-history">0</strong><small>${__("已完成闭环")}</small></div></div>
 				</section>
-				<div class="exception-priority-grid">
+				<nav class="review-jump-nav" aria-label="异常处理分区"><button class="btn btn-default" data-review-section="exception-review-pending">待处理</button><button class="btn btn-default" data-review-section="exception-review-history">审核历史</button></nav>
+				<div class="exception-priority-grid" id="exception-review-pending">
 					<section class="review-section review-priority-section"><div class="review-section-heading"><div><span class="review-step">1</span><div><h3>${__("待主管审核")}</h3><p>${__("先判断异常类型、原因和申请数量。")}</p></div></div><span class="review-count-badge exception-pending-count">0</span></div><div class="exception-pending-list"></div></section>
-					<section class="review-section review-stock-section"><div class="review-section-heading"><div><span class="review-step is-stock">2</span><div><h3>${__("待仓管过账")}</h3><p>${__("库存单提交后，库存才真正变化。")}</p></div></div><span class="review-count-badge exception-stock-count">0</span></div><div class="exception-stock-list"></div></section>
+					<section class="review-section review-stock-section"><div class="review-section-heading"><div><span class="review-step is-stock">2</span><div><h3>${__("待库房提交")}</h3><p>${__("库存单提交后，库存才真正变化。")}</p></div></div><span class="review-count-badge exception-stock-count">0</span></div><div class="exception-stock-list"></div></section>
 				</div>
 				<section class="review-section review-history-section" id="exception-review-history">
 					<div class="review-section-heading"><div><span class="review-step is-history">3</span><div><h3>${__("异常审核历史")}</h3><p>${__("按月份、员工、异常类型或生产工单查询。")}</p></div></div><span class="review-count-badge exception-history-count">0</span></div>
@@ -95,6 +97,9 @@ if (typeof frappe !== "undefined") {
 				</section>
 			</div>`);
 		const $root = page.main.find(".production-exception-page");
+		$root.on("click", "[data-review-section]", (event) => {
+			$root.find(`#${event.currentTarget.dataset.reviewSection}`)[0]?.scrollIntoView({ block: "start" });
+		});
 		const state = {
 			data: { pending: [], stock_queue: [], processed: [] },
 			history: { rows: [], pagination: { page: 1, page_length: 20 } },
@@ -147,6 +152,7 @@ if (typeof frappe !== "undefined") {
 		}
 
 		function renderList(selector, rows, emptyMessage) {
+			$root.find(selector).closest(".review-section").toggleClass("is-empty", !rows.length);
 			$root.find(selector).html(rows.length ? `<div class="exception-card-list">${rows.map(rowHtml).join("")}</div>` : `<div class="text-muted worker-reporting-empty">${esc(emptyMessage)}</div>`);
 		}
 
@@ -156,7 +162,7 @@ if (typeof frappe !== "undefined") {
 			$root.find(".exception-kpi-pending, .exception-pending-count").text(pending.length);
 			$root.find(".exception-kpi-stock, .exception-stock-count").text(stockQueue.length);
 			renderList(".exception-pending-list", pending, __("当前没有待主管审核的异常申请。"));
-			renderList(".exception-stock-list", stockQueue, __("当前没有等待仓管过账的申请。"));
+			renderList(".exception-stock-list", stockQueue, __("当前没有等待库房提交的申请。"));
 		}
 
 		function renderHistory() {

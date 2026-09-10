@@ -9,7 +9,7 @@ if (typeof frappe !== "undefined") {
 	frappe.pages["my-production-reporting"].on_page_load = function (wrapper) {
 		const page = frappe.ui.make_app_page({
 			parent: wrapper,
-			title: __("我的任务"),
+			title: __("待开始"),
 			single_column: true,
 		});
 		page.main.html(`

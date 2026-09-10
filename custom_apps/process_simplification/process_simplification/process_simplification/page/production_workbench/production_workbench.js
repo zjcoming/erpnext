@@ -783,16 +783,16 @@ function productionDemandHtml(demand, helpers) {
 					{ linkToItem: true, codeLabel: t("产品编码") }
 				)}</div>
 				<div class="production-demand-fact"><span>${esc(t("客户交期"))}</span><strong>${esc(date(demand.delivery_date)) || esc(t("未设置"))}</strong></div>
-				<div class="production-demand-fact"><span>${esc(t("计划开工"))}</span><strong>${esc(date(plannedStart)) || esc(t("未安排"))}</strong></div>
-				<div class="production-demand-fact"><span>${esc(t("需生产 / 未安排"))}</span><strong>${number(demand.production_required_qty)} / ${number(demand.unplanned_production_qty)}</strong></div>
+				<div class="production-demand-fact ps-plan-start"><span>${esc(t("计划开工"))}</span><strong>${esc(date(plannedStart)) || esc(t("未安排"))}</strong></div>
+				<div class="production-demand-fact ps-production-quantity"><span>${esc(t("需生产 / 未安排"))}</span><strong>${number(demand.production_required_qty)} / ${number(demand.unplanned_production_qty)}</strong></div>
 				<div class="production-demand-risk"><span class="indicator-pill ${esc(demand.risk_level || "gray")}">${esc(demand.risk_label || "")}</span><span class="indicator-pill ${esc(productionStatusMeta(demand.status_code).indicator)}">${esc(demand.status_label || "")}</span></div>
-				<span class="production-demand-next-action"><small>${esc(t("下一步"))}</small><strong>${esc(t(nextActionLabel))}</strong></span>
+				<span class="production-demand-next-action"><small>${esc(t("下一步"))}</small><strong>${esc(t(nextActionLabel))}</strong><span class="workbench-expand-label"><span class="when-closed">${esc(t("展开处理"))} ▾</span><span class="when-open">${esc(t("收起"))} ▴</span></span></span>
 			</summary>
 			<div class="production-demand-details">
 				${currentTask ? `<div class="production-current-task"><div><small>${esc(t("当前待办"))}</small><strong>${esc(nextActionLabel)}</strong><a href="/app/work-order/${encodeURIComponent(currentTask.workOrder.name)}">${esc(currentTask.workOrder.name)}</a></div>${productionTaskButtonHtml(currentTask, helpers)}</div>` : ""}
 				<div class="production-demand-actions">${actions}</div>
 				<section><h5>${esc(t("生产执行链"))}</h5><p class="text-muted">${esc(t("展开工单查看详情；当前待办默认展开，已完成工单保留追溯。"))}</p><div class="production-work-order-list">${workOrders}</div></section>
-				<details class="production-secondary-details"><summary>${esc(t("数量关系与生产计划"))}</summary><div class="production-quantity-grid">${quantityFacts
+				<details class="production-secondary-details"><summary>${esc(t("数量关系与生产计划"))}</summary><p>${esc(t("计划开工"))}：${esc(date(plannedStart)) || esc(t("未安排"))}</p><div class="production-quantity-grid">${quantityFacts
 					.map(([label, value]) => `<div data-label="${esc(label)}"><span>${esc(label)}</span><strong>${number(value)}</strong></div>`)
 					.join("")}</div><p class="text-muted">${esc(t("现货、原料与在途供应统一按订单行交付日期分配；计划开始仅用于生产排程。"))}</p><div class="production-plan-list">${productionPlans}</div></details>
 				<details class="production-purchase-summary production-secondary-details"><summary>${esc(t("底层采购物料汇总"))}</summary><p class="text-muted">${esc(t("只汇总采购件；半成品在上方生产执行链中由下级工单供应。采购动作提交前会再次复核。"))}</p>${purchaseMaterials}</details>

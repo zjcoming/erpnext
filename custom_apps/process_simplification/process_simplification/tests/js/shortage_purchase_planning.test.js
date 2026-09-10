@@ -110,7 +110,7 @@ test("page opens as an all-shortage workbench without an order-read step", () =>
 		translate: (message) => message,
 	});
 
-	assert.match(html, /打开即汇总全部未完成生产需求（含未排产订单）/);
+	assert.match(html, /已扣除库存和在途采购/);
 	assert.match(html, /搜索物料、订单、工单或仓库/);
 	assert.match(html, /data-action="refresh"/);
 	assert.doesNotMatch(html, /data-field="sales_order"/);

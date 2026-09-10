@@ -358,7 +358,8 @@ function setupPageRefresh(frappeRef, win, doc, $) {
 			"executive-dashboard": { topics: ["dashboard"], interval: 120000, load: (opts) => wrapper.executive_dashboard.load(opts) },
 			"production-report-history": { topics: ["tasks", "wages"], interval: 120000, manual: true,
 				load: page?.worker_history?.load, refreshLabel: "刷新记录" },
-			"purchase-receipt-notice": { topics: ["purchase"], interval: 120000, manual: true },
+			"purchase-receipt-notice": { topics: ["purchase"], interval: 120000, manual: true,
+				load: page?.purchase_notice_refresh, refreshLabel: "刷新到货记录" },
 			"query-report": ["Stock Balance", "Stock Ledger"].includes(frappeRef.get_route()?.[1]) ?
 				{ topics: ["warehouse"], interval: 120000, manual: true } : null,
 		}[route];

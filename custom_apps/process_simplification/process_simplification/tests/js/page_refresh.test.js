@@ -210,6 +210,76 @@ function workerHistoryFixture() {
 	};
 }
 
+function receiptNoticeFixture(name = "") {
+	const f = fixture(), pending = [], statuses = [], rendered = new Map(), nodes = new Map();
+	function node(key) {
+		if (nodes.has(key)) return nodes.get(key);
+		const value = { length: 1, get: () => ({ isConnected: true }),
+			html(html) { rendered.set(key, html); return this; }, empty() { return this.html(""); },
+			find: (selector) => node(selector), append() { return this; }, appendTo() { return this; },
+			attr() { return this; }, prop() { return this; }, val() { return this; }, text() { return this; }, on() { return this; },
+			children: () => ({ length: 0 }),
+		};
+		nodes.set(key, value); return value;
+	}
+	f.page.main = node("main");
+	f.page.clear_primary_action = () => {};
+	f.page.add_inner_button = () => {};
+	f.page.manual = true; f.page.interval = 120000;
+	f.page.status = (state) => statuses.push(state);
+	const frappe = { pages: { "purchase-receipt-notice": {} }, ui: { make_app_page: () => f.page },
+		utils: { escape_html: String }, get_route: () => ["purchase-receipt-notice"],
+		ps_read_page: trackedReader(f, (args) => new Promise((resolve, reject) => pending.push({ args, resolve, reject }))),
+	};
+	const context = vm.createContext({ frappe, $: node, __: String, URLSearchParams,
+		setTimeout, clearTimeout, window: { location: { search: name ? `?name=${name}` : "" }, history: { replaceState() {} } },
+	});
+	const native = frappe.pages["purchase-receipt-notice"], wrapper = {};
+	vm.runInContext(fs.readFileSync(path.resolve(__dirname, "../../process_simplification/page/purchase_receipt_notice/purchase_receipt_notice.js"), "utf8"), context);
+	native.on_page_load(wrapper);
+	f.page.load = f.page.purchase_notice_refresh;
+	f.controller.activate(f.page);
+	return { ...f, pending, statuses, rendered, load: wrapper.load_receipt_notice };
+}
+
+test("arrival list acknowledges completion only after its actual rows have loaded", async () => {
+	const f = receiptNoticeFixture();
+	const load = f.load(); await drain();
+	assert.equal(f.pending.length, 1);
+	assert.match(f.pending[0].args.method, /get_notice_page$/);
+	assert.equal(f.statuses.at(-1), "loading");
+	f.pending[0].resolve({ message: { rows: [], next_start: null } }); await load;
+	assert.equal(f.statuses.at(-1), "fresh");
+	assert.equal(f.page.dirty, false);
+	assert.match(f.rendered.get(".purchase-notice-rows"), /当前范围没有到货记录/);
+});
+
+test("arrival refresh retains a change received during the query until the next successful refresh", async () => {
+	const f = receiptNoticeFixture();
+	const first = f.controller.refresh(true); await drain();
+	f.controller.event({ topics: ["tasks"] });
+	f.pending[0].resolve({ message: { rows: [], next_start: null } }); await first;
+	assert.equal(f.page.dirty, true);
+	await f.tick(120000); assert.equal(f.pending.length, 1, "manual arrival page does not poll records");
+	const retry = f.controller.refresh(true); await drain();
+	f.pending[1].resolve({ message: { rows: [], next_start: null } }); await retry;
+	assert.equal(f.page.dirty, false);
+	assert.equal(f.statuses.at(-1), "fresh");
+});
+
+test("arrival detail failure keeps an error until retry successfully renders the notice", async () => {
+	const f = receiptNoticeFixture("NOTICE");
+	const first = f.controller.refresh(true); await drain();
+	assert.match(f.pending[0].args.method, /get_notice$/);
+	f.pending[0].reject(Error("offline")); await first;
+	assert.equal(f.statuses.at(-1), "error");
+	assert.match(f.rendered.get("main"), /读取失败/);
+	const retry = f.controller.refresh(true); await drain();
+	f.pending[1].resolve({ message: { subject: "Arrival", description: "Received", status: "Delivered" } }); await retry;
+	assert.equal(f.statuses.at(-1), "fresh");
+	assert.equal(f.page.dirty, false);
+});
+
 test("worker history first entry and native refresh clear the banner only after both sections finish", async () => {
 	const f = workerHistoryFixture();
 	const initial = f.nativeRefresh(); await drain();

@@ -168,6 +168,13 @@ def search_assignment_supervisors(
 
 
 @frappe.whitelist()
+def get_worker_loads(job_card, employees):
+	from process_simplification.production_reporting.worker_load import get_worker_loads as get_loads
+
+	return get_loads(job_card, frappe.parse_json(employees) if isinstance(employees, str) else employees)
+
+
+@frappe.whitelist()
 def search_workers(doctype=None, txt=None, searchfield=None, start=0, page_len=20, filters=None):
 	filters = frappe.parse_json(filters) if isinstance(filters, str) else (filters or {})
 	return service.search_workers(

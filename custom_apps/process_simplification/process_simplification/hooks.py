@@ -13,22 +13,22 @@ web_include_css = ["/assets/process_simplification/css/hengsuan_branding.css?v=2
 required_apps = ["erpnext"]
 
 app_include_css = [
-	"/assets/process_simplification/css/process_simplification.css?v=18",
-	"/assets/process_simplification/css/process_ui.css?v=11",
-	"/assets/process_simplification/css/purchasing.css?v=4",
+	"/assets/process_simplification/css/process_simplification.css?v=19",
+	"/assets/process_simplification/css/process_ui.css?v=13",
+	"/assets/process_simplification/css/purchasing.css?v=6",
 	"/assets/process_simplification/css/warehouse.css?v=2",
 	"/assets/process_simplification/css/process_pwa.css?v=1",
 	"/assets/process_simplification/css/hengsuan_branding.css?v=2",
 ]
 app_include_js = [
 	"/assets/process_simplification/js/item_identity.js?v=2",
-	"/assets/process_simplification/js/worker_assignment.js?v=12",
+	"/assets/process_simplification/js/worker_assignment.js?v=14",
 	"/assets/process_simplification/js/worker_reporting.js?v=12",
 	"/assets/process_simplification/js/notification_sound.js?v=7",
 	"/assets/process_simplification/js/notification_sync.js?v=1",
 	"/assets/process_simplification/js/process_pwa.js?v=1",
 	"/assets/process_simplification/js/hengsuan_branding.js?v=2",
-	"/assets/process_simplification/js/page_refresh.js?v=5",
+	"/assets/process_simplification/js/page_refresh.js?v=6",
 ]
 
 after_request = ["process_simplification.page_refresh.after_request"]

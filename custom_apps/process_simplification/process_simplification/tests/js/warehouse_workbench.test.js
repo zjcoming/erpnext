@@ -9,7 +9,7 @@ test("receiving cards show remaining quantity and open the existing purchase ord
 	const html = warehouseDocumentHtml(doc, "purchase", esc, String);
 	assert.match(html, /待收 15 Box/);
 	assert.match(html, /href="\/desk\/purchase-order\/PO-1"/);
-	assert.match(html, /打开采购单收货/);
+	assert.match(html, /核对采购收货/);
 });
 test("untrusted supplier and item names remain text", () => {
 	const html = warehouseDocumentHtml({ ...doc, party: "<img src=x onerror=alert(1)>", items: [{ ...doc.items[0], item_name: "<script>bad()</script>" }] }, "purchase", esc, String);
@@ -19,7 +19,7 @@ test("untrusted supplier and item names remain text", () => {
 test("read-only documents never promise a posting action", () => {
 	const html = warehouseDocumentHtml({ ...doc, can_write: false }, "purchase", esc, String);
 	assert.match(html, /查看单据/);
-	assert.doesNotMatch(html, /打开采购单收货|打开处理/);
+	assert.doesNotMatch(html, /核对采购收货|打开处理/);
 });
 test("returns keep their direction and visible return state", () => {
 	const html = warehouseDocumentHtml({ ...doc, doctype: "Purchase Receipt", is_return: true, items: [{ ...doc.items[0], qty: -3 }] }, "receipt", esc, String);

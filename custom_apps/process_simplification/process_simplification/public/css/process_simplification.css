@@ -1650,7 +1650,9 @@ label.review-filter-field {
 		display: none !important;
 	}
 
-	.ps-worker-assignment-dialog .grid-body [data-fieldname] {
+	.ps-worker-assignment-dialog .grid-body .data-row > [data-fieldname] {
+		display: block !important;
+		height: auto !important;
 		width: auto !important;
 		max-width: none !important;
 		min-width: 0;
@@ -1660,7 +1662,7 @@ label.review-filter-field {
 		text-align: left !important;
 	}
 
-	.ps-worker-assignment-dialog .grid-body [data-fieldname]::before {
+	.ps-worker-assignment-dialog .grid-body .data-row > [data-fieldname]::before {
 		display: block;
 		margin-bottom: 2px;
 		color: var(--text-muted);
@@ -1669,31 +1671,31 @@ label.review-filter-field {
 		line-height: 1.3;
 	}
 
-	.ps-worker-assignment-dialog .grid-body [data-fieldname="employee"] {
+	.ps-worker-assignment-dialog .grid-body .data-row > [data-fieldname="employee"] {
 		grid-column: 2;
 		grid-row: 1;
 	}
 
-	.ps-worker-assignment-dialog .grid-body [data-fieldname="employee"]::before {
+	.ps-worker-assignment-dialog .grid-body .data-row > [data-fieldname="employee"]::before {
 		content: "工人";
 	}
 
-	.ps-worker-assignment-dialog .grid-body [data-fieldname="assigned_qty"] {
+	.ps-worker-assignment-dialog .grid-body .data-row > [data-fieldname="assigned_qty"] {
 		grid-column: 3;
 		grid-row: 1;
 	}
 
-	.ps-worker-assignment-dialog .grid-body [data-fieldname="assigned_qty"]::before {
+	.ps-worker-assignment-dialog .grid-body .data-row > [data-fieldname="assigned_qty"]::before {
 		content: "派工数量";
 	}
 
-	.ps-worker-assignment-dialog .grid-body [data-fieldname="notes"] {
+	.ps-worker-assignment-dialog .grid-body .data-row > [data-fieldname="notes"] {
 		grid-column: 2 / -1;
 		grid-row: 2;
 		border-top: 1px solid var(--border-color) !important;
 	}
 
-	.ps-worker-assignment-dialog .grid-body [data-fieldname="notes"]::before {
+	.ps-worker-assignment-dialog .grid-body .data-row > [data-fieldname="notes"]::before {
 		content: "派工备注";
 	}
 
@@ -1704,10 +1706,13 @@ label.review-filter-field {
 		overflow-wrap: anywhere;
 	}
 
-	.ps-worker-assignment-dialog .grid-body :is(.field-area, .control-input-wrapper, .form-control) {
-		width: 100%;
+	.ps-worker-assignment-dialog .grid-body :is(.field-area, .frappe-control, .control-input-wrapper, .control-input, .awesomplete, .form-control) {
+		width: 100% !important;
+		max-width: 100%;
 		min-width: 0;
 	}
+
+	.ps-worker-assignment-dialog .grid-body .frappe-control { margin: 0; }
 
 	.worker-reporting-page,
 	.worker-history-page {

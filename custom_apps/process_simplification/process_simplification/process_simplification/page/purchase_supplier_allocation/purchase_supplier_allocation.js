@@ -61,7 +61,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { allocati
 
 if (typeof frappe !== "undefined") {
 frappe.pages["purchase-supplier-allocation"].on_page_load = function (wrapper) {
-	const page = frappe.ui.make_app_page({ parent: wrapper, title: __("供应商分配"), single_column: true });
+	const page = frappe.ui.make_app_page({ parent: wrapper, title: __("采购跟进"), single_column: true });
 	const api = "process_simplification.purchasing.allocation.";
 	const esc = (value) => frappe.utils.escape_html(String(value ?? ""));
 	const number = (value) => Number(value || 0).toLocaleString("zh-CN", { maximumFractionDigits: 6 });
@@ -141,7 +141,7 @@ frappe.pages["purchase-supplier-allocation"].on_page_load = function (wrapper) {
 		page.main.empty();
 		const root = $('<div class="process-simplification-page purchase-allocation">').appendTo(page.main);
 		const summary = purchaseOverview(model);
-		root.append(`<header class="purchase-hero"><div><span class="purchase-eyebrow">采购执行台</span><h1>供应商分配</h1><p><a href="${href("material-request", model.material_request)}">${esc(model.material_request)}</a><span class="purchase-meta"> · ${esc(model.company)}</span></p></div><a class="btn btn-default" href="/desk/purchase-supplier-allocation">切换采购申请</a></header>`);
+		root.append(`<header class="purchase-hero"><div><span class="purchase-eyebrow">采购执行台</span><h1>采购跟进</h1><p><a href="${href("material-request", model.material_request)}">${esc(model.material_request)}</a><span class="purchase-meta"> · ${esc(model.company)}</span></p></div><a class="btn btn-default" href="/desk/purchase-supplier-allocation">切换采购申请</a></header>`);
 		root.append(`<div class="purchase-next-action ${summary.drafts ? "is-warning" : ""}"><div><strong>${esc(summary.title)}</strong><p>${esc(summary.hint)}</p></div></div>`);
 		root.append(`<div class="purchase-stats">${[[summary.unallocated, "待分配物料", "项"], [summary.drafts, "待提交采购单", "张"], [summary.waiting, "待收货采购单", "张"], [summary.received, "已到齐物料", "项"]].map(([value, label, unit]) => `<div><span>${label}</span><strong>${value}<small>${unit}</small></strong></div>`).join("")}</div>`);
 		if (!model.items.some((item) => item.stock_qty > 0)) root.append('<div class="purchase-notice-warning">此申请的采购数量为 0，不能分配供应商。请切换到有实际采购数量的申请。</div>');
@@ -168,7 +168,7 @@ frappe.pages["purchase-supplier-allocation"].on_page_load = function (wrapper) {
 			});
 			requestKey = key(); render();
 		});
-		bulk.append('<span class="purchase-meta">应用后将替换所选物料的供应商分配；可再展开逐项拆分。</span>');
+		bulk.append('<span class="purchase-meta">应用后将替换所选物料的采购跟进；可再展开逐项拆分。</span>');
 		model.items.filter((item) => item.available_qty > 0).forEach((item, index) => {
 			const card = $('<details class="purchase-editor">').attr("data-item", item.name).prop("open", openItems.has(item.name) || (!openItems.size && index === 0)).appendTo(section);
 			card.append(`<summary><div><strong>${esc(item.item_name || item.item_code)}</strong><span class="purchase-meta">${esc(item.item_code)} · 可分配 ${number(item.available_qty)} ${esc(item.stock_uom)}</span></div><span class="purchase-progress"></span></summary>`);
@@ -219,7 +219,7 @@ frappe.pages["purchase-supplier-allocation"].on_page_load = function (wrapper) {
 	}
 
 	function renderRequests() {
-		page.main.html('<div class="process-simplification-page purchase-allocation"><header class="purchase-hero"><div><span class="purchase-eyebrow">采购执行台</span><h1>供应商分配</h1><p class="purchase-meta">选择采购申请，分配供应商并跟进每批到货。</p></div><a class="btn btn-default" href="/desk/shortage-purchase-planning">缺料采购</a></header><section class="purchase-section"><div class="purchase-section-heading"><h2>已建采购申请</h2><span class="purchase-request-count"></span></div><div class="purchase-request-search"></div><div class="purchase-request-list"></div></section></div>');
+		page.main.html('<div class="process-simplification-page purchase-allocation"><header class="purchase-hero"><div><span class="purchase-eyebrow">采购执行台</span><h1>采购跟进</h1><p class="purchase-meta">选择采购申请，分配供应商并跟进每批到货。</p></div><a class="btn btn-default" href="/desk/shortage-purchase-planning">缺料采购</a></header><section class="purchase-section"><div class="purchase-section-heading"><h2>已建采购申请</h2><span class="purchase-request-count"></span></div><div class="purchase-request-search"></div><div class="purchase-request-list"></div></section></div>');
 		const labels = { Pending: "待下单", "Partially Ordered": "部分下单", Ordered: "已下单", "Partially Received": "部分到货", Received: "已到货", Transferred: "已转移", Issued: "已领用" };
 		const controls = page.main.find(".purchase-request-search").addClass("purchase-list-filters");
 		if (frappe.model.can_read("Purchase Order")) {

@@ -30,12 +30,12 @@ class ProcessSimplificationAccessManagement {
 			`<div class="ps-access-management">
 				<section class="ps-access-hero">
 					<div><span>${__("岗位与范围")}</span><h2>${__("一个入口管理岗位与数据范围")}</h2></div>
-					<p>${__("这里分配固定岗位模板和公司、仓库范围。实际角色由 ERPNext Role Profile 自动同步，不再直接维护两套角色。")}</p>
+					<p>${__("为员工分配岗位和可操作的公司、仓库，权限随岗位自动配置。")}</p>
 				</section>
 				<div class="ps-access-placeholder" data-placeholder>${__("请先选择一个系统用户")}</div>
 				<section class="ps-access-content hide" data-content>
 					<div class="ps-access-user" data-user></div>
-					<div class="ps-access-section-heading"><div><h3>${__("业务岗位")}</h3><p>${__("可组合普通岗位；流水线工人必须独占。")}</p></div><span>${__("底层来源：Role Profile")}</span></div>
+					<div class="ps-access-section-heading"><div><h3>${__("业务岗位")}</h3><p>${__("可组合普通岗位；流水线工人必须独占。")}</p></div><span>${__("岗位权限自动同步")}</span></div>
 					<div class="ps-access-role-grid" data-role-grid></div>
 					<div class="ps-access-section-heading ps-access-scope-heading"><div><h3>${__("数据范围")}</h3><p>${__("岗位决定能做什么，数据范围决定能操作哪些公司和仓库。")}</p></div></div>
 					<div class="ps-access-scope-grid">

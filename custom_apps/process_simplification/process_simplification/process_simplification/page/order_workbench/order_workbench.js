@@ -221,7 +221,7 @@ function orderOverviewHtml(order, helpers) {
 				<div class="fulfillment-order-fact fulfillment-number"><span>${esc(t("成品覆盖 / 待交"))}</span><strong>${number(order.finished_stock_coverage_qty ?? order.reserved_qty)} / ${number(order.pending_qty)}</strong></div>
 				<div class="fulfillment-order-fact fulfillment-number"><span>${esc(t("已安排 / 未安排"))}</span><strong>${number(order.active_work_order_qty)} / ${number(order.unplanned_production_qty ?? order.uncovered_qty)}</strong></div>
 				<div class="fulfillment-order-risk">${statusPill}${statusPill && riskPill ? " " : ""}${riskPill}</div>
-				<span class="fulfillment-next-action"><small>${esc(t("下一步"))}</small><strong>${esc(nextActionLabel)}</strong></span>
+				<span class="fulfillment-next-action"><small>${esc(t("下一步"))}</small><strong>${esc(nextActionLabel)}</strong><span class="workbench-expand-label"><span class="when-closed">${esc(t("展开处理"))} ▾</span><span class="when-open">${esc(t("收起"))} ▴</span></span></span>
 			</summary>
 			<div class="fulfillment-order-details">
 				<div class="fulfillment-order-actions" aria-label="${esc(t("订单操作"))}">

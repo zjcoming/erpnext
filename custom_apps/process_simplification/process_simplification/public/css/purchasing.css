@@ -28,10 +28,11 @@
 .purchase-badge.info { background: var(--blue-50, #edf6ff); color: var(--blue-700, #1766a4); }
 .purchase-badge.success { background: var(--green-50, #edf9f1); color: var(--green-700, #28764b); }
 .purchase-badge.muted { background: var(--control-bg); color: var(--text-muted); }
-.purchase-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.process-simplification-page .purchase-table { width: 100%; min-width: 0; table-layout: fixed; border-collapse: collapse; font-size: 14px; }
+.process-simplification-page .purchase-table :is(th, td) { white-space: normal; overflow-wrap: anywhere; }
 .purchase-table th { background: var(--subtle-fg, #f7f8fa); color: var(--text-muted); font-weight: 500; font-size: 12px; }
 .purchase-table th, .purchase-table td { padding: 11px 16px; border-top: 1px solid var(--border-color); vertical-align: middle; }
-.purchase-item-table th:not(:first-child), .purchase-item-table td:not(:first-child) { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.purchase-item-table th:not(:first-child), .purchase-item-table td:not(:first-child) { text-align: right; white-space: normal; font-variant-numeric: tabular-nums; }
 .purchase-item-table td:first-child { width: 35%; }
 .purchase-item-table strong { display: block; font-weight: 600; }
 .purchase-item-table small { display: block; color: var(--text-muted); margin-top: 3px; font-size: 11px; }
@@ -97,12 +98,12 @@
 	.purchase-order > div { flex-basis: calc(100% - 70px); }
 	.purchase-order > .btn { width: 100%; }
 	.purchase-table thead { display: none; }
-	.purchase-table, .purchase-table tbody { display: block; }
-	.purchase-table tr { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-top: 1px solid var(--border-color); padding: 12px 14px; gap: 12px 8px; }
+	.purchase-table, .purchase-table tbody { display: block; width: 100%; }
+	.purchase-table tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-top: 1px solid var(--border-color); padding: 12px 14px; gap: 12px 8px; }
 	.purchase-table td { display: block; padding: 0; border: 0; min-width: 0; overflow-wrap: anywhere; }
 	.purchase-table td:first-child, .purchase-request-table td:last-child { grid-column: 1 / -1; width: auto; text-align: left; }
 	.purchase-item-table td:not(:first-child) { text-align: left; }
-	.purchase-table td[data-label]::before { content: attr(data-label); display: block; font-size: 11px; color: var(--text-muted); font-weight: 400; margin-bottom: 4px; }
+	.purchase-table td[data-label]::before { content: attr(data-label); display: block; font-size: 14px; color: var(--text-muted); font-weight: 400; margin-bottom: 4px; }
 	.purchase-request-table tr { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 	.purchase-request-table td:last-child .btn { width: 100%; }
 	.purchase-footnote { padding: 12px 14px; }
@@ -121,6 +122,7 @@
 	.purchase-editor-footer { flex-direction: column; align-items: stretch; padding: 14px; }
 	.purchase-allocation .btn, .receipt-notice .btn, .purchase-allocation .form-control, .receipt-notice .form-control { min-height: 44px; }
 	.purchase-allocation .form-control { font-size: 16px; }
+	.purchase-allocation label, .receipt-notice label { font-size: 14px; }
 	.purchase-allocation .purchase-check { min-height: 44px; }
 }
 .purchase-list-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 12px; }

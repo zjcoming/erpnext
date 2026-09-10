@@ -5,7 +5,7 @@ frappe.pages["purchase-receipt-notice"].on_page_load = function (wrapper) {
 	const statusLabels = { Pending: "等待发送", Partial: "部分送达", Delivered: "已送达", Failed: "发送失败", Suppressed: "通知关闭，未发送", "No Recipients": "没有有效接收人", Skipped: "已跳过", Retry: "等待重试" };
 	let generation = 0;
 	const listState = { start: 0, history: [], search: "", from_date: "", to_date: "" };
-	async function load() {
+	async function load(options = {}) {
 		const route = frappe.get_route();
 		if (route[1]) return frappe.set_route("purchase-receipt-notice", { name: route[1] });
 		const name = frappe.route_options?.name || new URLSearchParams(window.location.search).get("name");
@@ -14,11 +14,20 @@ frappe.pages["purchase-receipt-notice"].on_page_load = function (wrapper) {
 		const current = ++generation;
 		page.clear_primary_action();
 		page.main.html('<div class="purchase-empty">正在读取到货通知…</div>');
-		const message = name ? (await frappe.call({ method: api + "get_notice", args: { name } })).message : null;
-		if (current !== generation) return;
+		let message;
+		if (name) return frappe.ps_read_page(page, {
+			method: api + "get_notice", args: { name }, background: options.background,
+			apply(response) { message = response.message; return renderNotice(); },
+		}).catch((error) => {
+			if (current === generation) page.main.html('<div class="purchase-empty">读取失败，请点击“刷新”重试。</div>');
+			throw error;
+		});
+		return renderNotice();
+		function renderNotice() {
+		if (current !== generation) return false;
 		const root = $('<div class="process-simplification-page receipt-notice">');
 		page.main.empty().append(root);
-		root.append('<header class="purchase-hero"><div><span class="purchase-eyebrow">采购执行台</span><h1>到货通知</h1><p class="purchase-meta">每批收货提交后通知一次，按收货单查看记录。</p></div><a class="btn btn-default" href="/desk/purchase-supplier-allocation">供应商分配</a></header>');
+		root.append('<header class="purchase-hero"><div><span class="purchase-eyebrow">采购执行台</span><h1>到货通知</h1><p class="purchase-meta">每批收货提交后通知一次，按收货单查看记录。</p></div><a class="btn btn-default" href="/desk/purchase-supplier-allocation">采购跟进</a></header>');
 		if (!name) {
 			const section = $('<section class="purchase-section"><div class="purchase-section-heading"><h2>到货记录</h2><span class="purchase-notice-page"></span></div><div class="purchase-list-filters"></div><div class="purchase-notice-rows"></div><div class="purchase-list-pager"></div></section>').appendTo(root);
 			let timer;
@@ -26,28 +35,41 @@ frappe.pages["purchase-receipt-notice"].on_page_load = function (wrapper) {
 				const holder = $('<label class="form-group">').text(label).appendTo(section.find(".purchase-list-filters"));
 				$('<input class="form-control">').attr("type", type).val(listState[key]).appendTo(holder).on("input change", (event) => {
 					listState[key] = event.currentTarget.value; listState.start = 0; listState.history = [];
-					clearTimeout(timer); timer = setTimeout(show, 250);
+					clearTimeout(timer); timer = setTimeout(() => show().catch(() => {}), 250);
 				});
 			}
 			async function show() {
 				if (!section.get(0).isConnected) return;
 				const token = ++generation;
-				const host = section.find(".purchase-notice-rows").html('<div class="purchase-empty">正在查询…</div>');
-				const pager = section.find(".purchase-list-pager").empty();
+				const host = section.find(".purchase-notice-rows").attr("aria-busy", "true");
+				if (!host.children().length) host.html('<div class="purchase-empty">正在查询…</div>');
+				const pager = section.find(".purchase-list-pager");
 				try {
-					const { message: result } = await frappe.call({ method: api + "get_notice_page", args: { start: listState.start, search: listState.search, from_date: listState.from_date, to_date: listState.to_date } });
-					if (token !== generation) return;
+					return await frappe.ps_read_page(page, {
+						method: api + "get_notice_page", args: { start: listState.start, search: listState.search, from_date: listState.from_date, to_date: listState.to_date },
+						apply({ message: result }) {
+					if (token !== generation || !section.get(0).isConnected) return false;
+					pager.empty();
+					host.attr("aria-busy", "false");
 					section.find(".purchase-notice-page").text(`第 ${listState.history.length + 1} 页 · 本页 ${result.rows.length} 条`);
 					host.html(!result.rows.length ? '<div class="purchase-empty">当前范围没有到货记录，可修改搜索条件或日期。</div>' : `<table class="purchase-table purchase-request-table"><thead><tr><th>收货单 / 供应商</th><th>发生时间</th><th>通知状态</th><th></th></tr></thead><tbody>${result.rows.map((event) => `<tr><td><strong>${esc(event.supplier)}</strong><br>${esc(event.receipt)}</td><td data-label="发生时间">${esc(event.occurred_at)}</td><td data-label="通知状态">${esc(statusLabels[event.status] || event.status)}</td><td><a class="btn btn-default" href="/desk/purchase-receipt-notice?name=${encodeURIComponent(event.name)}">查看通知</a></td></tr>`).join("")}</tbody></table>`);
-					$('<button class="btn btn-default">上一页</button>').prop("disabled", !listState.history.length).appendTo(pager).on("click", () => { listState.start = listState.history.pop(); show(); });
-					$('<button class="btn btn-default">下一页</button>').prop("disabled", result.next_start === null).appendTo(pager).on("click", () => { listState.history.push(listState.start); listState.start = result.next_start; show(); });
+					if (listState.history.length || result.next_start !== null) {
+						$('<button class="btn btn-default">上一页</button>').prop("disabled", !listState.history.length).appendTo(pager).on("click", () => { listState.start = listState.history.pop(); show().catch(() => {}); });
+						$('<button class="btn btn-default">下一页</button>').prop("disabled", result.next_start === null).appendTo(pager).on("click", () => { listState.history.push(listState.start); listState.start = result.next_start; show().catch(() => {}); });
+					}
+					return true;
+						},
+					});
 				} catch (error) {
-					if (token === generation) host.html('<div class="purchase-empty">查询失败，请点击“刷新”重试。</div>');
+					if (token === generation) {
+						host.attr("aria-busy", "false");
+						if (!host.find("table").length) host.html('<div class="purchase-empty">查询失败，请点击“刷新”重试。</div>');
+					}
+					throw error;
 				}
 			}
-			show();
 			section.append('<p class="purchase-footnote">管理人员可查看本公司记录。通知关闭期间的事件保留记录，不会补发。</p>');
-			return;
+			return show();
 		}
 		if (message.current_docstatus === 2) root.append('<div class="purchase-notice-warning">该收货单当前已撤销。以下保留当时记录，请以当前库存和生产工作台为准。</div>');
 		root.append(`<section class="purchase-card"><h4>${esc(message.subject)}</h4><p class="purchase-meta">${esc(message.company)} · ${esc(statusLabels[message.status] || message.status)}</p><div class="receipt-body">${message.description}</div></section>`);
@@ -62,9 +84,12 @@ frappe.pages["purchase-receipt-notice"].on_page_load = function (wrapper) {
 				frappe.show_alert("已安排重试，成功送达的通知不会重复发送。"); await load();
 			});
 		}
+		return true;
+		}
 	}
-	page.add_inner_button(__("刷新"), load);
+	page.add_inner_button(__("刷新"), () => { load().catch(() => {}); });
 	page.add_inner_button(__("到货通知列表"), () => frappe.set_route("purchase-receipt-notice"));
+	page.purchase_notice_refresh = load;
 	wrapper.load_receipt_notice = load;
 };
-frappe.pages["purchase-receipt-notice"].on_page_show = (wrapper) => wrapper.load_receipt_notice();
+frappe.pages["purchase-receipt-notice"].on_page_show = (wrapper) => { wrapper.load_receipt_notice().catch(() => {}); };

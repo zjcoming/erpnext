@@ -3188,7 +3188,7 @@ def search_workers(
 		  )
 		"""
 	)
-	return frappe.db.sql(
+	rows = frappe.db.sql(
 		f"""
 		select employee.name, employee.employee_name, employee.user_id
 		from `tabEmployee` employee
@@ -3213,6 +3213,14 @@ def search_workers(
 		""",
 		values,
 	)
+	from process_simplification.production_reporting.worker_load import read_worker_loads, worker_load_label
+
+	loads = read_worker_loads(
+		job_card_row.company,
+		[frappe._dict(name=row[0], employee_name=row[1]) for row in rows],
+		current_job_card=job_card,
+	)
+	return [[row[0], row[1], worker_load_label(loads[row[0]])] for row in rows]
 
 
 def search_wage_employees(company: str, txt: str = "", start: int = 0, page_len: int = 20):

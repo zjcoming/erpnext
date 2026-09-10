@@ -49,6 +49,7 @@ function reviewPaginationHtml(pagination = {}, listName, helpers) {
 	const pageLength = Number(pagination.page_length || 20);
 	const totalPages = Number(pagination.total_pages || 0);
 	const totalCount = Number(pagination.total_count || 0);
+	if (!totalCount && !pagination.has_prev && !pagination.has_next) return "";
 	const previousPage = Math.max(page - 1, 1);
 	const nextPage = totalPages ? Math.min(page + 1, totalPages) : page + 1;
 	return `<div class="report-review-pagination" aria-label="${esc(translate("分页"))}">
@@ -147,20 +148,21 @@ if (typeof frappe !== "undefined") {
 				<section class="review-hero report-review-hero">
 					<div class="review-hero-copy">
 						<span class="review-eyebrow">${__("当班审核台")}</span>
-						<h2>${__("先处理待审，再回看历史")}</h2>
-						<p>${__("数量、工时和物料边界一眼可见；通过后立即写入生产任务单。")}</p>
+						<h2>${__("报工审核")}</h2>
+						<p>${__("核对数量和工时后，通过或驳回。")}</p>
 					</div>
 					<div class="review-kpi-grid">
 						<div class="review-kpi is-urgent"><span>${__("待审核")}</span><strong class="report-kpi-pending">0</strong><small>${__("需要主管决定")}</small></div>
-						<div class="review-kpi"><span>${__("活动派工")}</span><strong class="report-kpi-assignments">0</strong><small>${__("当前在岗任务")}</small></div>
+						<div class="review-kpi"><span>${__("当前派工")}</span><strong class="report-kpi-assignments">0</strong><small>${__("当前在岗任务")}</small></div>
 						<div class="review-kpi is-success"><span>${__("今日已处理")}</span><strong class="report-kpi-processed">0</strong><small>${__("通过与驳回")}</small></div>
 					</div>
 				</section>
-				<section class="review-section review-priority-section">
+				<nav class="review-jump-nav" aria-label="审核分区"><button class="btn btn-default" data-review-section="report-review-pending">待审核</button><button class="btn btn-default" data-review-section="report-review-assignments">当前派工</button><button class="btn btn-default" data-review-section="report-review-history">审核历史</button></nav>
+				<section class="review-section review-priority-section" id="report-review-pending">
 					<div class="review-section-heading"><div><span class="review-step">1</span><div><h3>${__("待审核报工")}</h3><p>${__("按提交时间排序，优先核对数量与工时。")}</p></div></div><span class="review-count-badge report-pending-count">0</span></div>
 					<div class="report-review-queue"></div><div class="report-pager-reports"></div>
 				</section>
-				<section class="review-section review-secondary-section">
+				<section class="review-section review-secondary-section" id="report-review-assignments">
 					<div class="review-section-heading"><div><span class="review-step is-muted">2</span><div><h3>${__("当前派工")}</h3><p>${__("用于处理活动计时或尚未报工的派工。")}</p></div></div><span class="review-count-badge report-assignment-count">0</span></div>
 					<div class="report-assignment-list"></div><div class="report-pager-assignments"></div>
 				</section>
@@ -177,6 +179,9 @@ if (typeof frappe !== "undefined") {
 				</section>
 			</div>`);
 		const $root = page.main.find(".report-review-page");
+		$root.on("click", "[data-review-section]", (event) => {
+			$root.find(`#${event.currentTarget.dataset.reviewSection}`)[0]?.scrollIntoView({ block: "start" });
+		});
 		const state = {
 			data: { reports: [], assignments: [], processed_today: [], pagination: {} },
 			pages: { reports: 1, assignments: 1 },
@@ -224,6 +229,7 @@ if (typeof frappe !== "undefined") {
 
 		function renderQueue() {
 			const rows = state.data.reports || [];
+			$root.find("#report-review-pending").toggleClass("is-empty", !rows.length);
 			const total = Number(state.data.pagination?.reports?.total_count || rows.length);
 			$root.find(".report-kpi-pending, .report-pending-count").text(total);
 			$root.find(".report-review-queue").html(
@@ -249,6 +255,7 @@ if (typeof frappe !== "undefined") {
 
 		function renderAssignments() {
 			const rows = state.data.assignments || [];
+			$root.find("#report-review-assignments").toggleClass("is-empty", !rows.length);
 			const total = Number(state.data.pagination?.assignments?.total_count || rows.length);
 			$root.find(".report-kpi-assignments, .report-assignment-count").text(total);
 			$root.find(".report-assignment-list").html(
@@ -265,10 +272,10 @@ if (typeof frappe !== "undefined") {
 									? `<small>${__("原派")} ${number(row.original_assigned_qty)}${Number(row.released_qty || 0) ? ` · ${__("释放")} ${number(row.released_qty)}` : ""}${Number(row.redispatched_qty || 0) ? ` · ${__("转入")} ${number(row.redispatched_qty)}` : ""} · ${__("剩余")} ${number(row.remaining_qty)}</small>`
 									: `<small>${__("剩余")} ${number(row.remaining_qty)}</small>`;
 								const dispatchControl = `<button class="btn btn-xs btn-default assignment-open-plan" data-work-order="${esc(row.work_order)}">${__("查看/重新派工")}</button>`;
-								return `<article class="review-compact-card"><div class="review-compact-main"><strong>${esc(employeeLabel(row))}</strong><span>${esc(row.operation || "-")}</span></div><div class="review-compact-metric"><span>${__("当前分配")}</span><strong>${number(row.effective_assigned_qty ?? row.assigned_qty)}</strong>${movement}</div><div class="review-compact-docs"><span>${__("任务单")} ${documentLink("Job Card", row.job_card, row.job_card)}</span><span>${__("工单")} ${documentLink("Work Order", row.work_order, row.work_order)}</span></div><div class="review-compact-action">${control}${dispatchControl}${action.message ? `<small>${esc(action.message)}</small>` : ""}</div></article>`;
+								return `<article class="review-compact-card"><div class="review-compact-main"><strong>${esc(employeeLabel(row))}</strong><span>${esc(row.operation || "-")}</span></div><div class="review-compact-metric"><span>${__("当前分配")}</span><strong>${number(row.effective_assigned_qty ?? row.assigned_qty)}</strong>${movement}</div><div class="review-compact-docs"><span>${__("任务单")} ${documentLink("Job Card", row.job_card, row.job_card)}</span><span>${__("工单")} ${documentLink("Work Order", row.work_order, row.work_order)}</span></div><div class="review-compact-action">${dispatchControl}${control}${action.message ? `<small>${esc(action.message)}</small>` : ""}</div></article>`;
 							})
 							.join("")}</div>`
-					: `<div class="text-muted worker-reporting-empty">${__("当前没有活动派工。")}</div>`
+					: `<div class="text-muted worker-reporting-empty">${__("当前没有当前派工。")}</div>`
 			);
 		}
 

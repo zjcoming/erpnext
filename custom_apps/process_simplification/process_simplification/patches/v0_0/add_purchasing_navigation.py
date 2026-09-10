@@ -7,7 +7,7 @@ from process_simplification.patches.v0_0.group_process_simplification_navigation
 
 
 ITEMS = (
-	("供应商分配", "purchase-supplier-allocation", "users"),
+	("采购跟进", "purchase-supplier-allocation", "users"),
 	("到货通知", "purchase-receipt-notice", "bell"),
 )
 

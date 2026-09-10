@@ -94,13 +94,13 @@ function shortageRowsHtml(rows, helpers) {
 					<span class="shortage-warehouse">${esc(row.warehouse || translate("未配置"))}</span>
 				</td>
 				<td class="shortage-coverage-cell" data-label="${esc(translate("缺料测算"))}">
-					<div class="shortage-coverage-grid">
+					<div class="shortage-gap-summary"><span>${esc(translate("仍需采购"))}</span><strong>${fmt(row.shortage_qty)}</strong><span>${esc(row.stock_uom || "")}</span></div>
+					<details><summary>${esc(translate("查看缺料测算"))}</summary><div class="shortage-coverage-grid">
 						<span><small>${esc(translate("总需求"))}</small><strong>${fmt(row.required_qty)}</strong></span>
 						<span><small>${esc(translate("可用库存"))}</small><strong>${fmt(row.available_qty)}</strong></span>
 						<span><small>${esc(translate("采购申请"))}</small><strong>${fmt(row.open_material_request_qty)}</strong></span>
 						<span><small>${esc(translate("采购订单"))}</small><strong>${fmt(row.open_purchase_order_qty)}</strong></span>
-						<span class="shortage-gap"><small>${esc(translate("仍需采购"))}</small><strong>${fmt(row.shortage_qty)}</strong></span>
-					</div>
+					</div></details>
 				</td>
 				<td class="shortage-purchase-cell" data-label="${esc(translate("本次采购"))}">
 					<div class="shortage-qty-editor">
@@ -110,7 +110,7 @@ function shortageRowsHtml(rows, helpers) {
 					<small>${esc(translate("建议按剩余缺口采购"))}</small>
 				</td>
 				<td class="shortage-sources-cell" data-label="${esc(translate("需求来源"))}">
-					${shortageSourcesHtml(row.sources, { ...helpers, formatQty: fmt, translate })}
+					<details><summary>${esc(translate("查看需求来源"))}</summary>${shortageSourcesHtml(row.sources, { ...helpers, formatQty: fmt, translate })}</details>
 				</td>
 			</tr>
 		`;
@@ -165,7 +165,7 @@ function shortagePageHtml(helpers) {
 				<div>
 					<span class="shortage-eyebrow">${esc(translate("采购执行台"))}</span>
 					<h2>${esc(translate("当前待采购缺料"))}</h2>
-					<p>${esc(translate("打开即汇总全部未完成生产需求（含未排产订单），并扣除可用库存、在途采购申请和采购订单。"))}</p>
+					<p>${esc(translate("已扣除库存和在途采购，按剩余缺口填写数量。"))}</p>
 				</div>
 				<button type="button" class="btn btn-default shortage-refresh" data-action="refresh">
 					<span aria-hidden="true">↻</span> ${esc(translate("刷新缺料"))}
@@ -241,7 +241,7 @@ frappe.pages["shortage-purchase-planning"].on_page_load = function (wrapper) {
 	});
 
 	page.main.html(shortagePageHtml({ translate: __, escapeHtml: frappe.utils.escape_html }));
-	page.add_inner_button(__("已建采购申请／供应商分配"), () => frappe.set_route("purchase-supplier-allocation"));
+	page.add_inner_button(__("已建采购申请／采购跟进"), () => frappe.set_route("purchase-supplier-allocation"));
 	page.add_inner_button(__("到货通知记录"), () => frappe.set_route("purchase-receipt-notice"));
 	const $root = page.main.find(".shortage-purchase-planning");
 	const canCreate = canCreateMaterialRequest(frappe.model);
@@ -307,7 +307,7 @@ frappe.pages["shortage-purchase-planning"].on_page_load = function (wrapper) {
 	function renderStatus(kind, message) {
 		const content = {
 			loading: `<div class="shortage-state shortage-loading"><span class="shortage-spinner"></span><div><strong>${__("正在汇总全部缺料")}</strong><small>${__("正在核对已排产需求、库存和在途采购…")}</small></div></div>`,
-			empty: `<div class="shortage-state shortage-empty"><span>✓</span><div><strong>${__("当前没有待采购缺料")}</strong><small>${__("当前需求已有库存、采购申请或采购订单覆盖。已有申请可从“已建采购申请／供应商分配”继续下单。")}</small></div></div>`,
+			empty: `<div class="shortage-state shortage-empty"><span>✓</span><div><strong>${__("当前没有待采购缺料")}</strong><small>${__("当前需求已有库存、采购申请或采购订单覆盖。已有申请可从“已建采购申请／采购跟进”继续下单。")}</small></div></div>`,
 			filtered: `<div class="shortage-state shortage-empty"><span>⌕</span><div><strong>${__("没有匹配结果")}</strong><small>${__("换一个物料、订单、工单或仓库关键词试试。")}</small></div></div>`,
 			error: `<div class="shortage-state shortage-error"><span>!</span><div><strong>${__("缺料读取失败")}</strong><small>${frappe.utils.escape_html(message || __("请刷新重试。"))}</small></div><button type="button" class="btn btn-default" data-action="refresh">${__("重新读取")}</button></div>`,
 		}[kind] || "";

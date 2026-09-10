@@ -10,7 +10,8 @@ function warehouseDocumentHtml(row, queue, esc, number) {
 	const detail = items.length > 3 ? '<details><summary>另外 ' + (items.length - 3) +
 		' 项物料</summary><ul class="warehouse-items">' + items.slice(3).join("") + '</ul></details>' : "";
 	const title = row.party || row.work_order || row.purpose || row.name;
-	const action = row.can_write ? (queue === "purchase" ? "打开采购单收货" : "打开处理") : "查看单据";
+	const actionLabels = { purchase: "核对采购收货", receipt: "核对收货入库", issue: "核对生产发料", manufacture: "核对完工入库", delivery: "核对客户发货" };
+	const action = row.can_write ? (row.is_return ? "核对退货" : actionLabels[queue] || "核对单据并提交") : "查看单据";
 	const openAction = '<div class="warehouse-document-action"><a class="btn btn-primary" href="' + href + '">' + action + '</a></div>';
 	return '<article class="warehouse-document"><div class="warehouse-document-heading"><div><h3>' +
 		esc(title) + '</h3><a href="' + href + '">' + esc(row.name) + '</a></div><span class="warehouse-stage">' +
