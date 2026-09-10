@@ -33,6 +33,12 @@ app_include_js = [
 
 after_request = ["process_simplification.page_refresh.after_request"]
 
+# v1 REST uses the pinned framework entry hook; Desk retains native savedocs.
+sales_order_draft_creation = "process_simplification.sales_order_creation.create_rest_draft"
+override_whitelisted_methods = {
+	"frappe.desk.form.save.savedocs": "process_simplification.sales_order_creation.savedocs",
+}
+
 boot_session = [
 	"process_simplification.pwa.boot_session",
 	"process_simplification.navigation_layout.boot_session",

@@ -14,7 +14,11 @@ from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry impor
 )
 
 from process_simplification.api.setup import get_default_bom
-from process_simplification.workbench_read import reuse_workbench_read, workbench_read
+from process_simplification.workbench_read import (
+	reuse_workbench_read,
+	workbench_read,
+	workbench_read_snapshots,
+)
 from process_simplification.api.utils import (
 	ACTIVE_WORK_ORDER_STATUSES,
 	TERMINAL_WORK_ORDER_STATUSES,
@@ -148,7 +152,100 @@ def _remaining_reserved_qty(sre) -> float:
 	)
 
 
+_WORK_ORDER_FIELDS = (
+	"name", "production_item", "qty", "produced_qty", "process_loss_qty",
+	"material_transferred_for_manufacturing", "status", "bom_no", "source_warehouse",
+	"wip_warehouse", "fg_warehouse", "planned_start_date", "expected_delivery_date",
+)
+_ORDER_READ_BATCH_SIZE = 200
+_ORDER_READ_NAMESPACE = "fulfillment_order_reads"
+
+
+def _prefetch_workbench_order_reads(orders):
+	"""Batch only related WO/SRE reads for the full readable order set.
+
+	The list and document permission checks remain in the overview and row
+	workbench. This snapshot is not shared across requests or mutations; publish
+	it only after every query succeeds so retrying cannot reuse partial data.
+	"""
+	cache = workbench_read_snapshots(_ORDER_READ_NAMESPACE)
+	if cache is None:
+		return
+	pending = {
+		order.name: {
+			"work_orders": defaultdict(list), "reserved_qty": defaultdict(list),
+			"items": {}, "unsafe_product_filters": set(), "tied_creation": set(),
+		}
+		for order in orders if order.name not in cache
+	}
+	names = list(pending)
+	for start in range(0, len(names), _ORDER_READ_BATCH_SIZE):
+		batch = names[start:start + _ORDER_READ_BATCH_SIZE]
+		unsafe_orders = set()
+		items = frappe.get_all(
+			"Sales Order Item",
+			filters={"parent": ["in", batch], "parenttype": "Sales Order", "parentfield": "items"},
+			fields=["name", "parent", "item_code"],
+		)
+		for item in items:
+			if item.parent not in batch:
+				unsafe_orders.update(batch)
+				continue
+			pending[item.parent]["items"][item.name] = item.item_code
+		creation_by_item = defaultdict(set)
+		work_orders = frappe.get_all(
+			"Work Order",
+			filters={"sales_order": ["in", batch], "docstatus": 1},
+			fields=[*_WORK_ORDER_FIELDS, "sales_order", "sales_order_item", "creation"],
+			order_by="creation asc",
+		)
+		for work_order in work_orders:
+			if work_order.sales_order not in batch:
+				unsafe_orders.update(batch)
+				continue
+			snapshot = pending[work_order.sales_order]
+			item_name = work_order.sales_order_item
+			if item_name not in snapshot["items"]:
+				unsafe_orders.add(work_order.sales_order)
+				continue
+			if work_order.production_item != snapshot["items"][item_name]:
+				snapshot["unsafe_product_filters"].add(item_name)
+			creation_key = (work_order.sales_order, item_name)
+			if work_order.creation in creation_by_item[creation_key]:
+				snapshot["tied_creation"].add(item_name)
+			creation_by_item[creation_key].add(work_order.creation)
+			snapshot["work_orders"][item_name].append(
+				frappe._dict({field: work_order.get(field) for field in _WORK_ORDER_FIELDS})
+			)
+		reservations = frappe.get_all(
+			"Stock Reservation Entry",
+			filters={"docstatus": 1, "voucher_type": "Sales Order", "voucher_no": ["in", batch]},
+			fields=["voucher_no", "voucher_detail_no", "reserved_qty", "delivered_qty", "transferred_qty", "consumed_qty"],
+		)
+		for entry in reservations:
+			if entry.voucher_no not in batch:
+				unsafe_orders.update(batch)
+				continue
+			if entry.voucher_detail_no not in pending[entry.voucher_no]["items"]:
+				unsafe_orders.add(entry.voucher_no)
+				continue
+			pending[entry.voucher_no]["reserved_qty"][entry.voucher_detail_no].append(_remaining_reserved_qty(entry))
+		# SQL link equality follows database collation. If stored links differ
+		# from canonical parent/child names, retain the original SQL path rather
+		# than guessing collation semantics with Python lower()/casefold().
+		for name in unsafe_orders:
+			pending.pop(name, None)
+	for snapshot in pending.values():
+		# Match the existing builtin sum, including Python's compensated float
+		# summation; repeated += can change fractional quantity results.
+		snapshot["reserved_qty"] = {item: sum(values) for item, values in snapshot["reserved_qty"].items()}
+	cache.update(pending)
+
+
 def get_effective_reserved_qty(sales_order: str, sales_order_item: str) -> float:
+	cache = workbench_read_snapshots(_ORDER_READ_NAMESPACE)
+	if cache is not None and sales_order in cache and sales_order_item in cache[sales_order]["items"]:
+		return cache[sales_order]["reserved_qty"].get(sales_order_item, 0)
 	entries = frappe.get_all(
 		"Stock Reservation Entry",
 		filters={
@@ -164,6 +261,20 @@ def get_effective_reserved_qty(sales_order: str, sales_order_item: str) -> float
 
 @reuse_workbench_read
 def get_work_orders(sales_order: str, sales_order_item: str, item_code: str | None = None):
+	cache = workbench_read_snapshots(_ORDER_READ_NAMESPACE)
+	if cache is not None and sales_order in cache:
+		snapshot = cache[sales_order]
+		if (
+			sales_order_item in snapshot["items"]
+			and sales_order_item not in snapshot["tied_creation"]
+			and (
+				not item_code or (
+					item_code == snapshot["items"][sales_order_item]
+					and sales_order_item not in snapshot["unsafe_product_filters"]
+				)
+			)
+		):
+			return deepcopy(snapshot["work_orders"].get(sales_order_item, []))
 	filters = {"sales_order": sales_order, "sales_order_item": sales_order_item, "docstatus": 1}
 	if item_code:
 		filters["production_item"] = item_code
@@ -171,21 +282,7 @@ def get_work_orders(sales_order: str, sales_order_item: str, item_code: str | No
 	return frappe.get_all(
 		"Work Order",
 		filters=filters,
-		fields=[
-			"name",
-			"production_item",
-			"qty",
-			"produced_qty",
-			"process_loss_qty",
-			"material_transferred_for_manufacturing",
-			"status",
-			"bom_no",
-			"source_warehouse",
-			"wip_warehouse",
-			"fg_warehouse",
-			"planned_start_date",
-			"expected_delivery_date",
-		],
+		fields=list(_WORK_ORDER_FIELDS),
 		order_by="creation asc",
 	)
 
@@ -777,6 +874,7 @@ def get_fulfillment_overview(page=1, page_size=DEFAULT_WORKBENCH_PAGE_SIZE, filt
 		if len(orders) < listed_order_count else None
 	)
 	order_by_name = {order.name: order for order in orders}
+	_prefetch_workbench_order_reads(orders)
 	all_rows = []
 	for order in orders:
 		for source_row in get_order_workbench(order.name).get("rows") or []:

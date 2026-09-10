@@ -12,6 +12,20 @@ import frappe
 _read_cache = ContextVar("ps_workbench_read_cache", default=None)
 
 
+def workbench_read_snapshots(namespace):
+	"""Return calculation-local storage; callers copy rows before returning them.
+
+	There is deliberately no storage outside a read calculation. Site and user
+	remain part of the key even when a nested caller switches identity.
+	"""
+	cache = _read_cache.get()
+	if cache is None:
+		return None
+	session = getattr(frappe.local, "session", None)
+	key = (getattr(frappe.local, "site", None), getattr(session, "user", None), namespace)
+	return cache.setdefault(key, {})
+
+
 @contextmanager
 def workbench_read_context():
 	"""Nested read calculations share a scope; its owner always discards it.

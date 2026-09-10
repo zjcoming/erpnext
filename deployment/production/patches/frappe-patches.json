@@ -25,6 +25,14 @@
     "frappe/utils/password.py": {
       "original": "083942571bcfa0ae9642b182146f8384eaa73a0b687061fd3a26af60332c2b1b",
       "patched": "f0a78d30973884b0210cdfcda14562f01fb0a30593109a4ea872311c1e2878b1"
+    },
+    "frappe/api/v1.py": {
+      "original": "93996b93c3aa647df279cf0f14641262bacdf3d28aa84d4cdd03f1f409827abc",
+      "patched": "80c87b75325cc3a99d77220fe934fbf486135a2e150fd5604c5d137fcd5666cc"
+    },
+    "frappe/desk/form/save.py": {
+      "original": "e67660dbef3f6cc1d001a293ed9f4d48c9faac713bb8b031c3aaa6fc2facf599",
+      "patched": "9133b42e62c87124aa52084412e14c7025456e95e43cbfca4641fca9f2744c4f"
     }
   }
 }

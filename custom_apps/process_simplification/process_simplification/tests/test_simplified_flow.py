@@ -542,6 +542,7 @@ class TestSimplifiedFlow(UnitTestCase):
 		self, has_permission, get_list, get_order_workbench, now_datetime
 	):
 		from process_simplification.api.workbench import get_fulfillment_overview
+		self.enterContext(patch("process_simplification.api.workbench._prefetch_workbench_order_reads"))
 
 		has_permission.return_value = True
 		now_datetime.return_value = frappe.utils.get_datetime("2026-08-02 09:00:00")
@@ -614,6 +615,7 @@ class TestSimplifiedFlow(UnitTestCase):
 		self, has_permission, get_list, get_order_workbench, now_datetime
 	):
 		from process_simplification.api.workbench import get_fulfillment_overview
+		self.enterContext(patch("process_simplification.api.workbench._prefetch_workbench_order_reads"))
 
 		has_permission.return_value = True
 		now_datetime.return_value = frappe.utils.get_datetime("2026-08-02 09:00:00")
@@ -652,6 +654,7 @@ class TestSimplifiedFlow(UnitTestCase):
 		get_production_plan_readiness,
 	):
 		from process_simplification.api.workbench import get_fulfillment_overview
+		self.enterContext(patch("process_simplification.api.workbench._prefetch_workbench_order_reads"))
 
 		has_permission.return_value = True
 		now_datetime.return_value = frappe.utils.get_datetime("2026-08-02 09:00:00")
@@ -713,6 +716,7 @@ class TestSimplifiedFlow(UnitTestCase):
 		self, has_permission, get_list, get_order_workbench, now_datetime
 	):
 		from process_simplification.api.workbench import get_fulfillment_overview
+		self.enterContext(patch("process_simplification.api.workbench._prefetch_workbench_order_reads"))
 
 		has_permission.return_value = True
 		now_datetime.return_value = frappe.utils.get_datetime("2026-08-02 09:00:00")

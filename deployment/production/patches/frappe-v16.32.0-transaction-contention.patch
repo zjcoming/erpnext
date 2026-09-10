@@ -267,3 +267,107 @@
  	frappe.qb.update(Auth).set(Auth.fieldname, new_fieldname).where(
  		(Auth.doctype == doctype) & (Auth.fieldname == old_fieldname)
  	).run()
+--- a/frappe/api/v1.py
++++ b/frappe/api/v1.py
+@@ -44,7 +44,10 @@
+ def create_doc(doctype: str):
+-	data = get_request_form_data()
+-	data.pop("doctype", None)
+-	return frappe.new_doc(doctype, **data).insert()
+-
+-
++	data = get_request_form_data()
++	data.pop("doctype", None)
++	if doctype == "Sales Order" and (handlers := frappe.get_hooks("sales_order_draft_creation")):
++		# The App owns the narrow HTTP draft recovery policy, not Document.insert.
++		return frappe.call(handlers[-1], data=data)
++	return frappe.new_doc(doctype, **data).insert()
++
++
+ def update_doc(doctype: str, name: str):
+--- a/frappe/desk/form/save.py
++++ b/frappe/desk/form/save.py
+@@ -16,40 +16,45 @@
+ def savedocs(doc: str, action: str):
+-	"""save / submit / update doclist"""
+-	doc = frappe.get_doc(json.loads(doc))
+-	capture_doc(doc, action)
+-	if doc.get("__islocal") and doc.name.startswith("new-" + doc.doctype.lower().replace(" ", "-")):
+-		# required to relink missing attachments if they exist.
+-		doc.__temporary_name = doc.name
+-
+-	for child in doc.get_all_children():
+-		child.__temporary_name = child.name
+-
+-	set_local_name(doc)
+-
+-	# action
+-	doc.docstatus = {
+-		"Save": DocStatus.DRAFT,
+-		"Submit": DocStatus.SUBMITTED,
+-		"Update": DocStatus.SUBMITTED,
+-		"Cancel": DocStatus.CANCELLED,
+-	}[action]
+-
+-	if doc.docstatus.is_submitted():
+-		if action == "Submit" and doc.meta.queue_in_background and not is_scheduler_inactive():
+-			queue_submission(doc, action)
+-			return
+-		doc.submit()
+-	else:
+-		doc.save()
+-
+-	# update recent documents
+-	run_onload(doc)
+-	send_updated_docs(doc)
+-
+-	add_data_to_monitor(doctype=doc.doctype, action=action)
+-	status_message = "Submitted" if doc.docstatus.is_submitted() else "Saved"
+-	frappe.msgprint(frappe._(status_message), indicator="green", alert=True)
+-
+-
+-@frappe.whitelist(methods=["POST", "PUT"])
++	"""save / submit / update doclist"""
++	doc = frappe.get_doc(json.loads(doc))
++	capture_doc(doc, action)
++	return _savedocs(doc, action)
++
++
++def _savedocs(doc, action: str):
++	# The HTTP draft retry adapter reuses this body; telemetry is emitted once.
++	if doc.get("__islocal") and doc.name.startswith("new-" + doc.doctype.lower().replace(" ", "-")):
++		# required to relink missing attachments if they exist.
++		doc.__temporary_name = doc.name
++
++	for child in doc.get_all_children():
++		child.__temporary_name = child.name
++
++	set_local_name(doc)
++
++	# action
++	doc.docstatus = {
++		"Save": DocStatus.DRAFT,
++		"Submit": DocStatus.SUBMITTED,
++		"Update": DocStatus.SUBMITTED,
++		"Cancel": DocStatus.CANCELLED,
++	}[action]
++
++	if doc.docstatus.is_submitted():
++		if action == "Submit" and doc.meta.queue_in_background and not is_scheduler_inactive():
++			queue_submission(doc, action)
++			return
++		doc.submit()
++	else:
++		doc.save()
++
++	# update recent documents
++	run_onload(doc)
++	send_updated_docs(doc)
++
++	add_data_to_monitor(doctype=doc.doctype, action=action)
++	status_message = "Submitted" if doc.docstatus.is_submitted() else "Saved"
++	frappe.msgprint(frappe._(status_message), indicator="green", alert=True)
++
++
++@frappe.whitelist(methods=["POST", "PUT"])
+ def cancel(
