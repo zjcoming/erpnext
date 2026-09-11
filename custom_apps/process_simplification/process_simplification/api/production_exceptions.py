@@ -16,7 +16,7 @@ def get_my_requests(limit=100):
 
 
 @frappe.whitelist(methods=["POST"])
-def submit_exception(assignment, request_type, qty, cause, reason, request_key, material_key=None):
+def submit_exception(assignment, request_type, qty, cause, reason, request_key, material_key=None, material_action="Continue"):
 	return service.submit_exception(
 		assignment=assignment,
 		request_type=request_type,
@@ -25,6 +25,7 @@ def submit_exception(assignment, request_type, qty, cause, reason, request_key, 
 		reason=reason,
 		request_key=request_key,
 		material_key=material_key,
+		material_action=material_action,
 	)
 
 
@@ -66,3 +67,8 @@ def approve_exception(request):
 @frappe.whitelist(methods=["POST"])
 def reject_exception(request, reason):
 	return service.reject_exception(request, reason)
+
+
+@frappe.whitelist(methods=["POST"])
+def withdraw_exception(request, reason):
+	return service.withdraw_exception(request, reason)

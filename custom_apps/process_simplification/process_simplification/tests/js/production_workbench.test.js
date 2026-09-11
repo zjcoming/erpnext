@@ -182,7 +182,7 @@ test("supplement creation or repeated click locates the original demand despite 
 			{ work_order: "ROOT", production_plan: "PP-SUPPLEMENT", reused }, replenishmentDemand(), state, helpers.translate);
 		assert.match(message, /ROOT/);
 		assert.match(message, /PP-SUPPLEMENT/);
-		assert.deepEqual(state.filters, { search: "SUPPLEMENT" });
+		assert.deepEqual(state.filters, { demandKey: "SUPPLEMENT" });
 		assert.equal(state.pagination.page, 1);
 		assert.equal(state.focusWorkOrder, "ROOT");
 		assert.ok(state.expandedDemands.has("SUPPLEMENT"));
@@ -1136,9 +1136,9 @@ test("no-purchase hint appears only for an actual purchase shortage", () => {
 	assert.doesNotMatch(readyHtml, /尚未发起采购/);
 });
 
-test("route focus expands the selected Sales Order Item and reloads once", async () => {
+test("route focus replaces stale filters, keeps the internal key out of search and reloads once", async () => {
 	const loads = [];
-	const state = { filters: {}, expandedDemands: new Set() };
+	const state = { filters: { search: "old", shortageOnly: true, status: "in_production" }, pagination: { page: 3, page_size: 50 }, expandedDemands: new Set(["OLD"]) };
 	const page = {
 		production_workbench: {
 			state,
@@ -1150,7 +1150,47 @@ test("route focus expands the selected Sales Order Item and reloads once", async
 	};
 
 	await productionWorkbench.refreshProductionOverview(page, "SOI-FOCUS");
-	assert.equal(state.filters.search, "SOI-FOCUS");
+	assert.deepEqual(state.filters, { demandKey: "SOI-FOCUS" });
+	assert.equal(state.pagination.page, 1);
+	assert.equal(state.pagination.page_size, 50);
 	assert.deepEqual([...state.expandedDemands], ["SOI-FOCUS"]);
 	assert.equal(loads.length, 1);
+});
+
+test("order-line focus matches exactly and combines with manual filters", () => {
+	const selected = demand("FOCUS", { sales_order: "SO-SHARED" });
+	const sibling = demand("FOCUS-OTHER", { sales_order: "SO-SHARED", item_name: "FOCUS" });
+	assert.deepEqual(productionWorkbench.filterProductionDemands([selected, sibling], { demandKey: "FOCUS" }), [selected]);
+	assert.deepEqual(productionWorkbench.filterProductionDemands([selected, sibling], { demandKey: "FOCUS", search: "no match" }), []);
+	assert.deepEqual(productionWorkbench.filterProductionDemands([selected, sibling], { demandKey: "MISSING" }), []);
+});
+
+test("active filter notice explains the order and result count without exposing its internal key", () => {
+	const row = demand("internal-row-id", { sales_order: "SO-001", item_name: "传感器 <A>" });
+	const label = productionWorkbench.productionFocusLabel(row);
+	const html = productionWorkbench.productionActiveFiltersHtml([label, "搜索：<script>"], 1, helpers);
+	assert.match(html, /已筛选.*共 1 条生产需求/);
+	assert.match(html, /仅看订单明细：SO-001 · 传感器 &lt;A&gt;/);
+	assert.match(html, /清除筛选，查看全部/);
+	assert.doesNotMatch(html, /internal-row-id|<script>/);
+	assert.match(productionWorkbench.productionActiveFiltersHtml([label], 0, helpers), /共 0 条生产需求/);
+	assert.match(productionWorkbench.productionActiveFiltersHtml([label], null, helpers), /正在更新结果/);
+	assert.equal(productionWorkbench.productionActiveFiltersHtml([], 12, helpers), "");
+	assert.equal(productionWorkbench.productionFocusLabel(null), "仅看订单明细：已指定的订单明细");
+});
+
+test("clear filters restores all demands and resets focus and pagination", () => {
+	const state = {
+		filters: { demandKey: "OVERDUE", search: "old", shortageOnly: true, showOther: true, customer: "CUST-OTHER" },
+		focusedDemand: fixture[0], focusWorkOrder: "WO-OLD",
+		pagination: { page: 3, page_size: 50 }, expandedDemands: new Set(["OVERDUE"]),
+	};
+	productionWorkbench.clearProductionFilters(state);
+	assert.deepEqual(state.filters, {});
+	assert.equal(state.focusedDemand, null);
+	assert.equal(state.focusWorkOrder, null);
+	assert.equal(state.pagination.page, 1);
+	assert.equal(state.pagination.page_size, 50);
+	assert.equal(state.expandedDemands.size, 0);
+	assert.deepEqual(productionWorkbench.filterProductionDemands(fixture, state.filters), fixture);
 });

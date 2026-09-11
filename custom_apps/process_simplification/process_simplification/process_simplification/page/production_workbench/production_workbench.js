@@ -220,6 +220,7 @@ function filterProductionDemands(demands, filters = {}) {
 			.join(" ")
 			.toLowerCase();
 		return (
+			(!filters.demandKey || demand.demand_key === filters.demandKey) &&
 			(!search || searchable.includes(search)) &&
 			(!filters.customer || demand.customer === filters.customer) &&
 			(!filters.deliveryWindow ||
@@ -711,7 +712,8 @@ function productionExecutionChainHtml(demand, helpers, currentTask) {
 }
 
 function replenishmentCreatedFeedback(result, demand, state, t) {
-	state.filters = { search: demand?.demand_key || result.work_order || "" };
+	state.filters = demand?.demand_key ? { demandKey: demand.demand_key } : { search: result.work_order || "" };
+	state.focusedDemand = demand || null;
 	state.pagination.page = 1;
 	if (demand?.demand_key) state.expandedDemands.add(demand.demand_key);
 	state.focusWorkOrder = result.work_order;
@@ -800,12 +802,37 @@ function productionDemandHtml(demand, helpers) {
 		</details>`;
 }
 
+function clearProductionFilters(state) {
+	state.filters = {};
+	state.focusedDemand = null;
+	state.focusWorkOrder = null;
+	if (state.pagination) state.pagination.page = 1;
+	state.expandedDemands.clear();
+}
+
+function productionFocusLabel(demand, translate = (message) => message) {
+	const identity = [demand?.sales_order, demand?.item_name || demand?.item_code].filter(Boolean).join(" · ");
+	return `${translate("仅看订单明细")}：${identity || translate("已指定的订单明细")}`;
+}
+
+function productionActiveFiltersHtml(labels, totalCount, helpers) {
+	if (!labels.length) return "";
+	const t = helpers.translate;
+	const esc = helpers.escapeHtml;
+	return `<div class="production-filter-notice">
+		<div class="production-filter-description">
+			<strong>${esc(t("已筛选"))} · ${totalCount == null ? esc(t("正在更新结果…")) : `${esc(t("共"))} ${Number(totalCount)} ${esc(t("条生产需求"))}`}</strong>
+			<div class="production-filter-tags">${labels.map((label) => `<span class="production-filter-tag">${esc(label)}</span>`).join("")}</div>
+		</div>
+		<button type="button" class="btn btn-default production-clear-filters">${esc(t("清除筛选，查看全部"))}</button>
+	</div>`;
+}
+
 function refreshProductionOverview(page, demandKey) {
 	if (!page || !page.production_workbench) return;
 	const { state, loadOverview } = page.production_workbench;
-	state.filters.search = demandKey || "";
-	if (state.pagination) state.pagination.page = 1;
-	state.expandedDemands.clear();
+	clearProductionFilters(state);
+	if (demandKey) state.filters.demandKey = demandKey;
 	if (demandKey) state.expandedDemands.add(demandKey);
 	return loadOverview();
 }
@@ -833,6 +860,9 @@ const productionWorkbenchApi = {
 	aggregatePurchasedMaterials,
 	workbenchPaginationHtml: workbenchPaginationHtmlSafe,
 	productionDemandHtml,
+	clearProductionFilters,
+	productionFocusLabel,
+	productionActiveFiltersHtml,
 	refreshProductionOverview,
 	runProductionWorkbenchToolbarLoad,
 };
@@ -848,7 +878,7 @@ if (typeof frappe !== "undefined") {
 			<div class="process-simplification-page production-workbench">
 				<div class="production-kpis"></div>
 				<details class="workbench-filter-panel" open>
-					<summary><span>${__("筛选生产需求")}</span><small>${__("按交期、状态、风险或客户缩小范围")}</small></summary>
+					<summary><span>${__("筛选生产需求")} <span class="production-filter-count" hidden></span></span><small>${__("按交期、状态、风险或客户缩小范围")}</small></summary>
 				<div class="production-filter-bar">
 					<input class="form-control production-search" data-filter="search" placeholder="${__("搜索订单、客户、产品或工单")}">
 					<select class="form-control" data-filter="deliveryWindow"><option value="">${__("全部交期")}</option><option value="overdue">${__("已逾期")}</option><option value="today">${__("今日交期")}</option><option value="within_7_days">${__("7 天内交期")}</option><option value="later">${__("稍后交期")}</option><option value="missing">${__("缺少交期")}</option></select>
@@ -860,6 +890,7 @@ if (typeof frappe !== "undefined") {
 					<label><input type="checkbox" data-filter="showOther"> ${__("其他生产")}</label>
 				</div>
 				</details>
+				<div class="production-active-filters" role="status" aria-live="polite" aria-atomic="true"></div>
 				<div class="production-update-time text-muted"></div>
 				<p class="text-muted production-sort-note">${__("客户物料分配优先级：订单行交付日期；同交期按订单创建时间和订单行顺序。")}</p>
 				<div class="production-demand-list"></div>
@@ -894,6 +925,28 @@ if (typeof frappe !== "undefined") {
 			return state.data.demands || [];
 		}
 
+		function renderActiveFilters(totalCount = null) {
+			const labels = [];
+			if (state.filters.demandKey) labels.push(productionFocusLabel(state.focusedDemand, __));
+			$root.find("[data-filter]").each((_, element) => {
+				const $field = $(element);
+				const name = $field.data("filter");
+				const value = state.filters[name];
+				const active = Boolean(typeof value === "string" ? value.trim() : value);
+				if ($field.is(":checkbox")) $field.prop("checked", Boolean(value));
+				else $field.val(value || "");
+				$field.toggleClass("is-filter-active", active);
+				$field.closest("label").toggleClass("is-filter-active", active);
+				if (!active) return;
+				if (name === "search") labels.push(`${__("搜索")}：${value}`);
+				else if ($field.is(":checkbox")) labels.push($field.closest("label").text().trim());
+				else labels.push($field.find(":selected").text() || value);
+			});
+			$root.find(".workbench-filter-panel").toggleClass("has-active-filters", Boolean(labels.length));
+			$root.find(".production-filter-count").prop("hidden", !labels.length).text(`${__("已筛选")} ${labels.length} ${__("项")}`);
+			$root.find(".production-active-filters").html(productionActiveFiltersHtml(labels, totalCount, helpers()));
+		}
+
 		function renderKpis(summary) {
 			const cards = [
 				[__("未纳入生产计划"), summary.unplanned_demands, "orange"],
@@ -926,11 +979,9 @@ if (typeof frappe !== "undefined") {
 		function render() {
 			const demands = visibleDemands();
 			renderKpis(state.data.summary || productionSummary(demands));
-			for (const [name, value] of Object.entries(state.filters)) {
-				const $field = $root.find(`[data-filter="${name}"]`);
-				if ($field.is(":checkbox")) $field.prop("checked", Boolean(value));
-				else $field.val(value || "");
-			}
+			const focusedDemand = demands.find((row) => row.demand_key === state.filters.demandKey);
+			if (focusedDemand) state.focusedDemand = focusedDemand;
+			renderActiveFilters(state.data.pagination?.total_count ?? demands.length);
 			$root.find(".production-demand-list").html(
 				(state.data.access_notice ? `<div class="alert alert-warning">${frappe.utils.escape_html(__(state.data.access_notice))}</div>` : "") + (demands.length
 					? demands.map((row) => productionDemandHtml(row, helpers())).join("")
@@ -959,6 +1010,7 @@ if (typeof frappe !== "undefined") {
 		}
 
 		function loadOverview(options = {}) {
+			renderActiveFilters();
 			return frappe.ps_read_page(page, {
 				method: "process_simplification.page_refresh.production_overview",
 				background: options.background,
@@ -971,7 +1023,12 @@ if (typeof frappe !== "undefined") {
 				apply(response) {
 				state.data = response.message || { demands: [], other_work_orders: [] };
 				state.pagination = state.data.pagination || state.pagination;
-				const customers = state.data.customers || [];
+				const customers = [...(state.data.customers || [])];
+				const selectedCustomer = state.filters.customer;
+				if (selectedCustomer && !customers.some((row) => row.value === selectedCustomer)) {
+					const label = $root.find('[data-filter="customer"] :selected').text() || selectedCustomer;
+					customers.push({ value: selectedCustomer, label });
+				}
 				$root.find('[data-filter="customer"]').html(
 					[`<option value="">${frappe.utils.escape_html(__("全部客户"))}</option>`]
 						.concat(customers.map((row) => `<option value="${frappe.utils.escape_html(row.value)}">${frappe.utils.escape_html(row.label)}</option>`))
@@ -1068,6 +1125,10 @@ if (typeof frappe !== "undefined") {
 			const $input = $(event.currentTarget);
 			state.filters[$input.data("filter")] = $input.is(":checkbox") ? $input.prop("checked") : $input.val();
 			state.pagination.page = 1;
+			loadOverview();
+		});
+		$root.on("click", ".production-clear-filters", () => {
+			clearProductionFilters(state);
 			loadOverview();
 		});
 		$root.on("click", ".workbench-page-action", (event) => {

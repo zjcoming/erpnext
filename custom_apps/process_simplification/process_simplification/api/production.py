@@ -703,7 +703,8 @@ def filter_production_demands(demands, filters=None):
 		else:
 			delivery_matches = not delivery_window or demand.get("delivery_timing") == delivery_window
 		return (
-			(not search or search in searchable)
+			(not filters.get("demandKey") or demand.get("demand_key") == filters.get("demandKey"))
+			and (not search or search in searchable)
 			and (not filters.get("customer") or demand.get("customer") == filters.get("customer"))
 			and delivery_matches
 			and (not filters.get("status") or demand.get("status_code") == filters.get("status"))

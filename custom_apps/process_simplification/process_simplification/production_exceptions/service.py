@@ -15,6 +15,9 @@ from process_simplification.production_exceptions.constants import (
 	AWAITING_STOCK_ENTRY,
 	CAUSES,
 	COMPLETED,
+	CONTINUE_PRODUCTION,
+	RELEASE_ASSIGNMENT,
+	WITHDRAWN,
 	MATERIAL_REQUEST_TYPES,
 	MATERIAL_RETURN,
 	MATERIAL_SCRAP,
@@ -45,7 +48,7 @@ from process_simplification.production_reporting.domain import (
 STOCK_VIEW_ROLES = {WAREHOUSE_OPERATOR_ROLE, "Stock User", "Stock Manager", "System Manager"}
 DEFAULT_EXCEPTION_HISTORY_PAGE_LENGTH = 20
 MAX_EXCEPTION_HISTORY_PAGE_LENGTH = 100
-EXCEPTION_HISTORY_STATUSES = {APPLIED, COMPLETED, REJECTED}
+EXCEPTION_HISTORY_STATUSES = {APPLIED, COMPLETED, REJECTED, WITHDRAWN}
 ASSIGNMENT_MATERIAL_STATUSES = {
 	PENDING_APPROVAL,
 	APPROVED,
@@ -55,6 +58,7 @@ ASSIGNMENT_MATERIAL_STATUSES = {
 IMMUTABLE_FIELDS = (
 	"request_key",
 	"request_type",
+	"material_action",
 	"assignment",
 	"job_card",
 	"work_order",
@@ -88,6 +92,7 @@ def _request_fields() -> list[str]:
 	return [
 		"name",
 		"request_type",
+		"material_action",
 		"status",
 		"assignment",
 		"job_card",
@@ -112,6 +117,9 @@ def _request_fields() -> list[str]:
 		"stock_entry",
 		"processed_by",
 		"processed_at",
+		"withdrawn_by",
+		"withdrawn_at",
+		"withdrawal_reason",
 	]
 
 
@@ -148,6 +156,8 @@ def validate_request_document(doc):
 		frappe.throw(_("Production exception request is missing required audit facts."))
 	if doc.cause not in CAUSES or flt(doc.qty) <= 0:
 		frappe.throw(_("Production exception cause and positive quantity are required."))
+	if doc.get("material_action") and doc.material_action not in {CONTINUE_PRODUCTION, RELEASE_ASSIGNMENT}:
+		frappe.throw(_("请选择有效的退料后任务安排。"))
 	if doc.request_type in MATERIAL_REQUEST_TYPES:
 		if not all(
 			doc.get(fieldname)
@@ -307,6 +317,34 @@ def _work_order_material_requirements(work_order: str, *, for_update: bool = Fal
 	return work_order_values, list(routes.values())
 
 
+def material_warehouse_settings(work_order):
+	"""Use explicit WO overrides or company defaults, never warehouse-name guesses."""
+	company = frappe.db.get_value(
+		"Company", work_order.company,
+		["default_scrap_warehouse", "custom_material_quarantine_warehouse"], as_dict=True,
+	) or frappe._dict()
+	result = frappe._dict(
+		scrap_warehouse=work_order.get("scrap_warehouse") or company.default_scrap_warehouse,
+		quarantine_warehouse=company.custom_material_quarantine_warehouse,
+		messages={},
+	)
+	for field, label in (("scrap_warehouse", "报废仓"), ("quarantine_warehouse", "待检隔离仓")):
+		name = result[field]
+		warehouse = frappe.db.get_value("Warehouse", name, ["company", "is_group", "disabled"], as_dict=True) if name else None
+		if not warehouse or warehouse.company != work_order.company or warehouse.is_group or warehouse.disabled or name in {work_order.wip_warehouse, work_order.source_warehouse}:
+			result[field] = None
+			result.messages[field] = _("{0}未配置或不可用，请联系主管在公司设置中选择同公司的独立{0}；仅新建仓库不会自动关联。").format(label)
+	return result
+
+
+def _target_warehouse(row, request_type, cause):
+	if request_type == MATERIAL_SCRAP:
+		return row.scrap_warehouse
+	if cause == "Material Defect":
+		return row.quarantine_warehouse
+	return row.return_warehouse
+
+
 def _material_request_rows(
 	work_order: str,
 	material_key: str,
@@ -400,6 +438,7 @@ def _native_material_rows(work_order: str, *, exclude_request: str | None = None
 		work_order,
 		for_update=for_update,
 	)
+	warehouse_settings = material_warehouse_settings(work_order_values)
 	for requirement in requirement_rows:
 		requirement.work_order = work_order
 	requirements_by_key = {row.key: row for row in requirement_rows}
@@ -484,7 +523,8 @@ def _native_material_rows(work_order: str, *, exclude_request: str | None = None
 				stock_uom=item.stock_uom,
 				source_warehouse=source_warehouse,
 				return_warehouse=return_warehouse,
-				scrap_warehouse=work_order_values.scrap_warehouse,
+				scrap_warehouse=warehouse_settings.scrap_warehouse if warehouse_settings.scrap_warehouse != return_warehouse else None,
+				quarantine_warehouse=warehouse_settings.quarantine_warehouse if warehouse_settings.quarantine_warehouse != return_warehouse else None,
 				native_available_qty=qty,
 				reserved_request_qty=reserved,
 				requestable_qty=requestable_qty,
@@ -714,6 +754,7 @@ def _completed_assignment_material_qty(
 			& (request.material_key == material_key)
 			& (request.request_type.isin(sorted(MATERIAL_REQUEST_TYPES)))
 			& (request.status == COMPLETED)
+			& ((request.material_action == RELEASE_ASSIGNMENT) | request.material_action.isnull() | (request.material_action == ""))
 		)
 	)
 	if for_update:
@@ -780,7 +821,7 @@ def assignment_completed_material_output_loss(
 
 def ensure_completed_material_release(request, *, for_update: bool = False):
 	"""Persist newly lost whole units; replacement stock does not reclaim them."""
-	if request.request_type not in MATERIAL_REQUEST_TYPES or request.status != COMPLETED:
+	if request.request_type not in MATERIAL_REQUEST_TYPES or request.status != COMPLETED or request.get("material_action") == CONTINUE_PRODUCTION:
 		return None
 	from process_simplification.production_reporting.assignment_movement import (
 		assignment_effective_qty,
@@ -883,6 +924,8 @@ def get_exception_options(assignment: str):
 		_apply_assignment_material_limit(row, assignment_values, job_card)
 		for row in _native_material_rows(job_card.work_order)
 	]
+	work_order, _requirements = _work_order_material_requirements(job_card.work_order)
+	warehouses = material_warehouse_settings(work_order)
 	return {
 		"assignment": assignment_values.name,
 		"job_card": job_card.name,
@@ -890,6 +933,8 @@ def get_exception_options(assignment: str):
 		"operation": job_card.operation,
 		"process_loss_available_qty": _process_loss_capacity(job_card),
 		"materials": [row for row in materials if flt(row.requestable_qty) > 0],
+		"warehouse_settings": warehouses,
+		"empty_material_message": _("当前没有可申请的未用物料：请确认工单已发料，并检查个人剩余任务及待处理申请。") if not any(flt(row.requestable_qty) > 0 for row in materials) else "",
 	}
 
 
@@ -920,11 +965,15 @@ def submit_exception(
 	reason: str,
 	request_key: str,
 	material_key: str | None = None,
+	material_action: str = CONTINUE_PRODUCTION,
 ):
 	request_type = str(request_type or "").strip()
 	cause = str(cause or "").strip()
 	reason = str(reason or "").strip()
 	request_key = str(request_key or "").strip()
+	material_action = str(material_action or CONTINUE_PRODUCTION).strip()
+	if material_action not in {CONTINUE_PRODUCTION, RELEASE_ASSIGNMENT}:
+		frappe.throw(_("请选择补料后继续或交回剩余任务。"))
 	precision = job_card_qty_precision()
 	qty = flt(qty, precision)
 	if request_type not in REQUEST_TYPES or cause not in CAUSES:
@@ -944,6 +993,7 @@ def submit_exception(
 			or existing.cause != cause
 			or existing.reason != reason
 			or (existing.material_key or None) != (material_key or None)
+			or (existing.get("material_action") or RELEASE_ASSIGNMENT) != material_action
 		):
 			frappe.throw(_("This exception request id was already used with different values."))
 		return existing
@@ -963,11 +1013,9 @@ def submit_exception(
 					row.requestable_qty
 				)
 			)
-		target_warehouse = row.return_warehouse
-		if request_type == MATERIAL_SCRAP:
-			target_warehouse = row.scrap_warehouse
-			if not target_warehouse:
-				frappe.throw(_("Configure a Scrap Warehouse on the Work Order before requesting material scrap."))
+		target_warehouse = _target_warehouse(row, request_type, cause)
+		if not target_warehouse:
+			frappe.throw(_("尚未配置可用的报废仓或待检隔离仓，请联系主管完成公司仓库配置后刷新物料。"))
 		values.update(
 			material_key=row.key,
 			item_code=row.item_code,
@@ -987,6 +1035,7 @@ def submit_exception(
 			"doctype": "Production Exception Request",
 			"request_key": request_key,
 			"request_type": request_type,
+			"material_action": material_action,
 			"status": PENDING_APPROVAL,
 			"assignment": assignment_values.name,
 			"job_card": job_card.name,
@@ -1240,7 +1289,10 @@ def _make_material_stock_entry(doc):
 		frappe.throw(_("Only {0} of material {1} remains returnable from WIP.").format(row.requestable_qty, doc.item_code))
 	if doc.source_warehouse != row.source_warehouse:
 		frappe.throw(_("The approved source warehouse no longer matches the WIP material."))
-	expected_target = row.return_warehouse if doc.request_type == MATERIAL_RETURN else row.scrap_warehouse
+	expected_target = _target_warehouse(row, doc.request_type, doc.cause)
+	# Historical approved routes remain auditable; never silently redirect them.
+	if not doc.get("material_action") and doc.request_type == MATERIAL_RETURN:
+		expected_target = row.return_warehouse
 	if not expected_target or doc.target_warehouse != expected_target:
 		frappe.throw(_("The approved target warehouse no longer matches the Work Order."))
 
@@ -1249,6 +1301,7 @@ def _make_material_stock_entry(doc):
 	stock_entry.purpose = "Material Transfer for Manufacture"
 	stock_entry.work_order = doc.work_order
 	stock_entry.is_return = 1
+	stock_entry.custom_return_source_warehouse = row.return_warehouse
 	stock_entry.from_warehouse = doc.source_warehouse
 	stock_entry.to_warehouse = doc.target_warehouse
 	stock_entry.custom_production_exception_request = doc.name
@@ -1423,6 +1476,11 @@ def validate_linked_stock_entry(stock_entry):
 		or stock_entry.company != doc.company
 	):
 		frappe.throw(_("The Stock Entry no longer matches the approved production exception."))
+	approved_route = _material_row(doc.work_order, doc.material_key, exclude_request=doc.name, for_update=True)
+	if stock_entry.get("custom_return_source_warehouse") != approved_route.return_warehouse:
+		# Existing drafts created before this field was installed are backfilled
+		# from the immutable request route, not from browser input.
+		stock_entry.custom_return_source_warehouse = approved_route.return_warehouse
 	if len(stock_entry.items) != 1:
 		frappe.throw(_("A production-exception Stock Entry must contain exactly one approved item."))
 	row = stock_entry.items[0]
@@ -1480,6 +1538,9 @@ def reopen_cancelled_stock_entry(stock_entry):
 	doc = frappe.get_doc("Production Exception Request", request_name, for_update=True)
 	if doc.stock_entry != stock_entry.name:
 		return
+	from process_simplification.production_reporting.assignment_movement import reverse_request_releases
+
+	reverse_request_releases(doc, stock_entry.name)
 	doc.status = APPROVED
 	doc.stock_entry = None
 	doc.processed_by = None
@@ -1488,3 +1549,22 @@ def reopen_cancelled_stock_entry(stock_entry):
 	from process_simplification.notifications import notify_stock_entry_cancelled
 
 	notify_stock_entry_cancelled(doc)
+
+
+def withdraw_exception(name: str, reason: str):
+	"""Withdraw an unposted request; its draft remains a non-postable audit record."""
+	reason = str(reason or "").strip()
+	if not reason:
+		frappe.throw(_("请填写撤回原因。"))
+	_, doc = _lock_request_for_review(name)
+	if doc.status == WITHDRAWN:
+		return doc
+	if doc.status not in OPEN_MATERIAL_STATUSES:
+		frappe.throw(_("只能撤回尚未过账的申请；已过账请由库房处理原库存单。"))
+	if doc.stock_entry and frappe.db.get_value("Stock Entry", doc.stock_entry, "docstatus") != 0:
+		frappe.throw(_("库存单状态已变化，请刷新后重试。"))
+	doc.status = WITHDRAWN
+	doc.withdrawn_by = frappe.session.user
+	doc.withdrawn_at = now_datetime()
+	doc.withdrawal_reason = reason[:1000]
+	return _save_request(doc)

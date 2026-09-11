@@ -26,24 +26,155 @@
   "moved_at"
  ],
  "fields": [
-  {"fieldname": "naming_series", "fieldtype": "Select", "label": "编号规则", "options": "JCAM-.YYYY.-.#####", "default": "JCAM-.YYYY.-.#####", "reqd": 1},
-  {"fieldname": "movement_key", "fieldtype": "Data", "label": "移动唯一键", "read_only": 1, "unique": 1, "hidden": 1, "no_copy": 1},
-  {"fieldname": "movement_type", "fieldtype": "Select", "label": "移动类型", "options": "Release\nRedispatch", "read_only": 1, "reqd": 1, "in_list_view": 1, "search_index": 1},
-  {"fieldname": "job_card", "fieldtype": "Link", "label": "生产任务单", "options": "Job Card", "read_only": 1, "reqd": 1, "search_index": 1},
-  {"fieldname": "work_order", "fieldtype": "Link", "label": "生产工单", "options": "Work Order", "read_only": 1, "reqd": 1, "search_index": 1},
-  {"fieldname": "company", "fieldtype": "Link", "label": "公司", "options": "Company", "read_only": 1, "reqd": 1},
-  {"fieldname": "operation", "fieldtype": "Link", "label": "工序", "options": "Operation", "read_only": 1, "reqd": 1},
-  {"fieldname": "operation_id", "fieldtype": "Data", "label": "工序内部标识", "read_only": 1, "reqd": 1, "hidden": 1},
-  {"fieldname": "source_assignment", "fieldtype": "Link", "label": "释放来源派工", "options": "Job Card Worker Assignment", "read_only": 1, "reqd": 1, "search_index": 1},
-  {"fieldname": "target_assignment", "fieldtype": "Link", "label": "二次派工目标", "options": "Job Card Worker Assignment", "read_only": 1, "search_index": 1},
-  {"fieldname": "source_movement", "fieldtype": "Link", "label": "来源释放记录", "options": "Job Card Assignment Movement", "read_only": 1, "search_index": 1},
-  {"fieldname": "qty", "fieldtype": "Float", "label": "数量", "read_only": 1, "reqd": 1, "non_negative": 1, "in_list_view": 1},
-  {"fieldname": "reason", "fieldtype": "Small Text", "label": "原因", "read_only": 1},
-  {"fieldname": "reference_doctype", "fieldtype": "Link", "label": "来源单据类型", "options": "DocType", "read_only": 1, "hidden": 1},
-  {"fieldname": "reference_name", "fieldtype": "Dynamic Link", "label": "来源单据", "options": "reference_doctype", "read_only": 1, "search_index": 1},
-  {"fieldname": "request_key", "fieldtype": "Data", "label": "二次派工请求键", "read_only": 1, "hidden": 1, "search_index": 1},
-  {"fieldname": "moved_by", "fieldtype": "Link", "label": "操作人", "options": "User", "read_only": 1, "reqd": 1},
-  {"fieldname": "moved_at", "fieldtype": "Datetime", "label": "操作时间", "read_only": 1, "reqd": 1, "in_list_view": 1}
+  {
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "编号规则",
+   "options": "JCAM-.YYYY.-.#####",
+   "default": "JCAM-.YYYY.-.#####",
+   "reqd": 1
+  },
+  {
+   "fieldname": "movement_key",
+   "fieldtype": "Data",
+   "label": "移动唯一键",
+   "read_only": 1,
+   "unique": 1,
+   "hidden": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "movement_type",
+   "fieldtype": "Select",
+   "label": "移动类型",
+   "options": "Release\nRedispatch\nRelease Reversal",
+   "read_only": 1,
+   "reqd": 1,
+   "in_list_view": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "job_card",
+   "fieldtype": "Link",
+   "label": "生产任务单",
+   "options": "Job Card",
+   "read_only": 1,
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "work_order",
+   "fieldtype": "Link",
+   "label": "生产工单",
+   "options": "Work Order",
+   "read_only": 1,
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "公司",
+   "options": "Company",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "operation",
+   "fieldtype": "Link",
+   "label": "工序",
+   "options": "Operation",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "operation_id",
+   "fieldtype": "Data",
+   "label": "工序内部标识",
+   "read_only": 1,
+   "reqd": 1,
+   "hidden": 1
+  },
+  {
+   "fieldname": "source_assignment",
+   "fieldtype": "Link",
+   "label": "释放来源派工",
+   "options": "Job Card Worker Assignment",
+   "read_only": 1,
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "target_assignment",
+   "fieldtype": "Link",
+   "label": "二次派工目标",
+   "options": "Job Card Worker Assignment",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "source_movement",
+   "fieldtype": "Link",
+   "label": "来源释放记录",
+   "options": "Job Card Assignment Movement",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "qty",
+   "fieldtype": "Float",
+   "label": "数量",
+   "read_only": 1,
+   "reqd": 1,
+   "non_negative": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "reason",
+   "fieldtype": "Small Text",
+   "label": "原因",
+   "read_only": 1
+  },
+  {
+   "fieldname": "reference_doctype",
+   "fieldtype": "Link",
+   "label": "来源单据类型",
+   "options": "DocType",
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
+   "fieldname": "reference_name",
+   "fieldtype": "Dynamic Link",
+   "label": "来源单据",
+   "options": "reference_doctype",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "request_key",
+   "fieldtype": "Data",
+   "label": "二次派工请求键",
+   "read_only": 1,
+   "hidden": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "moved_by",
+   "fieldtype": "Link",
+   "label": "操作人",
+   "options": "User",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "moved_at",
+   "fieldtype": "Datetime",
+   "label": "操作时间",
+   "read_only": 1,
+   "reqd": 1,
+   "in_list_view": 1
+  }
  ],
  "index_web_pages_for_search": 0,
  "modified": "2026-09-01 00:00:00.000000",
@@ -52,9 +183,18 @@
  "name": "Job Card Assignment Movement",
  "owner": "Administrator",
  "permissions": [
-  {"role": "Process Simplification Owner", "read": 1},
-  {"role": "Process Simplification Production Manager", "read": 1},
-  {"role": "System Manager", "read": 1}
+  {
+   "role": "Process Simplification Owner",
+   "read": 1
+  },
+  {
+   "role": "Process Simplification Production Manager",
+   "read": 1
+  },
+  {
+   "role": "System Manager",
+   "read": 1
+  }
  ],
  "search_fields": "job_card,work_order,source_assignment,target_assignment",
  "sort_field": "moved_at",

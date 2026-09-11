@@ -3,7 +3,64 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
-const { createPageRefreshController, createPageReadLoader, bindFreshNotificationView } = require("../../public/js/page_refresh.js");
+const { createPageRefreshController, createPageReadLoader, bindFreshNotificationView, bindNotificationScrollUnlock } = require("../../public/js/page_refresh.js");
+
+function notificationScrollFixture() {
+	let changed, closes = 0, observers = 0;
+	const state = { mobile: true, hidden: false, expanded: false };
+	const dropdown = { classList: { contains: () => state.hidden } };
+	const sidebar = {
+		sidebar_expanded: true, notifications: { dropdown: [dropdown] },
+		wrapper: { hasClass: () => state.expanded },
+		close() { this.sidebar_expanded = false; closes++; },
+	};
+	const frappe = { app: { sidebar }, is_mobile: () => state.mobile };
+	const win = {
+		MutationObserver: class {
+			constructor(callback) { changed = callback; observers++; }
+			observe(node, options) {
+				assert.equal(node, dropdown);
+				assert.deepEqual(options, { attributes: true, attributeFilter: ["class"] });
+			}
+		},
+	};
+	bindNotificationScrollUnlock(frappe, win);
+	return { sidebar, closes: () => closes, observers: () => observers,
+		bind: () => bindNotificationScrollUnlock(frappe, win),
+		change(options = {}) {
+			Object.assign(state, options);
+			changed();
+		},
+	};
+}
+
+test("closing mobile notifications releases the visually collapsed sidebar's scroll lock once", () => {
+	const f = notificationScrollFixture();
+	f.bind();
+	assert.equal(f.observers(), 1, "reopening notifications must not duplicate the observer");
+	f.change();
+	assert.equal(f.closes(), 0, "keep the background locked while notifications are open");
+	f.change({ hidden: true });
+	assert.equal(f.closes(), 1);
+	assert.equal(f.sidebar.sidebar_expanded, false);
+	f.change();
+	assert.equal(f.closes(), 1);
+});
+
+test("notification visibility changes leave desktop and an actually open sidebar alone", () => {
+	const f = notificationScrollFixture();
+	f.change({ mobile: false, hidden: true });
+	assert.equal(f.closes(), 0);
+	f.change({ mobile: true, expanded: true });
+	assert.equal(f.closes(), 0);
+});
+
+test("an already closed sidebar does not release another component's scroll lock", () => {
+	const f = notificationScrollFixture();
+	f.sidebar.sidebar_expanded = false;
+	f.change({ hidden: true });
+	assert.equal(f.closes(), 0);
+});
 
 async function drain() { for (let i = 0; i < 20; i++) await Promise.resolve(); }
 function fixture() {

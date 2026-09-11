@@ -247,6 +247,76 @@
 	padding: 10px 12px;
 }
 
+.production-workbench .workbench-filter-panel.has-active-filters {
+	border-color: var(--orange-500, #d97706);
+}
+
+.production-filter-count {
+	margin-left: 8px;
+	padding: 3px 8px;
+	border-radius: 6px;
+	background: var(--orange-100, #ffedd5);
+	color: var(--orange-800, #9a3412);
+	font-size: var(--text-sm, 12px);
+	white-space: nowrap;
+}
+
+.production-filter-notice {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	flex-wrap: wrap;
+	gap: 12px;
+	margin-bottom: 12px;
+	padding: 12px;
+	border: 1px solid var(--orange-300, #fdba74);
+	border-left: 4px solid var(--orange-500, #d97706);
+	border-radius: 8px;
+	background: var(--orange-50, #fff7ed);
+}
+
+.production-filter-description {
+	flex: 1 1 260px;
+	min-width: 0;
+	color: var(--orange-800, #9a3412);
+}
+
+.production-filter-tags {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	margin-top: 6px;
+}
+
+.production-filter-tag {
+	max-width: 100%;
+	padding: 3px 8px;
+	border: 1px solid var(--orange-200, #fed7aa);
+	border-radius: 6px;
+	background: var(--ps-ui-surface);
+	color: var(--text-color);
+	overflow-wrap: anywhere;
+}
+
+.production-workbench .production-clear-filters {
+	min-height: 44px;
+	white-space: normal;
+	border: 1px solid var(--orange-500, #d97706);
+	color: var(--orange-800, #9a3412);
+	background: var(--ps-ui-surface);
+	font-weight: 600;
+}
+
+.production-filter-bar .form-control.is-filter-active {
+	border: 1px solid var(--orange-500, #d97706);
+	background: var(--orange-50, #fff7ed);
+}
+
+.production-filter-bar label.is-filter-active {
+	color: var(--orange-800, #9a3412);
+	font-weight: 600;
+}
+
 .fulfillment-order > summary {
 	grid-template-columns: 20px minmax(170px, 1.25fr) repeat(4, minmax(102px, 0.8fr)) minmax(116px, auto) minmax(138px, 0.85fr);
 }

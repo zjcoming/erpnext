@@ -245,6 +245,22 @@ function bindFreshNotificationView(view, snapshot, requestUpdate) {
 	view.update_dropdown = requestUpdate;
 }
 
+function bindNotificationScrollUnlock(frappeRef, win) {
+	const sidebar = frappeRef.app?.sidebar;
+	const dropdown = sidebar?.notifications?.dropdown?.[0];
+	if (!dropdown || dropdown.ps_scroll_unlock_bound) return;
+	dropdown.ps_scroll_unlock_bound = true;
+	// Native mobile notifications visually collapse the sidebar but retain its
+	// expanded state and scroll lock. All notification exits hide this dropdown.
+	const observer = new win.MutationObserver(() => {
+		if (frappeRef.is_mobile() && dropdown.classList.contains("hidden") &&
+			sidebar.sidebar_expanded && !sidebar.wrapper.hasClass("expanded")) {
+			sidebar.close();
+		}
+	});
+	observer.observe(dropdown, { attributes: true, attributeFilter: ["class"] });
+}
+
 function setupPageRefresh(frappeRef, win, doc, $) {
 	if (!frappeRef.boot || frappeRef.session?.user === "Guest" || win.__ps_page_refresh) return;
 	// Retire the previous complete-notification polling loop when both asset
@@ -294,6 +310,9 @@ function setupPageRefresh(frappeRef, win, doc, $) {
 		notifications,
 	});
 	win.__ps_page_refresh = controller;
+	// The sidebar's notification view can be created after app_ready.
+	$(doc).on("show.bs.dropdown.ps-notification-scroll", ".dropdown-notifications",
+		() => bindNotificationScrollUnlock(frappeRef, win));
 	bindFreshNotificationView(frappeRef.app?.sidebar?.notifications?.tabs?.notifications,
 		() => latestSnapshot, () => controller.event({ topics: ["notifications"] }));
 	const read = frappeRef.ps_read_page;
@@ -385,7 +404,7 @@ function setupPageRefresh(frappeRef, win, doc, $) {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-	module.exports = { createPageRefreshController, createPageReadLoader, bindFreshNotificationView, PS_REFRESH_HEALTHY_MS, PS_REFRESH_OFFLINE_MS };
+	module.exports = { createPageRefreshController, createPageReadLoader, bindFreshNotificationView, bindNotificationScrollUnlock, PS_REFRESH_HEALTHY_MS, PS_REFRESH_OFFLINE_MS };
 }
 if (typeof frappe !== "undefined" && typeof window !== "undefined") {
 	const read = createPageReadLoader((args) => frappe.call(args),

@@ -16,7 +16,8 @@ from process_simplification.production_reporting.domain import (
 
 RELEASE = "Release"
 REDISPATCH = "Redispatch"
-MOVEMENT_TYPES = {RELEASE, REDISPATCH}
+RELEASE_REVERSAL = "Release Reversal"
+MOVEMENT_TYPES = {RELEASE, REDISPATCH, RELEASE_REVERSAL}
 
 
 def _hash_key(*values) -> str:
@@ -50,6 +51,9 @@ def validate_movement_document(doc):
 			frappe.throw(_("A release movement cannot contain redispatch facts."))
 		if not (doc.reference_doctype and doc.reference_name):
 			frappe.throw(_("A release movement requires its source document."))
+	elif doc.movement_type == RELEASE_REVERSAL:
+		if doc.target_assignment or not doc.source_movement or not doc.reference_name:
+			frappe.throw(_("释放冲销必须关联原释放记录和取消的库存单。"))
 	elif not (doc.target_assignment and doc.source_movement and doc.request_key):
 		frappe.throw(_("A redispatch movement requires its target, source release, and request id."))
 	source = frappe.db.get_value(
@@ -92,6 +96,11 @@ def validate_movement_document(doc):
 			or release.source_assignment != doc.source_assignment
 		):
 			frappe.throw(_("Redispatch must consume a matching release movement."))
+	if doc.movement_type == RELEASE_REVERSAL:
+		source_release = frappe.db.get_value("Job Card Assignment Movement", doc.source_movement,
+			["movement_type", "job_card", "source_assignment", "qty"], as_dict=True)
+		if not source_release or source_release.movement_type != RELEASE or source_release.job_card != doc.job_card or source_release.source_assignment != doc.source_assignment or flt(doc.qty) > flt(source_release.qty):
+			frappe.throw(_("释放冲销与原派工记录不一致。"))
 	if doc.is_new():
 		return
 	immutable_fields = (
@@ -153,6 +162,8 @@ def _movement_rows(
 			movement.source_movement,
 			movement.qty,
 			movement.request_key,
+			movement.reference_name,
+			movement.reference_doctype,
 			movement.moved_at,
 		)
 		.where(condition)
@@ -184,6 +195,8 @@ def movement_totals(
 			totals[row.source_assignment].released_qty += flt(row.qty)
 		elif row.movement_type == REDISPATCH and row.target_assignment in totals:
 			totals[row.target_assignment].redispatched_qty += flt(row.qty)
+		elif row.movement_type == RELEASE_REVERSAL and row.source_assignment in totals:
+			totals[row.source_assignment].released_qty -= flt(row.qty)
 	return totals
 
 
@@ -241,7 +254,7 @@ def _release_pool_rows(job_card: str, *, for_update: bool = False):
 	rows = _movement_rows(job_card=job_card, for_update=for_update)
 	consumed = {}
 	for row in rows:
-		if row.movement_type == REDISPATCH and row.source_movement:
+		if row.movement_type in {REDISPATCH, RELEASE_REVERSAL} and row.source_movement:
 			consumed[row.source_movement] = consumed.get(row.source_movement, 0.0) + flt(row.qty)
 	pool = []
 	for row in rows:
@@ -315,7 +328,7 @@ def create_release_movement(request, qty: float):
 	qty = flt(qty, precision)
 	if qty <= 0:
 		return None
-	movement_key = _hash_key(RELEASE, "Production Exception Request", request.name)
+	movement_key = _hash_key(RELEASE, "Production Exception Request", request.name, request.get("stock_entry"))
 	existing = frappe.db.get_value(
 		"Job Card Assignment Movement",
 		{"movement_key": movement_key},
@@ -351,6 +364,33 @@ def create_release_movement(request, qty: float):
 	doc.flags.assignment_movement_action = True
 	doc.insert(ignore_permissions=True)
 	return doc
+
+
+def reverse_request_releases(request, stock_entry: str):
+	"""Append reversals atomically with cancellation; never rewrite assignment history."""
+	rows = _movement_rows(job_card=request.job_card, for_update=True)
+	for release in rows:
+		if release.movement_type != RELEASE or release.reference_doctype != "Production Exception Request" or release.reference_name != request.name:
+			continue
+		reversed_qty = sum(flt(row.qty) for row in rows if row.movement_type == RELEASE_REVERSAL and row.source_movement == release.name)
+		remaining = flt(release.qty) - reversed_qty
+		if remaining <= 0:
+			continue
+		if any(row.movement_type == REDISPATCH and row.source_movement == release.name for row in rows):
+			frappe.throw(_("该退料释放的任务已经重新派工，不能直接取消。请保留原退料记录，由主管按补料流程恢复生产，避免改变其他工人的任务和报工。"))
+		doc = frappe.get_doc({
+			"doctype": "Job Card Assignment Movement",
+			"movement_type": RELEASE_REVERSAL,
+			"movement_key": _hash_key(RELEASE_REVERSAL, release.name, stock_entry),
+			"job_card": request.job_card, "work_order": request.work_order,
+			"company": request.company, "operation": request.operation, "operation_id": request.operation_id,
+			"source_assignment": release.source_assignment, "source_movement": release.name,
+			"qty": remaining, "reason": _("取消退库，恢复尚未重新派出的任务数量。"),
+			"reference_doctype": "Stock Entry", "reference_name": stock_entry,
+			"moved_by": frappe.session.user, "moved_at": now_datetime(),
+		})
+		doc.flags.assignment_movement_action = True
+		doc.insert(ignore_permissions=True)
 
 
 def redispatch_request_rows(request_key: str, *, for_update: bool = False):

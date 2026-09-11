@@ -5,6 +5,24 @@ from frappe.tests import UnitTestCase
 
 
 class TestProductionWorkbench(UnitTestCase):
+	def test_order_line_focus_is_exact_and_combines_with_other_filters(self):
+		production = self._module()
+		selected = frappe._dict(demand_key="FOCUS", sales_order="SO-SHARED", item_name="传感器")
+		sibling = frappe._dict(demand_key="FOCUS-OTHER", sales_order="SO-SHARED", item_name="FOCUS")
+		self.assertEqual(
+			production.filter_production_demands([selected, sibling], {"demandKey": "FOCUS"}), [selected]
+		)
+		self.assertEqual(
+			production.filter_production_demands([selected, sibling], {"demandKey": "MISSING"}), []
+		)
+		self.assertEqual(
+			production.filter_production_demands(
+				[selected, sibling], {"demandKey": "FOCUS", "search": "no match"}
+			),
+			[],
+		)
+		self.assertEqual(production.filter_production_demands([selected, sibling], {}), [selected, sibling])
+
 	def test_fulfillment_filters_sales_orders_blocked_by_document_user_permissions(self):
 		from process_simplification.api import workbench
 
