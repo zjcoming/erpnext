@@ -19,16 +19,18 @@ app_include_css = [
 	"/assets/process_simplification/css/warehouse.css?v=2",
 	"/assets/process_simplification/css/process_pwa.css?v=1",
 	"/assets/process_simplification/css/hengsuan_branding.css?v=2",
+	"/assets/process_simplification/css/document_scan.css?v=7",
 ]
 app_include_js = [
 	"/assets/process_simplification/js/role_landing.js?v=1",
 	"/assets/process_simplification/js/item_identity.js?v=2",
 	"/assets/process_simplification/js/worker_assignment.js?v=14",
-	"/assets/process_simplification/js/worker_reporting.js?v=12",
+	"/assets/process_simplification/js/worker_reporting.js?v=14",
+	"/assets/process_simplification/js/document_scan.js?v=13",
 	"/assets/process_simplification/js/notification_sound.js?v=7",
 	"/assets/process_simplification/js/notification_sync.js?v=1",
 	"/assets/process_simplification/js/process_pwa.js?v=1",
-	"/assets/process_simplification/js/hengsuan_branding.js?v=2",
+	"/assets/process_simplification/js/hengsuan_branding.js?v=3",
 	"/assets/process_simplification/js/page_refresh.js?v=6",
 ]
 
@@ -38,19 +40,32 @@ after_request = ["process_simplification.page_refresh.after_request"]
 sales_order_draft_creation = "process_simplification.sales_order_creation.create_rest_draft"
 override_whitelisted_methods = {
 	"frappe.desk.form.save.savedocs": "process_simplification.sales_order_creation.savedocs",
+	"erpnext.controllers.accounts_controller.get_missing_company_details": "process_simplification.print_localization.skip_automatic_company_details",
 }
+
+page_js = {"print": "public/js/print_defaults.js"}
+get_print_format_template = "process_simplification.print_localization.get_print_format_template"
+pdf_body_html = "process_simplification.printing.factory_pdf_body_html"
 
 boot_session = [
 	"process_simplification.pwa.boot_session",
 	"process_simplification.navigation_layout.boot_session",
 	"process_simplification.branding.boot_session",
 	"process_simplification.role_landing.boot_session",
+	"process_simplification.document_scan.boot_session",
 ]
 
 doctype_js = {"Material Request": "public/js/material_request_purchasing.js"}
 
 after_install = "process_simplification.install.after_install"
 after_migrate = "process_simplification.install.after_migrate"
+
+jinja = {
+	"methods": [
+		"process_simplification.printing.get_document_scan_qr",
+		"process_simplification.print_localization.get_print_amount_in_words",
+	]
+}
 
 extend_doctype_class = {
 	"Work Order": "process_simplification.production_reporting.work_order.WorkerReportingWorkOrderMixin",

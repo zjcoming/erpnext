@@ -1,0 +1,15 @@
+{% from "templates/print/factory_sheet.html" import start, finish, field, qty, val, item_name, stock_qty with context %}
+<div class="ps-sheet ps-purchase-sheet">
+{{ start("采购订单") }}
+<table class="ps-sheet-info"><tbody><tr>{{ field("供应商", doc.get("supplier_name") or doc.get("supplier")) }}{{ field("订单日期", doc.get("transaction_date")) }}{{ field("要求到货", doc.get("schedule_date")) }}</tr><tr>{{ field("联系人", doc.get("contact_display")) }}{{ field("联系电话", doc.get("contact_mobile") or doc.get("contact_phone")) }}{{ field("结算币种", doc.get("currency")) }}</tr></tbody></table>
+{% if doc.get("shipping_address_display") %}<p><strong>收货地址：</strong>{{ doc.shipping_address_display | striptags | e }}</p>{% endif %}
+<table class="ps-sheet-items"><colgroup><col style="width:6%"><col style="width:34%"><col style="width:17%"><col style="width:17%"><col style="width:26%"></colgroup><thead><tr><th>序号</th><th>物料</th><th class="ps-sheet-right">数量 / 单位</th><th class="ps-sheet-right">单价</th><th class="ps-sheet-right">金额</th></tr></thead><tbody>
+{% for item in doc.get("items", []) %}<tr><td class="ps-sheet-center">{{ loop.index }}</td><td>{{ item_name(item) }}{% if item.get("schedule_date") and item.schedule_date != doc.get("schedule_date") %}<div><small>到货：{{ item.schedule_date | e }}</small></div>{% endif %}</td><td class="ps-sheet-right">{{ qty(item.get("qty")) }} {{ _(item.get("uom") or "") | e }}{{ stock_qty(item) }}</td><td class="ps-sheet-right">{{ frappe.utils.fmt_money(item.get("rate"), currency=doc.get("currency")) }}</td><td class="ps-sheet-right">{{ frappe.utils.fmt_money(item.get("amount"), currency=doc.get("currency")) }}</td></tr>{% endfor %}
+</tbody></table>
+<table class="ps-sheet-totals"><tbody><tr><td>物料小计</td><td class="ps-sheet-right">{{ frappe.utils.fmt_money(doc.get("total"), currency=doc.get("currency")) }}</td></tr>
+{% if doc.get("discount_amount") %}<tr><td>附加折扣</td><td class="ps-sheet-right">{{ frappe.utils.fmt_money(doc.discount_amount, currency=doc.get("currency")) }}</td></tr>{% endif %}
+{% for tax in doc.get("taxes", []) %}{% if tax.get("tax_amount_after_discount_amount") or tax.get("tax_amount") %}<tr><td>{{ (tax.get("description") or "税费") | striptags | e }}</td><td class="ps-sheet-right">{{ frappe.utils.fmt_money(tax.get("tax_amount_after_discount_amount") if tax.get("tax_amount_after_discount_amount") is not none else tax.get("tax_amount"), currency=doc.get("currency")) }}</td></tr>{% endif %}{% endfor %}
+<tr><td><strong>订单总额</strong></td><td class="ps-sheet-right"><strong>{{ frappe.utils.fmt_money(doc.get("grand_total"), currency=doc.get("currency")) }}</strong></td></tr>
+{% if doc.get("rounding_adjustment") %}<tr><td>舍入调整</td><td class="ps-sheet-right">{{ frappe.utils.fmt_money(doc.rounding_adjustment, currency=doc.get("currency")) }}</td></tr><tr><td>舍入后总额</td><td class="ps-sheet-right">{{ frappe.utils.fmt_money(doc.get("rounded_total"), currency=doc.get("currency")) }}</td></tr>{% endif %}
+</tbody></table><p><strong>订单总额大写：</strong>{{ get_print_amount_in_words(doc) | e }}</p>
+{{ finish(doc.get("terms"), "采购经办", "供应商确认") }}</div>

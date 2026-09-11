@@ -1,0 +1,49 @@
+{# Shared document furniture. Body templates use native saved quantities and never change stock. #}
+{% macro qty(number) %}{{ ("%.9f" | format((number or 0) | float)).rstrip("0").rstrip(".") }}{% endmacro %}
+{% macro val(value) %}{{ (value if value is not none and value != "" else "—") | e }}{% endmacro %}
+{% macro field(label, value) %}<td><span class="ps-sheet-label">{{ label | e }}</span>{{ val(value) }}</td>{% endmacro %}
+{% macro item_name(item) %}<strong>{{ val(item.get("item_code")) }}</strong>{% if item.get("item_name") and item.item_name != item.get("item_code") %}<div>{{ item.item_name | e }}</div>{% endif %}{% if item.get("batch_no") %}<small>批次：{{ item.batch_no | e }}</small>{% endif %}{% if item.get("serial_no") %}<div class="ps-sheet-wrap"><small>序列号：{{ item.serial_no | e }}</small></div>{% endif %}{% endmacro %}
+{% macro stock_qty(item, key="stock_qty") %}{% if item.get("stock_uom") and item.get("stock_uom") != item.get("uom") %}<div class="ps-sheet-muted"><small>折合 {{ qty(item.get(key)) }} {{ _(item.stock_uom) | e }}</small></div>{% endif %}{% endmacro %}
+{% macro start(title) %}
+<style>
+.print-format { font-family: "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; font-size: 11px; color: #182329; padding: 12mm 14mm; margin-top: {{ 76 if print_settings.repeat_header_footer and letter_head and not no_letterhead else 28 if print_settings.repeat_header_footer else 15 }}mm; margin-bottom: 16mm; header-spacing: 4; }
+body .print-format { margin-top: 0 !important; margin-bottom: 0 !important; }
+.ps-sheet { line-height: 1.45; }
+.ps-sheet-heading { width: 100%; margin: 8px 0 14px; table-layout: fixed; }
+.print-format .ps-sheet-heading td { border: 0 !important; padding: 0 0 9px !important; vertical-align: bottom !important; }
+.ps-sheet-heading h1 { margin: 0 0 4px; font-size: 23px; font-weight: 700; letter-spacing: 2px; }
+.ps-sheet-number { text-align: right; font-size: 12px; overflow-wrap: anywhere; word-wrap: break-word; }
+.ps-sheet-muted, .ps-sheet-label { color: #52636c; }
+.ps-sheet-label { display: block; font-size: 10px; margin-bottom: 3px; }
+.ps-sheet-info, .ps-sheet-items { width: 100%; border-collapse: collapse; table-layout: fixed; margin-bottom: 14px; }
+.print-format .ps-sheet-info td { width: 33.33%; border: 1px solid #b9c4c9 !important; padding: 8px 10px !important; vertical-align: top !important; word-wrap: break-word; }
+.print-format .ps-sheet-items td, .print-format .ps-sheet-items th { border: 1px solid #bdc7cc !important; padding: 5px 8px !important; vertical-align: top !important; word-wrap: break-word; }
+.print-format .ps-sheet-items th { background: #edf1f2 !important; color: #182329; font-weight: 600; }
+.ps-sheet-items thead { display: table-header-group; }
+.ps-sheet-items tr { page-break-inside: avoid; }
+.ps-sheet-right { text-align: right; }.ps-sheet-center { text-align: center; }
+.ps-sheet h2 { font-size: 13px; font-weight: 700; margin: 16px 0 8px; }
+.ps-sheet-notes { padding: 9px 11px; border: 1px solid #bdc7cc; min-height: 40px; white-space: pre-wrap; word-wrap: break-word; }
+.ps-sheet-wrap { white-space: pre-wrap; word-wrap: break-word; }
+.ps-sheet-signatures { border-top: 1px solid #93a4ad; padding-top: 13px; margin-top: 24px; page-break-inside: avoid; }
+.ps-sheet-signatures span { display: inline-block; width: 32%; }
+.ps-sheet .ps-sheet-hint { font-size: 10px; color: #52636c; margin-top: 12px; }
+.ps-sheet-totals { width: 100%; margin: 14px 0; border-collapse: collapse; }
+.print-format .ps-sheet-totals td { border: 0 !important; padding: 4px 0 !important; }
+.ps-sheet .ps-factory-letterhead { margin-bottom: 12px; }
+@media print { .print-format { padding: 0; } }
+</style>
+<div {% if print_settings.repeat_header_footer %}id="header-html" class="hidden-pdf"{% endif %}>
+{% if letter_head and not no_letterhead %}<div class="letter-head">{{ letter_head }}</div>{% endif %}
+<table class="ps-sheet-heading" role="presentation"><tr><td><h1>{{ title | e }}</h1><span class="ps-sheet-muted">{{ {0: "草稿", 1: "已提交", 2: "已取消"}.get(doc.get("docstatus", 0), "") }}{% if doc.get("is_return") %} · 退货{% endif %}</span></td><td class="ps-sheet-number">单据编号<br><strong>{{ doc.name | e }}</strong></td></tr></table>
+</div>
+{% endmacro %}
+{% macro finish(remarks, sign1="经办人", sign2="复核人") %}
+{% if remarks %}<h2>备注 / 要求</h2><div class="ps-sheet-notes">{{ _(remarks) | striptags | e }}</div>{% endif %}
+<div class="ps-sheet-signatures"><span>{{ sign1 | e }}：____________</span><span>{{ sign2 | e }}：____________</span><span>日期：____________</span></div>
+<p class="ps-sheet-hint">请在系统内扫码核对单据及当前状态，确认后再操作。草稿不代表已完成出入库。</p>
+<div {% if print_settings.repeat_header_footer %}id="footer-html" class="visible-pdf"{% endif %}>
+{% if footer and not no_letterhead %}<div class="letter-head-footer">{{ footer }}</div>{% endif %}
+{% if print_settings.repeat_header_footer %}<p class="text-center small page-number visible-pdf" {% if not footer or no_letterhead %}style="margin-top: -15mm"{% endif %}>第 <span class="page"></span> / <span class="topage"></span> 页</p>{% endif %}
+</div>
+{% endmacro %}

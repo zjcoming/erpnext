@@ -86,3 +86,7 @@ normal ERPNext permissions and a fresh server-side validation. The production wo
 standard Work Order, inspect material risk and reserve completed stock back to its source order; it does not perform
 material transfer, start work, Job Card reporting, manufacture Stock Entry, capacity scheduling or worker piece/time
 payroll. Those shop-floor operations stay in standard ERPNext and a later dedicated worker reporting page.
+
+## 默认打印与扫码
+
+采购、生产、采购收退货、库存作业及销售出退货单使用随应用安装的工厂打印模板，支持系统内二维码定位。部署、客户定制保护和验证范围见 [工厂默认打印与库存扫码](docs/factory_print_suite.md)。

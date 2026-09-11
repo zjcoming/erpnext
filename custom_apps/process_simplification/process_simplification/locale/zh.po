@@ -37,3 +37,60 @@ msgstr "恒算 ERP 设置"
 
 msgid "简化流程总设置"
 msgstr "恒算 ERP 设置"
+
+msgid "Order Number"
+msgstr "订单编号"
+
+msgid "Total in words"
+msgstr "金额大写"
+
+msgid "In Words"
+msgstr "金额大写"
+
+msgid "In Words:"
+msgstr "金额大写："
+
+msgid "Sub Total:"
+msgstr "小计："
+
+msgid "Grand Total:"
+msgstr "合计："
+
+msgid "Sr No"
+msgstr "序号"
+
+msgid "Nos"
+msgstr "个"
+
+msgid "Gram"
+msgstr "克"
+
+msgid "Meter"
+msgstr "米"
+
+msgid "Enter Company Details"
+msgstr "完善公司资料"
+
+msgid "Purchase Order Standard"
+msgstr "采购订单标准"
+
+msgid "Purchase Order with Item Image"
+msgstr "采购订单（含物料图片）"
+
+msgid "Supplier Name:"
+msgstr "供应商名称："
+
+msgid "Supplier Address:"
+msgstr "供应商地址："
+
+msgid "Purchase Order:"
+msgstr "订单编号："
+
+msgid "Order Date:"
+msgstr "订单日期："
+
+msgid "Required By:"
+msgstr "需求日期："
+
+msgid "Created from the simplified production hand-off workflow."
+msgstr "由生产任务交接生成。"

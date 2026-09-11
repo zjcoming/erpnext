@@ -36,6 +36,10 @@
 				image.alt = brand.product_name;
 				logo.replaceChildren(image);
 			}
+		} else if (header && frappe.app?.sidebar?.sidebar_data?.app === "erpnext") {
+			// Keep the workspace name (for example, Organization) as navigation context.
+			const subtitle = header.querySelector(".header-subtitle");
+			if (subtitle && subtitle.textContent !== brand.product_name) subtitle.textContent = brand.product_name;
 		}
 		const bottom = sidebar.querySelector(".body-sidebar-bottom");
 		if (bottom && !bottom.querySelector(".hs-brand-about")) {

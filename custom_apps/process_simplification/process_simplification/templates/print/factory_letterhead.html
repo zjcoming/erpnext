@@ -1,0 +1,70 @@
+{# Company identity follows the printed document, never the ERP software vendor. #}
+{% set document = doc if doc is defined else {} %}
+{% set company_key = document.get("company") or (document.get("name") if document.get("doctype") == "Company" else None) %}
+{% set company = frappe.db.get_value("Company", company_key,
+    ["company_name", "company_logo", "phone_no", "email", "website"], as_dict=True) if company_key else None %}
+{% if company %}
+    {% set scan_qr = get_document_scan_qr(document) %}
+    {# Accept only active addresses linked to this company, including a document-specific branch address. #}
+    {% set linked_addresses = frappe.get_all("Dynamic Link", filters={
+        "parenttype": "Address", "link_doctype": "Company", "link_name": company_key
+    }, pluck="parent") %}
+    {% set address = {} %}
+    {% if linked_addresses %}
+        {% set addresses = frappe.get_all("Address", filters={"name": ["in", linked_addresses], "disabled": 0},
+            fields=["name", "address_line1", "address_line2", "city", "state", "country", "phone", "email_id"],
+            order_by="is_primary_address desc, creation asc, name asc") %}
+        {% if addresses %}{% set address = addresses[0] %}{% endif %}
+        {% set matching_addresses = addresses | selectattr("name", "equalto", document.get("company_address")) | list %}
+        {% if matching_addresses %}{% set address = matching_addresses[0] %}{% endif %}
+    {% endif %}
+    {% set phone = company.phone_no or address.get("phone") %}
+    {% set email = company.email or address.get("email_id") %}
+<style>
+.ps-factory-letterhead {
+    color: #111; font-family: "Noto Sans CJK SC", "Source Han Sans SC", "Microsoft YaHei", "SimHei", sans-serif;
+    width: 100%; margin: 0 0 14px; padding: 0; page-break-inside: avoid; text-align: center;
+}
+.ps-factory-letterhead .ps-factory-identity {
+    width: 100%; margin: 0; border: 0 !important; border-collapse: collapse; table-layout: fixed;
+}
+.print-format .ps-factory-letterhead .ps-factory-identity td,
+.ps-factory-letterhead .ps-factory-identity td {
+    border: 0 !important; padding: 0 !important; background: transparent !important; vertical-align: middle !important;
+}
+.ps-factory-letterhead .ps-factory-logo-cell { width: 62px; }
+.ps-factory-letterhead .ps-factory-logo { display: block; max-width: 52px; max-height: 52px; width: auto; height: auto; }
+.ps-factory-letterhead .ps-factory-name {
+    font-size: 24px; font-weight: 700; line-height: 1.45; letter-spacing: 1.5px; text-align: center; overflow-wrap: break-word; word-wrap: break-word;
+}
+.ps-factory-letterhead .ps-factory-address,
+.ps-factory-letterhead .ps-factory-contact {
+    font-size: 11px; font-weight: 400; line-height: 1.65; color: #333; margin-top: 3px; word-wrap: break-word;
+}
+.ps-factory-letterhead .ps-factory-contact span {
+    display: inline-block; max-width: 100%; margin: 0 8px; word-wrap: break-word;
+}
+.ps-factory-letterhead .ps-factory-rule { border-top: 2px solid #111; border-bottom: 1px solid #111; height: 4px; margin-top: 11px; }
+.ps-factory-letterhead.ps-factory-has-qr .ps-factory-logo-cell { width: 30mm; }
+.ps-factory-letterhead.ps-factory-has-qr .ps-factory-name { font-size: 22px; letter-spacing: 1px; }
+.ps-factory-letterhead .ps-factory-qr { width: 28mm; margin-left: auto; text-align: center; }
+.ps-factory-letterhead .ps-factory-qr img { display: block; width: 28mm; height: 28mm; }
+.ps-factory-letterhead .ps-factory-qr-label { font-size: 10px; line-height: 1.5; color: #111; }
+.ps-factory-letterhead .ps-factory-qr-name { font-size: 9px; line-height: 1.4; word-break: break-all; color: #333; }
+</style>
+<div class="ps-factory-letterhead{% if scan_qr %} ps-factory-has-qr{% endif %}">
+    <table class="ps-factory-identity" role="presentation"><tbody><tr>
+        {% if company.company_logo or scan_qr %}<td class="ps-factory-logo-cell">{% if company.company_logo %}<img class="ps-factory-logo" src="{{ frappe.utils.get_url(company.company_logo) | e }}" alt="{{ company.company_name | e }}">{% endif %}</td>{% endif %}
+        <td><div class="ps-factory-name">{{ (company.company_name or company_key) | e }}</div>
+    {% if address.get("address_line1") %}
+    <div class="ps-factory-address">地址：{% if address.get("country") and address.country != "China" %}{{ _(address.country) | e }} {% endif %}{% if address.get("state") and address.state not in address.address_line1 %}{{ address.state | e }}{% endif %}{% if address.get("city") and address.city != address.get("state") and address.city not in address.address_line1 %}{{ address.city | e }}{% endif %}{{ address.address_line1 | e }}{% if address.get("address_line2") %} {{ address.address_line2 | e }}{% endif %}</div>
+    {% endif %}
+    {% if phone or email or company.website %}
+    <div class="ps-factory-contact">{% if phone %}<span>电话：{{ phone | e }}</span>{% endif %}{% if email %}<span>邮箱：{{ email | e }}</span>{% endif %}{% if company.website %}<span>网址：{{ company.website | e }}</span>{% endif %}</div>
+    {% endif %}
+        </td>
+        {% if company.company_logo or scan_qr %}<td class="ps-factory-logo-cell">{% if scan_qr %}<div class="ps-factory-qr"><img src="{{ scan_qr.image | e }}" alt="单据二维码"><div class="ps-factory-qr-label">仅限系统内扫码</div><div class="ps-factory-qr-name">{{ document.name | e }}</div></div>{% endif %}</td>{% endif %}
+    </tr></tbody></table>
+    <div class="ps-factory-rule"></div>
+</div>
+{% endif %}

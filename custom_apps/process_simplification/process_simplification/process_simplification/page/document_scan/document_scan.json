@@ -1,0 +1,10 @@
+{
+ "doctype": "Page",
+ "name": "document-scan",
+ "page_name": "document-scan",
+ "title": "扫一扫",
+ "module": "Process Simplification",
+ "standard": "Yes",
+ "roles": [{"role": "Desk User"}],
+ "modified": "2026-09-11 00:00:00.000000"
+}

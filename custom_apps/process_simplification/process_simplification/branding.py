@@ -48,6 +48,7 @@ def boot_session(bootinfo):
 		{
 			"Process Simplification": PRODUCT_NAME,
 			"process-simplification": PRODUCT_NAME,
+			"process_simplification": PRODUCT_NAME,
 			"流程简化": PRODUCT_NAME,
 		}
 	)

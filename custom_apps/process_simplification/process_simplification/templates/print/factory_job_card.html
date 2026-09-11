@@ -1,0 +1,59 @@
+{# A shop-floor task sheet. Internal configuration, pay rates and row IDs are deliberately absent. #}
+<style>
+.print-format { font-family: "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; font-size: 11px; color: #182329; padding: 12mm 14mm; margin-top: {{ 80 if print_settings.repeat_header_footer and letter_head and not no_letterhead else 35 if print_settings.repeat_header_footer else 15 }}mm; margin-bottom: 15mm; header-spacing: 4; }
+/* The native PDF engine reads margins above as page options; keep them off the HTML box itself. */
+body .print-format { margin-top: 0 !important; margin-bottom: 0 !important; }
+.print-format .letter-head { margin-bottom: 10px; }
+.ps-job-sheet { line-height: 1.65; }
+.ps-job-title { width: 100%; border: 0; margin: 0 0 14px; table-layout: fixed; }
+.print-format .ps-job-title td { border: 0 !important; padding: 0 0 9px !important; vertical-align: bottom !important; }
+.ps-job-title h1 { font-size: 23px; font-weight: 700; margin: 0; letter-spacing: 2px; }
+.ps-job-title .ps-job-number { text-align: right; font-size: 12px; }
+.ps-job-muted { color: #5e6b71; }
+.ps-job-sheet .ps-job-info, .ps-job-sheet .ps-job-materials { width: 100%; border-collapse: collapse; table-layout: fixed; margin-bottom: 16px; }
+.print-format .ps-job-info td { border: 1px solid #c9d0d3 !important; padding: 9px 11px !important; vertical-align: top !important; word-wrap: break-word; }
+.ps-job-info .ps-job-label { display: block; color: #5e6b71; font-size: 10px; margin-bottom: 2px; }
+.ps-job-info .ps-job-product { font-size: 16px; font-weight: 700; }
+.ps-job-info .ps-job-quantity { font-size: 20px; font-weight: 700; line-height: 1.4; }
+.ps-job-sheet h2 { font-size: 13px; font-weight: 700; margin: 17px 0 8px; }
+.ps-job-materials thead { display: table-header-group; }
+.print-format .ps-job-materials th, .print-format .ps-job-materials td { border: 1px solid #c9d0d3 !important; padding: 7px 8px !important; vertical-align: top !important; word-wrap: break-word; }
+.print-format .ps-job-materials th { background: #f1f3f4 !important; font-weight: 600; color: #182329; }
+.ps-job-materials tr { page-break-inside: avoid; }
+.ps-job-right { text-align: right; }
+.ps-job-center { text-align: center; }
+.ps-job-remarks { white-space: pre-wrap; word-wrap: break-word; padding: 9px 11px; border: 1px solid #c9d0d3; min-height: 50px; }
+.ps-job-signatures { margin-top: 28px; border-top: 1px solid #a9b2b7; padding-top: 14px; page-break-inside: avoid; }
+.ps-job-signatures span { display: inline-block; width: 32%; }
+.ps-job-hint { margin-top: 14px; font-size: 10px; color: #5e6b71; }
+.ps-job-sheet .ps-factory-letterhead { margin-bottom: 12px; }
+@media print { .print-format { padding: 0; } }
+</style>
+{% macro value(field) %}{{ (doc.get(field) if doc.get(field) is not none else "—") | e }}{% endmacro %}
+{% macro qty(number) %}{{ ("%.9f" | format(number | float)).rstrip("0").rstrip(".") }}{% endmacro %}
+{% set state = {0: "草稿", 1: "已提交", 2: "已取消"}.get(doc.get("docstatus", 0), "") %}
+<div class="ps-job-sheet">
+  <div {% if print_settings.repeat_header_footer %}id="header-html" class="hidden-pdf"{% endif %}>
+    {% if letter_head and not no_letterhead %}<div class="letter-head">{{ letter_head }}</div>{% endif %}
+    <table class="ps-job-title" role="presentation"><tr><td><h1>生产任务单</h1><span class="ps-job-muted">{{ state }}</span></td><td class="ps-job-number">任务编号<br><strong>{{ doc.name | e }}</strong></td></tr></table>
+  </div>
+  <table class="ps-job-info"><colgroup><col style="width:34%"><col style="width:33%"><col style="width:33%"></colgroup><tbody>
+    <tr><td colspan="2"><span class="ps-job-label">生产物料</span><div class="ps-job-product">{{ (doc.get("item_name") or doc.get("production_item") or "—") | e }}</div><span class="ps-job-muted">{{ value("production_item") }}</span></td><td><span class="ps-job-label">任务数量</span><span class="ps-job-quantity">{{ qty(doc.get("for_quantity")) }}</span> {{ _(doc.get("stock_uom") or "") | e }}</td></tr>
+    <tr><td><span class="ps-job-label">生产工单</span>{{ value("work_order") }}</td><td><span class="ps-job-label">工序</span><strong>{{ value("operation") }}</strong></td><td><span class="ps-job-label">工作站</span>{{ value("workstation") }}</td></tr>
+    <tr><td><span class="ps-job-label">计划开始</span>{{ frappe.utils.format_datetime(doc.get("expected_start_date"), "yyyy-MM-dd HH:mm") if doc.get("expected_start_date") else "—" }}</td><td><span class="ps-job-label">计划结束</span>{{ frappe.utils.format_datetime(doc.get("expected_end_date"), "yyyy-MM-dd HH:mm") if doc.get("expected_end_date") else "—" }}</td><td><span class="ps-job-label">已完工数量</span>{{ qty(doc.get("total_completed_qty")) }} {{ _(doc.get("stock_uom") or "") | e }}</td></tr>
+    {% if doc.get("source_warehouse") or doc.get("wip_warehouse") or doc.get("target_warehouse") %}<tr><td><span class="ps-job-label">发料仓</span>{{ value("source_warehouse") }}</td><td><span class="ps-job-label">在制品仓</span>{{ value("wip_warehouse") }}</td><td><span class="ps-job-label">收料仓</span>{{ value("target_warehouse") }}</td></tr>{% endif %}
+  </tbody></table>
+  {% if doc.get("items") %}
+  <h2>工序用料</h2>
+  <table class="ps-job-materials"><colgroup><col style="width:7%"><col style="width:28%"><col style="width:40%"><col style="width:16%"><col style="width:9%"></colgroup><thead><tr><th class="ps-job-center">序号</th><th>物料编码</th><th>物料名称</th><th class="ps-job-right">需求数量</th><th class="ps-job-center">单位</th></tr></thead><tbody>
+  {% for item in doc.get("items") %}<tr><td class="ps-job-center">{{ loop.index }}</td><td>{{ (item.get("item_code") or "—") | e }}</td><td>{{ (item.get("item_name") or item.get("item_code") or "—") | e }}</td><td class="ps-job-right">{{ qty(item.get("required_qty")) }}</td><td class="ps-job-center">{{ _(item.get("uom") or item.get("stock_uom") or "") | e }}</td></tr>{% endfor %}
+  </tbody></table>
+  {% endif %}
+  <h2>操作要求 / 备注</h2><div class="ps-job-remarks">{{ (doc.get("remarks") or "") | striptags | e }}</div>
+  <div class="ps-job-signatures"><span>执行人：____________</span><span>复核人：____________</span><span>日期：____________</span></div>
+  <p class="ps-job-hint">请在系统内扫码查看当前派单与进度，核对后再操作。</p>
+  <div {% if print_settings.repeat_header_footer %}id="footer-html" class="visible-pdf"{% endif %}>
+    {% if footer and not no_letterhead %}<div class="letter-head-footer">{{ footer }}</div>{% endif %}
+    {% if print_settings.repeat_header_footer %}<p class="text-center small page-number visible-pdf" {% if not footer or no_letterhead %}style="margin-top: -15mm"{% endif %}>第 <span class="page"></span> / <span class="topage"></span> 页</p>{% endif %}
+  </div>
+</div>

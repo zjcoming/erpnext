@@ -3,6 +3,7 @@ from __future__ import annotations
 import frappe
 
 from process_simplification.defaults import configure_company_manufacturing_defaults
+from process_simplification.document_scan import ensure_scan_site_id
 from process_simplification.management_access import (
 	ensure_management_access,
 	migrate_legacy_production_supervisor_roles,
@@ -12,17 +13,18 @@ from process_simplification.management_access import (
 from process_simplification.notifications import (
 	disable_standard_material_request_receipt_email,
 )
-from process_simplification.patches.v0_0.add_purchasing_navigation import execute as add_purchasing_navigation
-from process_simplification.patches.v0_0.add_warehouse_navigation import execute as add_warehouse_navigation
 from process_simplification.patches.v0_0.add_management_navigation import (
 	execute as add_management_navigation,
 )
+from process_simplification.patches.v0_0.add_purchasing_navigation import execute as add_purchasing_navigation
+from process_simplification.patches.v0_0.add_warehouse_navigation import execute as add_warehouse_navigation
 from process_simplification.patches.v0_0.add_worker_reporting_navigation import (
 	execute as add_worker_reporting_navigation,
 )
 from process_simplification.patches.v0_0.group_process_simplification_navigation import (
 	execute as group_process_simplification_navigation,
 )
+from process_simplification.printing import ensure_factory_print_formats, ensure_factory_letterhead
 from process_simplification.production_reporting.setup import setup_worker_reporting
 from process_simplification.production_workflow.setup import ensure_production_workflow_fields
 from process_simplification.purchasing.receipts import ensure_defaults as ensure_receipt_defaults
@@ -42,6 +44,9 @@ def set_default_language(language: str = "zh"):
 
 def after_install():
 	set_default_language()
+	ensure_scan_site_id()
+	ensure_factory_letterhead()
+	ensure_factory_print_formats()
 	configure_company_manufacturing_defaults()
 	setup_worker_reporting()
 	ensure_production_workflow_fields()
@@ -61,6 +66,9 @@ def after_install():
 
 
 def after_migrate():
+	ensure_scan_site_id()
+	ensure_factory_letterhead()
+	ensure_factory_print_formats()
 	setup_worker_reporting()
 	ensure_production_workflow_fields()
 	ensure_management_access()

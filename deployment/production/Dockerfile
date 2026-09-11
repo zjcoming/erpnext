@@ -97,6 +97,12 @@ RUN cp -a sites/assets ./assets && \
 VOLUME ["/home/frappe/frappe-bench/sites", "/home/frappe/frappe-bench/logs"]
 
 USER root
+# Company names and factory document labels must survive server-side PDF output.
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends fonts-noto-cjk && \
+    fc-cache -f && \
+    rm -rf /var/lib/apt/lists/*
+
 COPY deployment/production/entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY deployment/production/start.sh /usr/local/bin/start.sh
 RUN chmod 0755 /usr/local/bin/entrypoint.sh /usr/local/bin/start.sh

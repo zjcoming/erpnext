@@ -230,6 +230,28 @@ function shouldOpenWaitingMaterialGroup(partitions = {}) {
 	return !partitions.active?.length && !partitions.ready?.length && !partitions.blocked?.length;
 }
 
+function workerScanTarget(assignments, jobCard) {
+	const row = (assignments || []).find((item) => item.job_card === jobCard);
+	return row ? { row, mode: row.active_report ? "active" : "queue" } : null;
+}
+
+function focusWorkerAssignment(root, assignment) {
+	const card = Array.from(root.querySelectorAll(".worker-assignment-card"))
+		.find((node) => node.getAttribute("data-assignment") === assignment);
+	if (!card) return false;
+	root.querySelectorAll(".ps-scan-focused").forEach((node) => node.classList.remove("ps-scan-focused"));
+	for (let parent = card.parentElement; parent && parent !== root; parent = parent.parentElement) {
+		if (parent.tagName === "DETAILS") parent.open = true;
+	}
+	card.querySelectorAll("details").forEach((node) => { node.open = true; });
+	card.classList.add("ps-scan-focused");
+	card.setAttribute("tabindex", "-1");
+	card.focus({ preventScroll: true });
+	card.scrollIntoView({ block: "center", behavior: "auto" });
+	setTimeout(() => card.classList.remove("ps-scan-focused"), 6000);
+	return true;
+}
+
 function workerTaskNavigationHtml(activeRoute, helpers = {}) {
 	const translate = helpers.translate || ((message) => message);
 	const escapeHtml = helpers.escapeHtml || ((value) => String(value ?? ""));
@@ -384,14 +406,37 @@ function mountWorkerReportingPage({ page, root, mode = "queue" }) {
 	}
 
 	function load(options = {}) {
+		const scans = window.process_simplification?.document_scan;
+		const pendingFocus = scans?.focusStore.peek(frappe.session.user, mode);
 		return frappe.ps_read_page(page, {
 			method: "process_simplification.api.production_reporting.get_my_dashboard",
-			background: options.background,
+			background: options.background && !pendingFocus,
 			freeze_message: mode === "active" ? __("正在读取进行中的任务...") : __("正在读取当前派工..."),
 			apply(response) {
-			state.data = response.message || { assignments: [], reports: [] };
-			render();
+				state.data = response.message || { assignments: [], reports: [] };
+				render();
 			},
+		}).then((applied) => {
+			// Run after the shared loader restores background scroll/expansion state,
+			// including when this read was merged with an already-running refresh.
+			if (applied === false || frappe.container?.page?.page !== page) return applied;
+			const focus = scans?.focusStore.take(frappe.session.user, mode);
+			if (!focus) return applied;
+			const target = workerScanTarget(state.data.assignments, focus.jobCard);
+			if (!target) {
+				frappe.msgprint(__("这张任务单不在你当前可操作的任务中，请联系主管确认。"));
+			} else if (target.mode !== mode) {
+				if (focus.redirected) {
+					frappe.msgprint(__("任务状态刚刚发生变化，请刷新任务列表后再试。"));
+				} else {
+					scans.focusStore.set({ ...focus, mode: target.mode, redirected: true });
+					frappe.route_options = null;
+					frappe.set_route(target.mode === "active" ? "active-production-work" : "my-production-reporting");
+				}
+			} else if (!focusWorkerAssignment($root[0], target.row.name)) {
+				frappe.msgprint(__("任务列表已更新，请刷新后重新扫码。"));
+			}
+			return applied;
 		});
 	}
 
@@ -767,6 +812,8 @@ const workerReportingApi = {
 	workerAssignmentPriority,
 	partitionWorkerAssignments,
 	shouldOpenWaitingMaterialGroup,
+	workerScanTarget,
+	focusWorkerAssignment,
 	workerTaskNavigationHtml,
 	workerAssignmentCardHtml,
 	mountWorkerReportingPage,
