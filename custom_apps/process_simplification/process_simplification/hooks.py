@@ -21,6 +21,7 @@ app_include_css = [
 	"/assets/process_simplification/css/hengsuan_branding.css?v=2",
 ]
 app_include_js = [
+	"/assets/process_simplification/js/role_landing.js?v=1",
 	"/assets/process_simplification/js/item_identity.js?v=2",
 	"/assets/process_simplification/js/worker_assignment.js?v=14",
 	"/assets/process_simplification/js/worker_reporting.js?v=12",
@@ -43,6 +44,7 @@ boot_session = [
 	"process_simplification.pwa.boot_session",
 	"process_simplification.navigation_layout.boot_session",
 	"process_simplification.branding.boot_session",
+	"process_simplification.role_landing.boot_session",
 ]
 
 doctype_js = {"Material Request": "public/js/material_request_purchasing.js"}

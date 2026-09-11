@@ -20,3 +20,4 @@ process_simplification.patches.v0_0.compact_receipt_notifications
 process_simplification.patches.v0_0.fix_production_exception_review_icon
 process_simplification.patches.v0_0.add_warehouse_navigation
 process_simplification.patches.v0_0.compact_quick_order_notifications
+process_simplification.patches.v0_0.add_role_landing_settings

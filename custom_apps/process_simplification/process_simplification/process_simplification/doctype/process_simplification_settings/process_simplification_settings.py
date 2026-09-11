@@ -23,14 +23,17 @@ class ProcessSimplificationSettings(Document):
 	def validate(self):
 		from process_simplification.notifications import validate_notification_routes
 		from process_simplification.pwa import validate_settings
+		from process_simplification.role_landing import validate_settings as validate_landing_settings
 
 		validate_notification_routes(self)
 		validate_settings(self)
+		validate_landing_settings(self)
 
 	def on_update(self):
 		from process_simplification.pwa import PWA_FIELDS
+		from process_simplification.role_landing import LANDING_FIELDS
 
-		if any(self.has_value_changed(field) for field in PWA_FIELDS):
+		if any(self.has_value_changed(field) for field in (*PWA_FIELDS, *LANDING_FIELDS)):
 			# Refresh cached boot configuration for other users without ending their sessions.
 			frappe.clear_cache()
 

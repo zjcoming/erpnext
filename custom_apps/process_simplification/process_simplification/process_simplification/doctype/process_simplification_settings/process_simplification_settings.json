@@ -3,8 +3,11 @@
  "creation": "2026-08-30 00:00:00.000000",
  "doctype": "DocType",
  "engine": "InnoDB",
- "field_order": ["worker_reporting_section", "allow_manual_time_entry", "pwa_section", "enable_pwa", "pwa_app_name", "pwa_short_name", "pwa_https_url", "pwa_install_prompt", "pwa_prompt_interval_days", "pwa_status", "notification_section", "purchase_receipt_notifications_started_at", "enable_process_notifications", "enable_notification_sound", "notification_recipients", "notification_role_recipients"],
+ "field_order": ["landing_section", "enable_role_landing", "role_landing_pages", "worker_reporting_section", "allow_manual_time_entry", "pwa_section", "enable_pwa", "pwa_app_name", "pwa_short_name", "pwa_https_url", "pwa_install_prompt", "pwa_prompt_interval_days", "pwa_status", "notification_section", "purchase_receipt_notifications_started_at", "enable_process_notifications", "enable_notification_sound", "notification_recipients", "notification_role_recipients"],
  "fields": [
+  {"fieldname": "landing_section", "fieldtype": "Section Break", "label": "角色默认首页", "permlevel": 1},
+  {"fieldname": "enable_role_landing", "fieldtype": "Check", "label": "按角色进入默认首页", "default": "1", "description": "登录或打开恒算 ERP 时，按下表选择首页。保存后刷新页面或重新登录生效；从通知、收藏或单据链接进入时仍打开指定页面。", "permlevel": 1},
+  {"fieldname": "role_landing_pages", "fieldtype": "Table", "label": "首页优先级（从上往下）", "options": "Process Role Landing Page", "depends_on": "enable_role_landing", "description": "拖动行调整优先级。用户有多个角色时，进入第一条启用且有权限访问的首页；无权限的页面自动跳过。没有匹配项时保留原入口。此设置不会授予页面或业务权限。", "permlevel": 1},
   {"fieldname": "purchase_receipt_notifications_started_at", "fieldtype": "Datetime", "label": "逐批到货通知启用时间", "read_only": 1, "permlevel": 1},
   {"fieldname": "worker_reporting_section", "fieldtype": "Section Break", "label": "工人报工"},
   {"default": "1", "description": "开启后，计时工资由工人在结束报工时填写计薪分钟；关闭后，计薪分钟取暂停后累计的计时器实际分钟。实际计时段始终保留供审核和 Job Card 使用。", "fieldname": "allow_manual_time_entry", "fieldtype": "Check", "label": "计时工资允许手工填写工时"},

@@ -27,6 +27,7 @@ from process_simplification.production_reporting.setup import setup_worker_repor
 from process_simplification.production_workflow.setup import ensure_production_workflow_fields
 from process_simplification.purchasing.receipts import ensure_defaults as ensure_receipt_defaults
 from process_simplification.pwa import ensure_defaults as ensure_pwa_defaults
+from process_simplification.role_landing import ensure_defaults as ensure_landing_defaults
 
 
 def set_default_language(language: str = "zh"):
@@ -56,6 +57,7 @@ def after_install():
 	disable_standard_material_request_receipt_email()
 	ensure_pwa_defaults()
 	ensure_receipt_defaults()
+	ensure_landing_defaults()
 
 
 def after_migrate():
@@ -73,3 +75,4 @@ def after_migrate():
 	disable_standard_material_request_receipt_email()
 	ensure_pwa_defaults()
 	ensure_receipt_defaults()
+	ensure_landing_defaults()

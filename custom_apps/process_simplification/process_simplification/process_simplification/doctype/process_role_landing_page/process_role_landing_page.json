@@ -1,0 +1,20 @@
+{
+ "doctype": "DocType",
+ "name": "Process Role Landing Page",
+ "module": "Process Simplification",
+ "engine": "InnoDB",
+ "istable": 1,
+ "editable_grid": 1,
+ "field_order": ["enabled", "role", "landing_page"],
+ "fields": [
+  {"fieldname": "enabled", "fieldtype": "Check", "label": "启用", "default": "1", "in_list_view": 1, "columns": 1},
+  {"fieldname": "role", "fieldtype": "Select", "label": "角色", "options": "\n老板\n生产主管\n库房人员\n销售人员\n工资核算人员\n流水线工人\nAPP 权限管理员\n系统管理员", "reqd": 1, "in_list_view": 1, "columns": 4},
+  {"fieldname": "landing_page", "fieldtype": "Select", "label": "默认首页", "options": "\n经营总览\n订单工作台\n快速开单\n生产计划中心\n报工审核\n异常审核\n库房工作台\n缺料采购\n供应商分配\n我的任务\n正在做\n我的记录\n工资总览\n计价规则\n权限管理\n系统设置\n工作台", "reqd": 1, "in_list_view": 1, "columns": 5}
+ ],
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "actions": [],
+ "links": []
+}
