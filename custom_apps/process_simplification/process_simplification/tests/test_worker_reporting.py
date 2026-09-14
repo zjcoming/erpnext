@@ -303,7 +303,9 @@ class TestWorkerReporting(IntegrationTestCase):
 		bom.set_rate_of_sub_assembly_item_based_on_bom = 0
 		bom.rm_cost_as_per = "Valuation Rate"
 		bom.is_default = 0
-		bom.items[0].uom = "Nos"
+		bom.items[0].item_code = self.TEST_RAW_MATERIAL
+		bom.items[0].uom = frappe.get_cached_value("Item", self.TEST_RAW_MATERIAL, "stock_uom")
+		bom.items[0].stock_uom = bom.items[0].uom
 		bom.items[0].conversion_factor = 1
 		bom.items[0].qty = raw_material_qty_per_unit
 		bom.items[0].stock_qty = raw_material_qty_per_unit
@@ -739,7 +741,7 @@ class TestWorkerReporting(IntegrationTestCase):
 				assignment=assignment.name,
 				request_type=MATERIAL_RETURN,
 				qty=2,
-				cause="Material Defect",
+				cause="Other",
 				reason="领料后发现其中两件尚未使用，需要退回原仓",
 				request_key="material-return-" + random_string(12),
 				material_key=material.key,
@@ -895,7 +897,7 @@ class TestWorkerReporting(IntegrationTestCase):
 					assignment=first.name,
 					request_type=MATERIAL_RETURN,
 					qty=17,
-					cause="Material Defect",
+					cause="Other",
 					reason="不能退超过个人物料份额",
 					request_key="personal-return-over-" + random_string(12),
 					material_key=material.key,
@@ -903,8 +905,9 @@ class TestWorkerReporting(IntegrationTestCase):
 			request = exception_service.submit_exception(
 				assignment=first.name,
 				request_type=MATERIAL_RETURN,
+				material_action="Release",
 				qty=1,
-				cause="Material Defect",
+				cause="Other",
 				reason="退一件后按 BOM 向下取整",
 				request_key="personal-return-" + random_string(12),
 				material_key=material.key,
@@ -944,8 +947,9 @@ class TestWorkerReporting(IntegrationTestCase):
 			request = exception_service.submit_exception(
 				assignment=first.name,
 				request_type=MATERIAL_RETURN,
+				material_action="Release",
 				qty=1,
-				cause="Material Defect",
+				cause="Other",
 				reason="验证过账后仍按个人份额扣减",
 				request_key="personal-return-posted-" + random_string(12),
 				material_key=material.key,
@@ -1057,6 +1061,9 @@ class TestWorkerReporting(IntegrationTestCase):
 		self.assertEqual(third_assignment.assigned_qty, 0)
 		self.assertEqual(assignment_effective_qty(third_assignment), 1)
 		self.assertEqual(released_pool_qty(job_card.name), 0)
+		with self.set_user("Administrator"):
+			with self.assertRaisesRegex(frappe.ValidationError, "已经重新派工"):
+				frappe.get_doc("Stock Entry", request.stock_entry).cancel()
 		with self.set_user(third_user):
 			third_dashboard = next(
 				row
@@ -1065,6 +1072,185 @@ class TestWorkerReporting(IntegrationTestCase):
 			)
 			self.assertEqual(third_dashboard.effective_assigned_qty, 1)
 			self.assertEqual(third_dashboard.reportable_qty, 1)
+		third_assignment_doc = frappe.get_doc("Job Card Worker Assignment", third_assignment.name)
+		third_report = self._submit_as(third_assignment_doc, third_user, 1)
+		with self.set_user(self.supervisor):service.approve_work_report(third_report.name)
+		with self.set_user("Administrator"):
+			with self.assertRaisesRegex(frappe.ValidationError, "已经重新派工"):
+				frappe.get_doc("Stock Entry", request.stock_entry).cancel()
+		self.assertEqual(frappe.db.get_value("Job Card Work Report", third_report.name, "status"), "Approved")
+		self.assertEqual(assignment_effective_qty(third_assignment_doc), 1)
+
+	def _setup_exception_material_flow(self, qty=10):
+		from erpnext.manufacturing.doctype.work_order.work_order import make_stock_entry as make_transfer
+		from erpnext.stock.doctype.stock_entry.stock_entry_utils import make_stock_entry
+		job_card, assignment = self._setup_flow(qty=qty)
+		with self.set_user("Administrator"):
+			make_stock_entry(item_code=self.TEST_RAW_MATERIAL, to_warehouse=self.source_warehouse,
+				company=self.TEST_COMPANY, qty=qty, basic_rate=1)
+			frappe.db.set_value("Work Order", job_card.work_order, {
+				"skip_transfer": 0, "source_warehouse": self.source_warehouse,
+				"wip_warehouse": self.wip_warehouse, "scrap_warehouse": self.scrap_warehouse,
+			}, update_modified=False)
+			transfer = frappe.get_doc(make_transfer(job_card.work_order, "Material Transfer for Manufacture", qty=qty))
+			transfer.insert(ignore_permissions=True)
+			transfer.submit()
+		return job_card, assignment
+
+	def _request_material_exception(self, assignment, qty, *, action="Continue", kind=MATERIAL_RETURN, cause="Other"):
+		with self.set_user(self.worker_user):
+			material = exception_service.get_exception_options(assignment.name)["materials"][0]
+			return exception_service.submit_exception(assignment=assignment.name, request_type=kind,
+				qty=qty, cause=cause, reason="物料异常闭环回归", request_key=random_string(24),
+				material_key=material.key, material_action=action)
+
+	def _post_material_exception(self, request):
+		with self.set_user(self.supervisor):
+			exception_service.approve_exception(request.name)
+		request.reload()
+		with self.set_user("Administrator"):
+			entry = frappe.get_doc("Stock Entry", request.stock_entry)
+			entry.submit()
+		request.reload()
+		return entry
+
+	def test_alternative_item_return_preserves_actual_stock_and_original_bom_gap(self):
+		from erpnext.stock.doctype.stock_entry.stock_entry_utils import make_stock_entry
+		from erpnext.manufacturing.doctype.work_order.work_order import make_stock_entry as make_transfer
+		from process_simplification.production_stock_facts import load_work_order_stock_facts
+		jc,assignment=self._setup_flow(qty=10)
+		with self.set_user("Administrator"):
+			alternative="WRT-ALT-"+random_string(10)
+			self._ensure_item(alternative)
+			make_stock_entry(item_code=alternative,to_warehouse=self.source_warehouse,company=self.TEST_COMPANY,qty=10,basic_rate=1)
+			frappe.db.set_value("Work Order",jc.work_order,{"skip_transfer":0,"source_warehouse":self.source_warehouse,"wip_warehouse":self.wip_warehouse,"scrap_warehouse":self.scrap_warehouse})
+			transfer=frappe.get_doc(make_transfer(jc.work_order,"Material Transfer for Manufacture",qty=10))
+			transfer.items[0].original_item=self.TEST_RAW_MATERIAL
+			transfer.items[0].item_code=alternative
+			transfer.insert(ignore_permissions=True);transfer.submit()
+		with self.set_user(self.worker_user):
+			material=exception_service.get_exception_options(assignment.name)["materials"][0]
+			self.assertEqual(material.item_code,alternative)
+			self.assertEqual(material.original_item,self.TEST_RAW_MATERIAL)
+			self.assertEqual(material.requestable_qty,10)
+		request=self._request_material_exception(assignment,4,kind=MATERIAL_SCRAP)
+		entry=self._post_material_exception(request)
+		self.assertEqual(entry.items[0].item_code,alternative)
+		self.assertEqual(entry.items[0].original_item,self.TEST_RAW_MATERIAL)
+		facts=load_work_order_stock_facts([jc.work_order])
+		self.assertEqual(facts[(jc.work_order,self.TEST_RAW_MATERIAL,self.source_warehouse)].net_issued_qty,6)
+		with self.set_user("Administrator"):
+			entry.cancel()
+		self.assertEqual(load_work_order_stock_facts([jc.work_order])[(jc.work_order,self.TEST_RAW_MATERIAL,self.source_warehouse)].net_issued_qty,10)
+
+	def test_scrap_default_and_continue_keep_assignment_then_reopen_issue_gap(self):
+		from process_simplification.production_reporting.assignment_movement import assignment_effective_qty
+		from process_simplification.production_stock_facts import load_work_order_stock_facts
+		from process_simplification.production_workflow.service import _guided_component_issue_quantities
+		jc, assignment = self._setup_exception_material_flow()
+		with self.set_user("Administrator"):
+			frappe.db.set_value("Work Order", jc.work_order, "scrap_warehouse", None)
+			frappe.db.set_value("Company", self.TEST_COMPANY, "default_scrap_warehouse", self.scrap_warehouse)
+		request = self._request_material_exception(assignment, 6, kind=MATERIAL_SCRAP)
+		self.assertEqual(request.target_warehouse, self.scrap_warehouse)
+		entry = self._post_material_exception(request)
+		self.assertEqual(entry.custom_return_source_warehouse, self.source_warehouse)
+		self.assertEqual(assignment_effective_qty(assignment), 10)
+		with self.set_user(self.worker_user):
+			row = next(r for r in service.get_worker_dashboard()["assignments"] if r.name == assignment.name)
+			self.assertEqual(row.reportable_qty, 4)
+		with self.set_user("Administrator"):
+			wo = frappe.get_doc("Work Order", jc.work_order)
+			facts = load_work_order_stock_facts([wo.name])
+			self.assertEqual(facts[(wo.name, self.TEST_RAW_MATERIAL, self.source_warehouse)].net_issued_qty, 4)
+			rows = _guided_component_issue_quantities(wo, 6, facts)
+			self.assertEqual(rows[(self.TEST_RAW_MATERIAL, self.source_warehouse)].qty, 6)
+			from process_simplification.production_workflow.service import request_material_issue
+			from erpnext.stock.doctype.stock_entry.stock_entry_utils import make_stock_entry
+			make_stock_entry(item_code=self.TEST_RAW_MATERIAL, to_warehouse=self.source_warehouse,
+				company=self.TEST_COMPANY, qty=6, basic_rate=1)
+			frappe.db.set_single_value("Stock Settings", "enable_stock_reservation", 1)
+			result = request_material_issue(wo.name, qty=6)
+			replacement = frappe.get_doc("Stock Entry", result["stock_entry"])
+			replacement.submit()
+		with self.set_user(self.worker_user):
+			row = next(r for r in service.get_worker_dashboard()["assignments"] if r.name == assignment.name)
+			self.assertEqual(row.reportable_qty, 10)
+		self.assertEqual(assignment_effective_qty(assignment), 10)
+
+	def test_full_return_release_cancellation_and_resubmission_restore_exact_quantities(self):
+		from process_simplification.production_reporting.assignment_movement import assignment_effective_qty, released_pool_qty
+		jc, assignment = self._setup_exception_material_flow()
+		request = self._request_material_exception(assignment, 10, action="Release")
+		entry = self._post_material_exception(request)
+		self.assertEqual(assignment_effective_qty(assignment), 0)
+		with self.set_user("Administrator"):
+			entry.cancel()
+		request.reload()
+		self.assertEqual(request.status, APPROVED)
+		self.assertEqual(assignment_effective_qty(assignment), 10)
+		self.assertEqual(released_pool_qty(jc.name), 0)
+		second_entry = self._post_material_exception(request)
+		self.assertNotEqual(entry.name, second_entry.name)
+		self.assertEqual(assignment_effective_qty(assignment), 0)
+		with self.set_user("Administrator"):
+			second_entry.cancel()
+		self.assertEqual(assignment_effective_qty(assignment), 10)
+		self.assertEqual(released_pool_qty(jc.name), 0)
+
+	def test_withdraw_approved_draft_releases_hold_but_cannot_post_old_draft(self):
+		jc, assignment = self._setup_exception_material_flow()
+		request = self._request_material_exception(assignment, 6)
+		with self.set_user(self.supervisor):
+			exception_service.approve_exception(request.name)
+		request.reload()
+		with self.set_user(self.worker_user):
+			with self.assertRaises(frappe.PermissionError):
+				exception_service.withdraw_exception(request.name, "不能冒充主管")
+		with self.set_user(self.supervisor):
+			exception_service.withdraw_exception(request.name, "数量有误，撤回后重新申请")
+		request.reload()
+		self.assertEqual(request.status, "Withdrawn")
+		self.assertTrue(request.withdrawn_at)
+		self.assertEqual(request.withdrawn_by, self.supervisor)
+		pending_request = self._request_material_exception(assignment, 1)
+		with self.set_user(self.supervisor):
+			withdrawn = exception_service.withdraw_exception(pending_request.name, "撤回尚未审核的申请")
+			history = exception_service.get_review_history(
+				status="Withdrawn", job_card=jc.name,
+				from_date=str(withdrawn.withdrawn_at)[:10], to_date=str(withdrawn.withdrawn_at)[:10],
+			)
+		self.assertIn(pending_request.name, {row.name for row in history["rows"]})
+		with self.set_user("Administrator"):
+			with self.assertRaises(frappe.ValidationError):
+				frappe.get_doc("Stock Entry", request.stock_entry).submit()
+		with self.set_user(self.worker_user):
+			self.assertEqual(exception_service.get_exception_options(assignment.name)["materials"][0].requestable_qty, 10)
+
+	def test_quality_return_requires_separate_quarantine_and_missing_scrap_has_explanation(self):
+		jc, assignment = self._setup_exception_material_flow()
+		with self.set_user("Administrator"):
+			frappe.db.set_value("Work Order", jc.work_order, "scrap_warehouse", None)
+			frappe.db.set_value("Company", self.TEST_COMPANY, {"default_scrap_warehouse": None, "custom_material_quarantine_warehouse": None})
+		with self.set_user(self.worker_user):
+			options = exception_service.get_exception_options(assignment.name)
+			self.assertTrue(options["materials"])
+			self.assertIn("scrap_warehouse", options["warehouse_settings"].messages)
+		with self.assertRaises(frappe.ValidationError):
+			self._request_material_exception(assignment, 1, cause="Material Defect")
+		with self.set_user("Administrator"):
+			quarantine = self._ensure_warehouse("Worker Reporting Quarantine")
+			frappe.db.set_value("Company", self.TEST_COMPANY, {"custom_material_quarantine_warehouse": quarantine, "default_scrap_warehouse": quarantine})
+		with self.set_user(self.worker_user):
+			settings = exception_service.get_exception_options(assignment.name)["warehouse_settings"]
+			self.assertIsNone(settings.quarantine_warehouse)
+			self.assertIn("不能与报废仓相同", settings.messages["quarantine_warehouse"])
+		with self.set_user("Administrator"):
+			frappe.db.set_value("Company", self.TEST_COMPANY, "default_scrap_warehouse", None)
+		request = self._request_material_exception(assignment, 1, cause="Material Defect")
+		self.assertEqual(request.target_warehouse, quarantine)
+		self.assertNotEqual(request.target_warehouse, self.source_warehouse)
+		self._post_material_exception(request)
 
 	def test_partial_replenishment_restores_one_worker_without_proportional_rounding(self):
 		requirement = frappe._dict(
@@ -1124,6 +1310,199 @@ class TestWorkerReporting(IntegrationTestCase):
 		self.assertTrue(frappe.db.exists("BOM", original_default))
 		self.assertTrue(frappe.db.get_value("BOM", original_default, "is_default"))
 
+	def test_closeout_all_terminal_statuses_keep_status_and_cancel_exactly(self):
+		self._assert_closeout_state("Completed")
+
+	def test_stopped_order_closeout_preserves_stopped(self):
+		self._assert_closeout_state("Stopped")
+
+	def test_closed_order_closeout_preserves_closed(self):
+		self._assert_closeout_state("Closed")
+
+	def _assert_closeout_state(self, status):
+		from process_simplification.production_exceptions import handling
+		from process_simplification.production_stock_facts import load_work_order_stock_facts, get_work_order_stock_fact
+		jc, assignment = self._setup_exception_material_flow()
+		with self.set_user("Administrator"):
+			frappe.db.set_value("Work Order", jc.work_order, "status", status)
+			options = handling.closeout_options(jc.work_order)
+			key = options["materials"][0].key
+			doc = handling.create_request("Closeout Return", [{"material_key": key, "qty": 6}], random_string(20), work_order=jc.work_order)
+			self.assertEqual(doc.status, "Awaiting Stock Entry")
+			self.assertEqual(handling.closeout_options(jc.work_order)["materials"][0].requestable_qty, 4)
+			handling.post(doc.name)
+			self.assertEqual(frappe.db.get_value("Work Order", jc.work_order, "status"), status)
+			facts = load_work_order_stock_facts([jc.work_order])
+			self.assertEqual(get_work_order_stock_fact(facts, jc.work_order, self.TEST_RAW_MATERIAL, self.source_warehouse).net_issued_qty, 4)
+			frappe.get_doc("Stock Entry", doc.stock_entry).cancel()
+			self.assertEqual(frappe.db.get_value("Work Order", jc.work_order, "status"), status)
+			doc.reload()
+			self.assertEqual(doc.status, "Pending Approval")
+			handling.withdraw(doc.name, "重新核对")
+			self.assertEqual(handling.closeout_options(jc.work_order)["materials"][0].requestable_qty, 10)
+
+
+	def test_quarantine_disposition_partial_release_scrap_disposal_and_parent_cancel(self):
+		from process_simplification.production_exceptions import handling
+		jc, assignment = self._setup_exception_material_flow()
+		with self.set_user("Administrator"):
+			quarantine = self._ensure_warehouse("Worker Reporting Quarantine")
+			frappe.db.set_value("Company", self.TEST_COMPANY, {"custom_material_quarantine_warehouse": quarantine, "default_scrap_warehouse": self.scrap_warehouse})
+		request = self._request_material_exception(assignment, 6, cause="Material Defect")
+		entry = self._post_material_exception(request)
+		with self.set_user("Administrator"):
+			options = handling.disposition_options(entry.name)
+			key = options["materials"][0].key
+			first = handling.create_request("Release", [{"material_key": key, "qty": 2}], random_string(20), work_order=jc.work_order, source_stock_entry=entry.name)
+			with self.assertRaisesRegex(frappe.ValidationError, "后续"):
+				entry.cancel()
+			handling.post(first.name)
+			self.assertEqual(handling.disposition_options(entry.name)["materials"][0].requestable_qty, 4)
+			second = handling.create_request("Scrap", [{"material_key": key, "qty": 4}], random_string(20), work_order=jc.work_order, source_stock_entry=entry.name)
+			handling.post(second.name)
+			self.assertEqual(handling.disposition_options(entry.name)["materials"], [])
+			options = handling.disposition_options(second.stock_entry)
+			dispose = handling.create_request("Dispose", [{"material_key": options["materials"][0].key, "qty": 4}], random_string(20), work_order=jc.work_order, source_stock_entry=second.stock_entry, reason="无法回用，主管确认销毁")
+			handling.post(dispose.name)
+			self.assertEqual(frappe.db.get_value("Stock Entry", dispose.stock_entry, "purpose"), "Material Issue")
+			with self.assertRaisesRegex(frappe.ValidationError, "后续"):
+				frappe.get_doc("Stock Entry", second.stock_entry).cancel()
+			frappe.get_doc("Stock Entry", dispose.stock_entry).cancel()
+			handling.withdraw(dispose.name, "取消处置")
+			frappe.get_doc("Stock Entry", second.stock_entry).cancel()
+			handling.withdraw(second.name, "取消报废")
+			frappe.get_doc("Stock Entry", first.stock_entry).cancel()
+			handling.withdraw(first.name, "取消放行")
+			entry.reload().cancel()
+			self.assertEqual(frappe.db.get_value("Production Exception Request", request.name, "status"), "Approved")
+
+	def test_closeout_withdraw_permissions_idempotency_and_draft_tampering(self):
+		from process_simplification.production_exceptions import handling
+		jc, assignment = self._setup_exception_material_flow()
+		with self.set_user(self.worker_user):
+			with self.assertRaises(frappe.PermissionError):handling.closeout_options(jc.work_order)
+		with self.set_user("Administrator"):
+			with self.assertRaises(frappe.ValidationError):handling.closeout_options(jc.work_order)
+			frappe.db.set_value("Work Order", jc.work_order, "status", "Closed")
+			key = handling.closeout_options(jc.work_order)["materials"][0].key
+			request_key = random_string(20)
+			doc = handling.create_request("Closeout Return", [{"material_key":key,"qty":3}], request_key, work_order=jc.work_order)
+			retry = handling.create_request("Closeout Return", [{"material_key":key,"qty":3}], request_key, work_order=jc.work_order)
+			self.assertEqual(retry.name, doc.name)
+			with self.assertRaises(frappe.ValidationError):handling.create_request("Closeout Return", [{"material_key":key,"qty":4}], request_key, work_order=jc.work_order)
+			entry = frappe.get_doc("Stock Entry", doc.stock_entry)
+			entry.items[0].qty = 4
+			with self.assertRaises(frappe.ValidationError):entry.submit()
+			handling.withdraw(doc.name, "实物数量不符")
+			with self.assertRaises(frappe.ValidationError):frappe.get_doc("Stock Entry", doc.stock_entry).submit()
+			self.assertEqual(handling.closeout_options(jc.work_order)["materials"][0].requestable_qty, 10)
+
+	def test_quarantine_supplier_return_native_post_cancel_and_rework_draft(self):
+		from process_simplification.production_exceptions import handling
+		jc, assignment = self._setup_exception_material_flow()
+		with self.set_user("Administrator"):
+			quarantine = self._ensure_warehouse("Worker Reporting Quarantine")
+			rework = self._ensure_warehouse("Worker Reporting Rework")
+			frappe.db.set_value("Company", self.TEST_COMPANY, {"custom_material_quarantine_warehouse":quarantine,"custom_material_rework_warehouse":rework,"default_scrap_warehouse":self.scrap_warehouse})
+			supplier = frappe.get_doc(dict(doctype="Supplier", supplier_name="WRT-RETURN-"+random_string(10), supplier_group="All Supplier Groups", supplier_type="Company")).insert(ignore_permissions=True)
+			receipt = frappe.get_doc(dict(doctype="Purchase Receipt", company=self.TEST_COMPANY, supplier=supplier.name, posting_date=nowdate(), currency="INR", conversion_rate=1,
+				items=[dict(item_code=self.TEST_RAW_MATERIAL, qty=6, rate=1, uom="Nos", stock_uom="Nos", conversion_factor=1, warehouse=self.source_warehouse)])).insert(ignore_permissions=True)
+			receipt.submit()
+		request = self._request_material_exception(assignment, 6, cause="Material Defect")
+		entry = self._post_material_exception(request)
+		with self.set_user("Administrator"):
+			key = handling.disposition_options(entry.name)["materials"][0].key
+			doc = handling.create_request("Supplier Return",[{"material_key":key,"qty":2}], random_string(20),work_order=jc.work_order,source_stock_entry=entry.name,purchase_receipt=receipt.name)
+			self.assertTrue(doc.purchase_return)
+			handling.post(doc.name)
+			returned = frappe.get_doc("Purchase Receipt",doc.purchase_return)
+			self.assertEqual(returned.return_against,receipt.name)
+			self.assertEqual(returned.items[0].warehouse,quarantine)
+			self.assertEqual(returned.items[0].stock_qty,-2)
+			returned.cancel()
+			handling.withdraw(doc.name,"退货取消")
+			self.assertEqual(handling.disposition_options(entry.name)["materials"][0].requestable_qty,6)
+			rework_doc=handling.create_request("Rework",[{"material_key":key,"qty":2}],random_string(20),work_order=jc.work_order,source_stock_entry=entry.name,rework_bom=frappe.db.get_value("Work Order",jc.work_order,"bom_no"))
+			self.assertTrue(rework_doc.rework_order)
+			with self.assertRaises(frappe.ValidationError):frappe.get_doc("Work Order",rework_doc.rework_order).submit()
+			handling.post(rework_doc.name)
+			rework_order=frappe.get_doc("Work Order",rework_doc.rework_order)
+			rework_order.submit()
+			with self.assertRaisesRegex(frappe.ValidationError,"返工工单"):
+				frappe.get_doc("Stock Entry",rework_doc.stock_entry).cancel()
+
+	def test_batch_decimal_return_and_split_disposition_keep_lot_quantities(self):
+		self._assert_tracked_return(serial=False)
+
+	def test_serial_return_and_split_disposition_never_reuse_serials(self):
+		self._assert_tracked_return(serial=True)
+
+	def _assert_tracked_return(self, serial):
+		from process_simplification.production_exceptions import handling
+		from erpnext.stock.doctype.stock_entry.stock_entry_utils import make_stock_entry
+		from erpnext.manufacturing.doctype.work_order.work_order import make_stock_entry as make_transfer
+		old_item = self.TEST_RAW_MATERIAL
+		self.TEST_RAW_MATERIAL = "WRT-TRACKED-"+random_string(12)
+		try:
+			with self.set_user("Administrator"):
+				frappe.db.set_single_value("Stock Settings","enable_serial_and_batch_no_for_item",1)
+				self._ensure_item(self.TEST_RAW_MATERIAL,is_purchase_item=True)
+				frappe.db.set_value("Item",self.TEST_RAW_MATERIAL,{"has_serial_no":int(serial),"has_batch_no":int(not serial),"stock_uom":"Nos" if serial else "Kg"})
+				frappe.clear_document_cache("Item",self.TEST_RAW_MATERIAL)
+			jc, assignment = self._setup_flow(qty=10)
+			with self.set_user("Administrator"):
+				quarantine=self._ensure_warehouse("Worker Reporting Quarantine")
+				frappe.db.set_value("Company",self.TEST_COMPANY,{"custom_material_quarantine_warehouse":quarantine,"default_scrap_warehouse":self.scrap_warehouse})
+				if serial:
+					serials="\n".join("WRT-SERIAL-"+random_string(12) for _ in range(10))
+					make_stock_entry(item_code=self.TEST_RAW_MATERIAL,to_warehouse=self.source_warehouse,company=self.TEST_COMPANY,qty=10,basic_rate=1,serial_no=serials,use_serial_batch_fields=1)
+				else:
+					for qty in (4.25,5.75):
+						batch=frappe.get_doc(dict(doctype="Batch",item=self.TEST_RAW_MATERIAL,batch_id="WRT-BATCH-"+random_string(10))).insert(ignore_permissions=True)
+						make_stock_entry(item_code=self.TEST_RAW_MATERIAL,to_warehouse=self.source_warehouse,company=self.TEST_COMPANY,qty=qty,basic_rate=1,batch_no=batch.name,use_serial_batch_fields=1)
+				frappe.db.set_value("Work Order",jc.work_order,{"skip_transfer":0,"source_warehouse":self.source_warehouse,"wip_warehouse":self.wip_warehouse,"scrap_warehouse":self.scrap_warehouse},update_modified=False)
+				issue=frappe.get_doc(make_transfer(jc.work_order,"Material Transfer for Manufacture",qty=10))
+				issue.insert(ignore_permissions=True)
+				with patch("process_simplification.production_workflow.service.validate_guided_stock_entry_before_submit",return_value=None):issue.submit()
+			request=self._request_material_exception(assignment,6 if serial else 6.5,cause="Material Defect")
+			entry=self._post_material_exception(request)
+			with self.set_user("Administrator"):
+				options=handling.disposition_options(entry.name)
+				self.assertEqual(sum(r.requestable_qty for r in options["materials"]),6 if serial else 6.5)
+				key=options["materials"][0].key
+				first=handling.create_request("Release",[{"material_key":key,"qty":2 if serial else 1.25}],random_string(20),work_order=jc.work_order,source_stock_entry=entry.name)
+				handling.post(first.name)
+				second=handling.create_request("Scrap",[{"material_key":key,"qty":2 if serial else 3}],random_string(20),work_order=jc.work_order,source_stock_entry=entry.name)
+				handling.post(second.name)
+				if serial:
+					a={l["serial_no"] for i in handling.posting_preview(first.name)["items"] for l in i["lots"]}
+					b={l["serial_no"] for i in handling.posting_preview(second.name)["items"] for l in i["lots"]}
+					self.assertEqual(len(a),2);self.assertEqual(len(b),2);self.assertFalse(a & b)
+				else:
+					self.assertEqual(sum(r.requestable_qty for r in handling.disposition_options(entry.name)["materials"]),2.25)
+		finally:
+			self.TEST_RAW_MATERIAL=old_item
+
+	def test_worker_can_withdraw_pending_and_supervisor_decides_release(self):
+		from process_simplification.production_reporting.assignment_movement import assignment_effective_qty
+		jc, assignment = self._setup_exception_material_flow()
+		request = self._request_material_exception(assignment, 3)
+		with self.set_user(self.worker_user):
+			exception_service.withdraw_exception(request.name, "填错了")
+			self.assertEqual(exception_service.get_exception_options(assignment.name)["materials"][0].requestable_qty, 10)
+		request = self._request_material_exception(assignment, 3)
+		with self.set_user(self.supervisor):exception_service.approve_exception(request.name, material_action="Release")
+		request.reload()
+		with self.set_user("Administrator"):frappe.get_doc("Stock Entry", request.stock_entry).submit()
+		self.assertEqual(assignment_effective_qty(assignment), 7)
+		pending = self._request_material_exception(assignment, 1)
+		with self.set_user("Administrator"):
+			frappe.db.set_value("Work Order",jc.work_order,"status","Stopped")
+			frappe.db.set_value("Job Card Worker Assignment",assignment.name,"status","Completed")
+		with self.set_user(self.worker_user):
+			exception_service.withdraw_exception(pending.name,"停工后撤回未审核申请")
+		self.assertEqual(frappe.db.get_value("Production Exception Request",pending.name,"status"),"Withdrawn")
+
 	def test_metadata_keeps_worker_writes_api_only_and_auditable_backlinks(self):
 		from process_simplification import hooks
 
@@ -1148,8 +1527,14 @@ class TestWorkerReporting(IntegrationTestCase):
 			self.assertEqual(permission.read, 1)
 			self.assertFalse(permission.create)
 			self.assertFalse(permission.write)
-		self.assertFalse(hasattr(hooks, "override_whitelisted_methods"))
-		self.assertFalse(hasattr(hooks, "page_js"))
+		# Other app features may override printing and sales APIs. Reporting must
+		# still use its own guarded API, without substituting native Job Card APIs.
+		for method, handler in getattr(hooks, "override_whitelisted_methods", {}).items():
+			self.assertNotIn("job_card", method)
+			self.assertNotIn("production_reporting", method)
+			self.assertNotIn("production_reporting", str(handler))
+		for page in ("worker-workbench", "production-report-review", "production-report-history"):
+			self.assertNotIn(page, getattr(hooks, "page_js", {}))
 		backlink = frappe.get_meta("Job Card Time Log").get_field("custom_job_card_work_report")
 		self.assertTrue(backlink.unique)
 		self.assertEqual(backlink.options, "Job Card Work Report")
@@ -1177,7 +1562,7 @@ class TestWorkerReporting(IntegrationTestCase):
 		self.assertTrue(movement_meta.get_field("movement_key").unique)
 		self.assertEqual(
 			movement_meta.get_field("movement_type").options.splitlines(),
-			["Release", "Redispatch"],
+			["Release", "Redispatch", "Release Reversal"],
 		)
 		self.assertEqual(
 			movement_meta.get_field("source_movement").options,
@@ -1696,6 +2081,36 @@ class TestWorkerReporting(IntegrationTestCase):
 			self.assertFalse(active.completion_request_key)
 			service.cancel_work_session(active.name)
 		self.assertFalse(frappe.db.exists("Job Card Work Report", active.name))
+
+	def test_material_handling_holds_use_current_read_after_concurrent_commit(self):
+		from process_simplification.production_exceptions.handling import held_quantities
+		name = "RAW-MHR-" + random_string(16)
+		try:
+			frappe.db.get_value("Material Handling Request", name, "name")
+			with self.secondary_connection():
+				# Deliberately isolated rows: no business fixture or live stock is committed.
+				frappe.get_doc(dict(doctype="Material Handling Request", name=name,
+					request_key=name, company="RAW-TEST", action="Closeout Return",
+					status="Pending Approval", work_order=name)).db_insert()
+				frappe.get_doc(dict(doctype="Material Handling Item", name=name,
+					parent=name, parenttype="Material Handling Request", parentfield="items",
+					material_key=name, qty=6)).db_insert()
+				frappe.db.commit()
+			with self.primary_connection():
+				try:
+					self.assertEqual(held_quantities(work_order=name)[name], 6)
+				except frappe.QueryDeadlockError:
+					# MariaDB snapshot isolation may reject the stale transaction;
+					# the RPC transaction retry then obtains a fresh snapshot.
+					frappe.db.rollback()
+					self.assertEqual(held_quantities(work_order=name)[name], 6)
+		finally:
+			with self.primary_connection():
+				frappe.db.rollback()
+			with self.secondary_connection():
+				frappe.db.delete("Material Handling Item", {"name": name})
+				frappe.db.delete("Material Handling Request", {"name": name})
+				frappe.db.commit()
 
 	def test_repeatable_read_pending_conflict_fails_closed(self):
 		job_card, assignment = self._setup_flow(qty=100)

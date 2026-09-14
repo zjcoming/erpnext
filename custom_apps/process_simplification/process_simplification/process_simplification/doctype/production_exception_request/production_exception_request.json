@@ -46,7 +46,9 @@
   "processed_at",
   "withdrawn_by",
   "withdrawn_at",
-  "withdrawal_reason"
+  "withdrawal_reason",
+  "original_item",
+  "requirement_key"
  ],
  "fields": [
   {
@@ -346,6 +348,20 @@
    "fieldtype": "Small Text",
    "label": "撤回原因",
    "read_only": 1
+  },
+  {
+   "fieldname": "original_item",
+   "fieldtype": "Link",
+   "label": "原需求物料",
+   "read_only": 1,
+   "options": "Item"
+  },
+  {
+   "fieldname": "requirement_key",
+   "fieldtype": "Data",
+   "label": "需求来源键",
+   "read_only": 1,
+   "hidden": 1
   }
  ],
  "index_web_pages_for_search": 0,

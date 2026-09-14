@@ -72,6 +72,8 @@ IMMUTABLE_FIELDS = (
 	"cause",
 	"reason",
 	"material_key",
+	"requirement_key",
+	"original_item",
 	"item_code",
 	"item_name",
 	"stock_uom",
@@ -175,11 +177,12 @@ def validate_request_document(doc):
 	if doc.is_new():
 		return
 	old = frappe.db.get_value(doc.doctype, doc.name, list(IMMUTABLE_FIELDS), as_dict=True)
-	if old and any(old.get(fieldname) != doc.get(fieldname) for fieldname in IMMUTABLE_FIELDS):
+	mutable_decision = bool(getattr(doc.flags, "material_decision", False))
+	if old and any(old.get(fieldname) != doc.get(fieldname) for fieldname in IMMUTABLE_FIELDS if not (fieldname == "material_action" and mutable_decision)):
 		frappe.throw(_("Production exception request facts are immutable."))
 
 
-def _lock_worker_assignment(assignment_name: str):
+def _lock_worker_assignment(assignment_name: str, *, require_executable: bool = True):
 	from process_simplification.production_reporting.domain import require_worker
 
 	require_worker()
@@ -221,13 +224,14 @@ def _lock_worker_assignment(assignment_name: str):
 		not assignment
 		or assignment.employee != employee
 		or assignment.employee_user != frappe.session.user
-		or assignment.status != "Active"
+		or (require_executable and assignment.status != "Active")
 	):
 		frappe.throw(_("You can only submit an exception for your own active assignment."), frappe.PermissionError)
 	for fieldname in ("job_card", "work_order", "company", "operation", "operation_id"):
 		if assignment.get(fieldname) != job_card.get(fieldname if fieldname != "job_card" else "name"):
 			frappe.throw(_("Worker assignment no longer matches its Job Card."))
-	assert_supported_job_card(job_card, for_update=True)
+	if require_executable:
+		assert_supported_job_card(job_card, for_update=True)
 	return assignment, job_card
 
 
@@ -238,6 +242,7 @@ def _open_material_qty(
 	*,
 	exclude_request: str | None = None,
 	for_update: bool = False,
+	material_key: str | None = None,
 ) -> float:
 	request = frappe.qb.DocType("Production Exception Request")
 	condition = (
@@ -246,6 +251,8 @@ def _open_material_qty(
 		& (request.source_warehouse == source_warehouse)
 		& (request.status.isin(sorted(OPEN_MATERIAL_STATUSES)))
 	)
+	if material_key:
+		condition &= request.material_key == material_key
 	if exclude_request:
 		condition &= request.name != exclude_request
 	query = frappe.qb.from_(request).select(request.name, request.qty).where(condition)
@@ -314,6 +321,12 @@ def _work_order_material_requirements(work_order: str, *, for_update: bool = Fal
 		# Native Work Order rows may repeat the item aggregate on matching rows.
 		route.transferred_qty = max(route.transferred_qty, flt(row.transferred_qty))
 		route.returned_qty = max(route.returned_qty, flt(row.returned_qty))
+	from process_simplification.production_stock_facts import load_work_order_stock_facts, get_work_order_stock_fact
+	facts = load_work_order_stock_facts([work_order])
+	for route in routes.values():
+		fact = get_work_order_stock_fact(facts, work_order, route.item_code, route.return_warehouse)
+		route.transferred_qty = fact.gross_issued_qty
+		route.returned_qty = fact.returned_qty
 	return work_order_values, list(routes.values())
 
 
@@ -334,6 +347,9 @@ def material_warehouse_settings(work_order):
 		if not warehouse or warehouse.company != work_order.company or warehouse.is_group or warehouse.disabled or name in {work_order.wip_warehouse, work_order.source_warehouse}:
 			result[field] = None
 			result.messages[field] = _("{0}未配置或不可用，请联系主管在公司设置中选择同公司的独立{0}；仅新建仓库不会自动关联。").format(label)
+	if result.quarantine_warehouse and result.quarantine_warehouse == result.scrap_warehouse:
+		result.quarantine_warehouse = None
+		result.messages["quarantine_warehouse"] = _("待检隔离仓不能与报废仓相同，请主管在公司设置中分别配置。")
 	return result
 
 
@@ -357,7 +373,7 @@ def _material_request_rows(
 	request = frappe.qb.DocType("Production Exception Request")
 	condition = (
 		(request.work_order == work_order)
-		& (request.material_key == material_key)
+		& ((request.material_key == material_key) | (request.requirement_key == material_key))
 		& (request.request_type.isin(sorted(MATERIAL_REQUEST_TYPES)))
 		& (request.status.isin(sorted(ASSIGNMENT_MATERIAL_STATUSES)))
 	)
@@ -432,113 +448,25 @@ def _assignment_outstanding_material_qty(
 
 
 def _native_material_rows(work_order: str, *, exclude_request: str | None = None, for_update=False):
-	from erpnext.stock.doctype.stock_entry.stock_entry import get_available_materials
-
-	work_order_values, requirement_rows = _work_order_material_requirements(
-		work_order,
-		for_update=for_update,
-	)
-	warehouse_settings = material_warehouse_settings(work_order_values)
-	for requirement in requirement_rows:
-		requirement.work_order = work_order
-	requirements_by_key = {row.key: row for row in requirement_rows}
-	requirements_by_item = {}
-	for requirement in requirement_rows:
-		requirements_by_item[requirement.item_code] = (
-			requirements_by_item.get(requirement.item_code, 0.0)
-			+ flt(requirement.required_qty)
-		)
-	stock_entry = frappe.qb.DocType("Stock Entry")
-	stock_entry_detail = frappe.qb.DocType("Stock Entry Detail")
-	returned_rows = (
-		frappe.qb.from_(stock_entry)
-		.inner_join(stock_entry_detail)
-		.on(stock_entry_detail.parent == stock_entry.name)
-		.select(
-			stock_entry_detail.item_code,
-			stock_entry_detail.s_warehouse,
-			Sum(stock_entry_detail.transfer_qty).as_("qty"),
-		)
-		.where(
-			(stock_entry.docstatus == 1)
-			& (stock_entry.work_order == work_order)
-			& (stock_entry.purpose == "Material Transfer for Manufacture")
-			& (stock_entry.is_return == 1)
-		)
-		.groupby(stock_entry_detail.item_code, stock_entry_detail.s_warehouse)
-	).run(as_dict=True)
-	returned_by_route = {
-		(row.item_code, row.s_warehouse): flt(row.qty) for row in returned_rows
-	}
-	available_materials = list(get_available_materials(work_order).values())
-	item_codes = sorted(
-		{available.item_details.get("item_code") for available in available_materials}
-		- {None, ""}
-	)
-	item_names = (
-		{
-			row.item_code: row.item_name
-			for row in frappe.get_all(
-				"Item",
-				filters={"item_code": ["in", item_codes]},
-				fields=["item_code", "item_name"],
-				limit=0,
-			)
-		}
-		if item_codes
-		else {}
-	)
-	rows = []
-	for available in available_materials:
-		item = available.item_details
-		source_warehouse = item.get("warehouse") or work_order_values.wip_warehouse
-		# ERPNext's helper also returns earlier return rows with their target as
-		# ``warehouse``.  Only the original WIP balance is an eligible source.
-		if source_warehouse != work_order_values.wip_warehouse:
-			continue
-		return_warehouse = item.get("s_warehouse") or frappe.db.get_value(
-			"Work Order Item",
-			{"parent": work_order, "item_code": item.item_code},
-			"source_warehouse",
-		)
-		returned_qty = returned_by_route.get((item.item_code, source_warehouse), 0)
-		qty = max(flt(available.qty) - flt(returned_qty), 0)
-		if qty <= 0 or not source_warehouse or not return_warehouse:
-			continue
-		reserved = _open_material_qty(
-			work_order,
-			item.item_code,
-			source_warehouse,
-			exclude_request=exclude_request,
-			for_update=for_update,
-		)
-		requestable_qty = max(qty - reserved, 0)
-		key = _material_key(item.item_code, source_warehouse, return_warehouse)
-		requirement = requirements_by_key.get(key)
-		rows.append(
-			frappe._dict(
-				key=key,
-				item_code=item.item_code,
-				item_name=item_names.get(item.item_code) or item.item_name or item.item_code,
-				stock_uom=item.stock_uom,
-				source_warehouse=source_warehouse,
-				return_warehouse=return_warehouse,
-				scrap_warehouse=warehouse_settings.scrap_warehouse if warehouse_settings.scrap_warehouse != return_warehouse else None,
-				quarantine_warehouse=warehouse_settings.quarantine_warehouse if warehouse_settings.quarantine_warehouse != return_warehouse else None,
-				native_available_qty=qty,
-				reserved_request_qty=reserved,
-				requestable_qty=requestable_qty,
-				required_qty=(
-					flt(requirement.required_qty)
-					if requirement
-					else flt(requirements_by_item.get(item.item_code))
-				),
-				transferred_qty=flt(requirement.transferred_qty) if requirement else 0,
-				returned_qty=flt(requirement.returned_qty) if requirement else 0,
-				work_order_qty=flt(work_order_values.qty),
-			)
-		)
-	return rows
+    from process_simplification.production_exceptions.material_routes import load_routes
+    work_order_values, requirements = _work_order_material_requirements(work_order, for_update=for_update)
+    if work_order_values.skip_transfer:
+        return []
+    settings = material_warehouse_settings(work_order_values)
+    by_key = {r.key:r for r in requirements}
+    rows = load_routes(work_order, for_update=for_update)
+    for row in rows:
+        requirement=by_key.get(row.requirement_key)
+        row.item_name=frappe.get_cached_value("Item",row.item_code,"item_name") or row.item_code
+        row.scrap_warehouse=settings.scrap_warehouse if settings.scrap_warehouse!=row.return_warehouse else None
+        row.quarantine_warehouse=settings.quarantine_warehouse if settings.quarantine_warehouse!=row.return_warehouse else None
+        row.reserved_request_qty=_open_material_qty(work_order,row.item_code,row.source_warehouse,exclude_request=exclude_request,for_update=for_update,material_key=row.key)
+        row.requestable_qty=max(row.native_available_qty-row.reserved_request_qty,0)
+        row.required_qty=flt(requirement.required_qty) if requirement else 0
+        row.transferred_qty=flt(requirement.transferred_qty) if requirement else row.issued_qty
+        row.returned_qty=flt(requirement.returned_qty) if requirement else row.returned_qty
+        row.work_order_qty=flt(work_order_values.qty)
+    return [r for r in rows if r.native_available_qty>0]
 
 
 def _material_row(
@@ -603,7 +531,7 @@ def _apply_assignment_material_limit(
 	per_finished_qty = required_qty / work_order_qty
 	requirement = frappe._dict(
 		work_order=job_card.work_order,
-		key=row.key,
+		key=row.get("requirement_key") or row.key,
 		required_qty=required_qty,
 		transferred_qty=row.transferred_qty,
 		returned_qty=row.returned_qty,
@@ -751,7 +679,7 @@ def _completed_assignment_material_qty(
 		.select(request.name, request.qty)
 		.where(
 			(request.assignment == assignment)
-			& (request.material_key == material_key)
+			& ((request.material_key == material_key) | (request.requirement_key == material_key))
 			& (request.request_type.isin(sorted(MATERIAL_REQUEST_TYPES)))
 			& (request.status == COMPLETED)
 			& ((request.material_action == RELEASE_ASSIGNMENT) | request.material_action.isnull() | (request.material_action == ""))
@@ -1018,6 +946,8 @@ def submit_exception(
 			frappe.throw(_("尚未配置可用的报废仓或待检隔离仓，请联系主管完成公司仓库配置后刷新物料。"))
 		values.update(
 			material_key=row.key,
+			requirement_key=row.requirement_key,
+			original_item=row.original_item,
 			item_code=row.item_code,
 			item_name=row.item_name,
 			stock_uom=row.stock_uom,
@@ -1105,11 +1035,13 @@ def get_review_dashboard(limit=200):
 			APPROVED,
 			AWAITING_STOCK_ENTRY,
 			COMPLETED,
+			WITHDRAWN,
 		}
 		if not can_review and not stock_visible:
 			continue
 		row.can_approve = bool(can_review and row.status in {PENDING_APPROVAL, APPROVED})
 		row.can_reject = bool(can_review and row.status == PENDING_APPROVAL)
+		row.can_withdraw = bool(can_review and row.status in OPEN_MATERIAL_STATUSES)
 		row.can_open_stock_entry = bool(
 			row.stock_entry
 			and frappe.has_permission("Stock Entry", ptype="read", doc=row.stock_entry)
@@ -1121,7 +1053,7 @@ def get_review_dashboard(limit=200):
 	return {
 		"pending": [row for row in visible if row.status == PENDING_APPROVAL],
 		"stock_queue": [row for row in visible if row.status in {APPROVED, AWAITING_STOCK_ENTRY}],
-		"processed": [row for row in visible if row.status in {APPLIED, COMPLETED, REJECTED}],
+		"processed": [row for row in visible if row.status in EXCEPTION_HISTORY_STATUSES],
 	}
 
 
@@ -1163,7 +1095,7 @@ def get_review_history(
 	"""Return permission-scoped, processed exception history with server pagination."""
 	require_exception_viewer()
 	if status and status not in EXCEPTION_HISTORY_STATUSES:
-		frappe.throw(_("Historical exception status must be applied, completed, or rejected."))
+		frappe.throw(_("Historical exception status must be applied, completed, rejected, or withdrawn."))
 	if request_type and request_type not in REQUEST_TYPES:
 		frappe.throw(_("Invalid production exception type."))
 
@@ -1180,10 +1112,10 @@ def get_review_history(
 	elif can_view_stock:
 		# Warehouse-only users can only trace material requests whose stock move
 		# has completed; supervisor rejection and process loss remain out of scope.
-		if status and status != COMPLETED:
+		if status and status not in {COMPLETED, WITHDRAWN}:
 			filters["name"] = "__not_accessible__"
 		else:
-			filters["status"] = COMPLETED
+			filters["status"] = status or ("in", [COMPLETED, WITHDRAWN])
 		filters["request_type"] = request_type or ("in", sorted(MATERIAL_REQUEST_TYPES))
 
 	if request_type and "request_type" not in filters:
@@ -1200,14 +1132,14 @@ def get_review_history(
 	if start_date and end_date and start_date > end_date:
 		frappe.throw(_("The exception review start date cannot be later than the end date."))
 	if start_date and end_date:
-		filters["reviewed_at"] = (
+		filters["modified"] = (
 			"between",
 			[f"{start_date} 00:00:00", f"{end_date} 23:59:59.999999"],
 		)
 	elif start_date:
-		filters["reviewed_at"] = (">=", f"{start_date} 00:00:00")
+		filters["modified"] = (">=", f"{start_date} 00:00:00")
 	elif end_date:
-		filters["reviewed_at"] = ("<=", f"{end_date} 23:59:59.999999")
+		filters["modified"] = ("<=", f"{end_date} 23:59:59.999999")
 
 	pagination = _exception_history_pagination(
 		page=page,
@@ -1218,7 +1150,7 @@ def get_review_history(
 		"Production Exception Request",
 		filters=filters,
 		fields=_request_fields(),
-		order_by="reviewed_at desc, modified desc, name desc",
+		order_by="modified desc, name desc",
 		offset=(pagination["page"] - 1) * pagination["page_length"],
 		limit=pagination["page_length"],
 	)
@@ -1306,19 +1238,10 @@ def _make_material_stock_entry(doc):
 	stock_entry.to_warehouse = doc.target_warehouse
 	stock_entry.custom_production_exception_request = doc.name
 	stock_entry.remarks = _("Created from production exception request {0}.").format(doc.name)
-	stock_entry.append(
-		"items",
-		{
-			"item_code": doc.item_code,
-			"qty": flt(doc.qty),
-			"uom": doc.stock_uom,
-			"stock_uom": doc.stock_uom,
-			"conversion_factor": 1,
-			"s_warehouse": doc.source_warehouse,
-			"t_warehouse": doc.target_warehouse,
-			"original_item": doc.item_code,
-		},
-	)
+	from process_simplification.production_exceptions.material_routes import stock_rows
+	for value in stock_rows(row, doc.qty, doc.target_warehouse):
+		value["custom_return_source_warehouse"] = row.return_warehouse
+		stock_entry.append("items", value)
 	stock_entry.set_stock_entry_type()
 	stock_entry.insert(ignore_permissions=True)
 	return stock_entry
@@ -1367,8 +1290,13 @@ def _apply_process_loss(job_card_values_row, doc):
 	return doc
 
 
-def approve_exception(name: str):
+def approve_exception(name: str, material_action=None):
 	job_card, doc = _lock_request_for_review(name)
+	if material_action is not None and doc.status == PENDING_APPROVAL and doc.request_type in MATERIAL_REQUEST_TYPES:
+		if material_action not in {CONTINUE_PRODUCTION, RELEASE_ASSIGNMENT}:
+			frappe.throw("请选择保留任务或交回剩余任务。")
+		doc.material_action = material_action
+		doc.flags.material_decision = True
 	if doc.status in {APPLIED, COMPLETED, AWAITING_STOCK_ENTRY}:
 		return doc
 	if doc.status not in {PENDING_APPROVAL, APPROVED}:
@@ -1463,6 +1391,8 @@ def validate_linked_stock_entry(stock_entry):
 			for_update=True,
 		)
 	doc = frappe.get_doc("Production Exception Request", request_name, for_update=True)
+	if doc.status == WITHDRAWN:
+		frappe.throw(_("该申请已撤回，原库存草稿仅保留追溯，不能再提交。请按正确数量重新申请。"))
 	if (
 		doc.request_type not in MATERIAL_REQUEST_TYPES
 		or doc.status != AWAITING_STOCK_ENTRY
@@ -1481,18 +1411,18 @@ def validate_linked_stock_entry(stock_entry):
 		# Existing drafts created before this field was installed are backfilled
 		# from the immutable request route, not from browser input.
 		stock_entry.custom_return_source_warehouse = approved_route.return_warehouse
-	if len(stock_entry.items) != 1:
-		frappe.throw(_("A production-exception Stock Entry must contain exactly one approved item."))
-	row = stock_entry.items[0]
 	precision = frappe.get_precision("Stock Entry Detail", "transfer_qty") or 6
-	row_qty = flt(row.transfer_qty or row.qty, precision)
-	if (
-		row.item_code != doc.item_code
-		or row.s_warehouse != doc.source_warehouse
-		or row.t_warehouse != doc.target_warehouse
-		or row_qty != flt(doc.qty, precision)
-	):
+	if not stock_entry.items or any(
+		r.item_code != doc.item_code or (r.original_item or r.item_code) != (doc.original_item or doc.item_code)
+		or r.s_warehouse != doc.source_warehouse or r.t_warehouse != doc.target_warehouse
+		for r in stock_entry.items
+	) or flt(sum(flt(r.transfer_qty or r.qty) for r in stock_entry.items), precision) != flt(doc.qty, precision):
 		frappe.throw(_("The Stock Entry item or quantity differs from the approved production exception."))
+	for row in stock_entry.items:
+		row.custom_return_source_warehouse = approved_route.return_warehouse
+	from process_simplification.production_exceptions.handling import validate_lots, validate_physical_stock
+	validate_lots(stock_entry, doc, {approved_route.key: approved_route})
+	validate_physical_stock(stock_entry)
 	available = _assignment_material_row(
 		doc.assignment,
 		job_card,
@@ -1531,6 +1461,23 @@ def complete_linked_stock_entry(stock_entry):
 	notify_stock_entry_completed(doc)
 
 
+def validate_cancel_linked_stock_entry(stock_entry):
+	request_name = _request_name_for_stock_entry(stock_entry)
+	if not request_name:
+		return
+	initial = frappe.db.get_value("Production Exception Request", request_name,
+		["job_card", "work_order", "assignment"], as_dict=True)
+	if not initial:
+		frappe.throw(_("退料申请不存在，不能取消关联库存单。"))
+	job_card_values(initial.job_card, for_update=True)
+	frappe.db.get_value("Work Order", initial.work_order, "name", for_update=True)
+	frappe.db.get_value("Job Card Worker Assignment", initial.assignment, "name", for_update=True)
+	request = frappe.get_doc("Production Exception Request", request_name, for_update=True)
+	from process_simplification.production_reporting.assignment_movement import assert_request_release_cancellable
+
+	assert_request_release_cancellable(request)
+
+
 def reopen_cancelled_stock_entry(stock_entry):
 	request_name = stock_entry.get("custom_production_exception_request")
 	if not request_name:
@@ -1556,7 +1503,14 @@ def withdraw_exception(name: str, reason: str):
 	reason = str(reason or "").strip()
 	if not reason:
 		frappe.throw(_("请填写撤回原因。"))
-	_, doc = _lock_request_for_review(name)
+	initial = frappe.db.get_value("Production Exception Request", name, ["assignment", "employee_user", "status"], as_dict=True)
+	if initial and initial.employee_user == frappe.session.user and initial.status in {PENDING_APPROVAL, WITHDRAWN}:
+		_lock_worker_assignment(initial.assignment, require_executable=False)
+		doc = frappe.get_doc("Production Exception Request", name, for_update=True)
+		if doc.status not in {PENDING_APPROVAL, WITHDRAWN}:
+			frappe.throw("主管已处理此申请，请联系主管撤回。")
+	else:
+		_, doc = _lock_request_for_review(name)
 	if doc.status == WITHDRAWN:
 		return doc
 	if doc.status not in OPEN_MATERIAL_STATUSES:
@@ -1567,4 +1521,6 @@ def withdraw_exception(name: str, reason: str):
 	doc.withdrawn_by = frappe.session.user
 	doc.withdrawn_at = now_datetime()
 	doc.withdrawal_reason = reason[:1000]
+	if _can_review_request(doc):
+		_set_review_audit(doc)
 	return _save_request(doc)

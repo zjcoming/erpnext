@@ -266,13 +266,17 @@ class TestStockEntryHooks(UnitTestCase):
 				side_effect=lambda doc: events.append("exception"),
 			),
 			patch(
+				"process_simplification.production_exceptions.handling.complete_stock",
+				side_effect=lambda doc: events.append("handling"),
+			),
+			patch(
 				"process_simplification.notifications.notify_production_stock_completed",
 			),
 		):
 			result = ExtendedStockEntry().on_submit()
 
 		self.assertEqual(result, "submitted")
-		self.assertEqual(events, ["native", "reservation", "refresh", "exception"])
+		self.assertEqual(events, ["native", "reservation", "refresh", "exception", "handling"])
 
 	def test_cancel_refresh_runs_after_native_stock_entry_controller(self):
 		events = []
@@ -305,13 +309,17 @@ class TestStockEntryHooks(UnitTestCase):
 				"process_simplification.production_workflow.service.release_issue_request_reservations",
 			),
 			patch(
+				"process_simplification.production_exceptions.handling.cancel_stock",
+				side_effect=lambda doc: events.append("handling"),
+			),
+			patch(
 				"process_simplification.notifications.notify_production_stock_cancelled",
 			),
 		):
 			result = ExtendedStockEntry().on_cancel()
 
 		self.assertEqual(result, "cancelled")
-		self.assertEqual(events, ["native", "reservation", "refresh", "exception"])
+		self.assertEqual(events, ["native", "reservation", "refresh", "exception", "handling"])
 
 	def test_operation_split_transfer_is_allocated_once_across_sres(self):
 		updates = build_work_order_sre_reconciliation(

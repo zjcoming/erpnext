@@ -7,6 +7,37 @@ from frappe.tests import UnitTestCase
 
 
 class TestProductionStockFacts(UnitTestCase):
+	def test_scrap_and_quarantine_reduce_original_issue_coverage(self):
+		from process_simplification.production_stock_facts import aggregate_work_order_stock_facts
+		from process_simplification.production_workflow.service import _guided_component_issue_quantities
+		for target in ("Stores", "Scrap", "Quarantine"):
+			with self.subTest(target=target):
+				rows = [
+					frappe._dict(work_order="WO", purpose="Material Transfer for Manufacture", is_return=0,
+						item_code="RM", s_warehouse="Stores", t_warehouse="WIP", transfer_qty=30, docstatus=1),
+					frappe._dict(work_order="WO", purpose="Material Transfer for Manufacture", is_return=1,
+						item_code="RM", s_warehouse="WIP", t_warehouse=target, transfer_qty=10, docstatus=1),
+				]
+				facts = aggregate_work_order_stock_facts(rows)
+				self.assertEqual(facts[("WO", "RM", "Stores")].net_issued_qty, 20)
+				wo = frappe._dict(name="WO", qty=30, required_items=[frappe._dict(
+					item_code="RM", source_warehouse="Stores", required_qty=30, include_item_in_manufacturing=1)])
+				self.assertEqual(_guided_component_issue_quantities(wo, 10, facts)[("RM", "Stores")].qty, 10)
+
+	def test_cross_warehouse_returns_use_frozen_source_and_do_not_guess(self):
+		from process_simplification.production_stock_facts import aggregate_work_order_stock_facts
+		rows = [frappe._dict(work_order="WO", purpose="Material Transfer for Manufacture", is_return=0,
+			item_code="RM", s_warehouse=source, t_warehouse="WIP", transfer_qty=10, docstatus=1)
+			for source in ("Stores-A", "Stores-B")]
+		returned = frappe._dict(work_order="WO", purpose="Material Transfer for Manufacture", is_return=1,
+			item_code="RM", s_warehouse="WIP", t_warehouse="Scrap", transfer_qty=6, docstatus=1)
+		with self.assertRaises(frappe.ValidationError):
+			aggregate_work_order_stock_facts([returned, *rows])
+		returned.custom_return_source_warehouse = "Stores-B"
+		facts = aggregate_work_order_stock_facts([returned, *rows])
+		self.assertEqual(facts[("WO", "RM", "Stores-A")].net_issued_qty, 10)
+		self.assertEqual(facts[("WO", "RM", "Stores-B")].net_issued_qty, 4)
+
 	@patch("process_simplification.production_stock_facts.frappe.get_all")
 	def test_loader_reads_only_submitted_parent_and_child_rows(self, get_all):
 		from process_simplification.production_stock_facts import (

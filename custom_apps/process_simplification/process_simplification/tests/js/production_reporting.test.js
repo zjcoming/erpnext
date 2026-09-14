@@ -145,6 +145,19 @@ test("material exception choices show the name first and the item code on the de
 	assert.doesNotMatch(option.label, /301008201014/);
 });
 
+test("material choices distinguish missing scrap config from no material and isolate defective returns", () => {
+	const row = {key: "rm", item_code: "RM", requestable_qty: 4, source_warehouse: "WIP", return_warehouse: "Stores"};
+	const missing = workerPage.workerExceptionMaterialState({materials: [row]}, "Material Scrap", "Other");
+	assert.equal(missing.materials.length, 0);
+	assert.match(missing.message, /公司设置/);
+	const configured = {...row, scrap_warehouse: "Scrap", quarantine_warehouse: "Quarantine"};
+	assert.equal(workerPage.workerExceptionMaterialState({materials: [configured]}, "Material Scrap", "Other").materials[0].target_warehouse, "Scrap");
+	assert.equal(workerPage.workerExceptionMaterialState({materials: [configured]}, "Material Return", "Material Defect").materials[0].target_warehouse, "Quarantine");
+	assert.equal(workerPage.workerExceptionMaterialState({materials: [configured]}, "Material Return", "Other").materials[0].target_warehouse, "Stores");
+	assert.equal(workerPage.workerExceptionMaterialState({materials: [], empty_material_message: "没有剩余物料"}, "Material Scrap", "Other").message, "没有剩余物料");
+	assert.equal(workerPage.workerExceptionStatusMeta("Withdrawn").label, "已撤回");
+});
+
 test("worker button state is driven by server block codes", () => {
 	assert.deepEqual(workerPage.workReportButtonMeta({ can_start: true }), {
 		action: "start",
@@ -863,4 +876,14 @@ test("reporting and wage navigation use isolated roles", () => {
 	assert.match(monthlySummaryScript, /当前自然月尚未结束，暂不显示确认按钮/);
 	assert.match(monthlySummaryScript, /工资汇总 → 确认月度汇总/);
 	assert.doesNotMatch(monthlySummaryScript, /remove_menu_item/);
+});
+
+
+test("workers can withdraw only pending exceptions and request IDs are escaped", () => {
+    const html = workerHistoryPage.workerExceptionHistoryCardHtml({name:'bad"<id>',status:'Pending Approval'}, {escapeHtml: value => String(value ?? "").replaceAll('&','&amp;').replaceAll('"','&quot;').replaceAll('<','&lt;').replaceAll('>','&gt;')});
+    assert.ok(html.includes('worker-withdraw-exception'));
+    assert.ok(html.includes('data-request="bad&quot;&lt;id&gt;"'));
+    for (const status of ['Awaiting Stock Entry','Completed','Withdrawn']) {
+        assert.ok(!workerHistoryPage.workerExceptionHistoryCardHtml({name:'safe',status}).includes('worker-withdraw-exception'));
+    }
 });

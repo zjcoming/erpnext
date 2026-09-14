@@ -10,19 +10,74 @@ def ensure_production_workflow_fields():
 		{
 			"Company": [
 				{
+					"fieldname": "custom_material_rework_warehouse",
+					"label": "待返工仓",
+					"fieldtype": "Link",
+					"options": "Warehouse",
+					"insert_after": "custom_material_quarantine_warehouse",
+					"description": "待返工物料独立存放；返工必须关联有效 BOM 与返工工单。",
+				},
+				{
 					"fieldname": "custom_material_quarantine_warehouse",
 					"label": "生产异常待检隔离仓",
-					"fieldtype": "Link", "options": "Warehouse",
+					"fieldtype": "Link",
+					"options": "Warehouse",
 					"insert_after": "default_scrap_warehouse",
 					"description": "质量异常退料暂存处。请使用独立仓库，不要用作 BOM 的正常发料仓。检验放行后再办理转仓。",
 				},
 			],
+			"Purchase Receipt": [
+				{
+					"fieldname": "custom_material_handling_request",
+					"label": "物料处理申请",
+					"fieldtype": "Link",
+					"options": "Material Handling Request",
+					"read_only": 1,
+					"no_copy": 1,
+				},
+			],
+			"Purchase Receipt Item": [
+				{
+					"fieldname": "custom_material_source_detail",
+					"label": "异常来源明细",
+					"fieldtype": "Data",
+					"read_only": 1,
+					"no_copy": 1,
+				},
+			],
+			"Stock Entry Detail": [
+				{
+					"fieldname": "custom_material_source_detail",
+					"label": "异常来源明细",
+					"fieldtype": "Data",
+					"read_only": 1,
+					"no_copy": 1,
+				},
+				{
+					"fieldname": "custom_return_source_warehouse",
+					"label": "原发料仓",
+					"fieldtype": "Link",
+					"options": "Warehouse",
+					"read_only": 1,
+					"no_copy": 1,
+				},
+			],
 			"Stock Entry": [
+				{
+					"fieldname": "custom_material_handling_request",
+					"label": "物料处理申请",
+					"fieldtype": "Link",
+					"options": "Material Handling Request",
+					"read_only": 1,
+					"no_copy": 1,
+				},
 				{
 					"fieldname": "custom_return_source_warehouse",
 					"label": "退料对应的原发料仓",
-					"fieldtype": "Link", "options": "Warehouse",
-					"read_only": 1, "no_copy": 1,
+					"fieldtype": "Link",
+					"options": "Warehouse",
+					"read_only": 1,
+					"no_copy": 1,
 					"insert_after": "work_order",
 				},
 				{

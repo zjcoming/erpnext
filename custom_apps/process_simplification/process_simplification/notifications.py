@@ -944,3 +944,20 @@ def notify_production_stock_withdrawn(doc):
 		document_name=doc.get("work_order"),
 		link=PRODUCTION_WORKBENCH_ROUTE,
 	)
+
+
+@_notification_event
+def notify_material_handling(doc):
+    """One responsible team per state; the existing queue deduplicates alerts."""
+    from process_simplification.production_exceptions.handling import LABELS
+    labels = {"Pending Approval": "待确认处理", "Awaiting Stock Entry": "待库房核对", "Completed": "处理完成", "Withdrawn": "已撤回", "Rejected": "已驳回"}
+    users = [doc.requested_by]
+    if doc.status == "Pending Approval":
+        users = responsibility_recipients(doc.company, PRODUCTION_DISPATCH_RESPONSIBILITY)
+    elif doc.status == "Awaiting Stock Entry":
+        users = responsibility_recipients(doc.company, WAREHOUSE_RESPONSIBILITY)
+    elif doc.status in {"Withdrawn", "Rejected"}:
+        users += responsibility_recipients(doc.company, WAREHOUSE_RESPONSIBILITY)
+    return notify_users(users, subject="物料{0}：{1}".format(labels[doc.status], LABELS[doc.action]),
+        description="处理单 {0}，生产工单 {1}。请打开异常处理页查看数量和单据。".format(escape_html(doc.name), escape_html(doc.work_order or "")),
+        document_type=doc.doctype, document_name=doc.name, link=EXCEPTION_REVIEW_ROUTE)

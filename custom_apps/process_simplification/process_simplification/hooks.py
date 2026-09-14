@@ -26,7 +26,8 @@ app_include_js = [
 	"/assets/process_simplification/js/role_landing.js?v=1",
 	"/assets/process_simplification/js/item_identity.js?v=2",
 	"/assets/process_simplification/js/worker_assignment.js?v=14",
-	"/assets/process_simplification/js/worker_reporting.js?v=14",
+	"/assets/process_simplification/js/worker_reporting.js?v=17",
+	"/assets/process_simplification/js/material_handling.js?v=3",
 	"/assets/process_simplification/js/document_scan.js?v=13",
 	"/assets/process_simplification/js/notification_sound.js?v=7",
 	"/assets/process_simplification/js/notification_sync.js?v=1",
@@ -89,9 +90,11 @@ doc_events = {
 	},
 	"Purchase Receipt": {
 		"before_validate": "process_simplification.purchasing.receipts.lock_receipt_sources",
-		"before_cancel": "process_simplification.purchasing.receipts.lock_receipt_sources",
-		"on_submit": "process_simplification.purchasing.receipts.record_receipt_event",
-		"on_cancel": "process_simplification.purchasing.receipts.record_receipt_event",
+		"before_cancel": ["process_simplification.purchasing.receipts.lock_receipt_sources", "process_simplification.production_exceptions.handling_followup.before_cancel_return"],
+		"before_submit": "process_simplification.production_exceptions.handling_followup.validate_return",
+		"on_trash": "process_simplification.production_exceptions.handling_followup.prevent_delete",
+		"on_submit": ["process_simplification.purchasing.receipts.record_receipt_event", "process_simplification.production_exceptions.handling_followup.complete_return"],
+		"on_cancel": ["process_simplification.purchasing.receipts.record_receipt_event", "process_simplification.production_exceptions.handling_followup.cancel_return"],
 	},
 	"Purchase Order": {
 		"before_validate": "process_simplification.purchasing.allocation.lock_order_sources",
@@ -107,6 +110,7 @@ doc_events = {
 		"before_discard": "process_simplification.production_reporting.job_card.before_discard",
 		"before_update_after_submit": "process_simplification.production_reporting.job_card.before_update_after_submit",
 	},
+	"Work Order": {"before_submit": "process_simplification.production_exceptions.handling_followup.validate_rework_order"},
 	"Stock Entry": {
 		"before_submit": "process_simplification.production_reporting.stock_entry.before_submit",
 		"on_trash": "process_simplification.production_reporting.stock_entry.on_trash",
@@ -114,6 +118,7 @@ doc_events = {
 }
 
 permission_query_conditions = {
+	"Material Handling Request": "process_simplification.production_exceptions.handling.query_condition",
 	"Stock Entry": "process_simplification.stock_permissions.stock_entry_query",
 	"Job Card": "process_simplification.production_reporting.permissions.job_card_query",
 	"Work Order": "process_simplification.production_reporting.permissions.work_order_query",
@@ -126,6 +131,7 @@ permission_query_conditions = {
 }
 
 has_permission = {
+	"Material Handling Request": "process_simplification.production_exceptions.handling.document_permission",
 	"Job Card": "process_simplification.production_reporting.permissions.job_card_permission",
 	"Work Order": "process_simplification.production_reporting.permissions.work_order_permission",
 	"Job Card Worker Assignment": "process_simplification.production_reporting.permissions.assignment_permission",

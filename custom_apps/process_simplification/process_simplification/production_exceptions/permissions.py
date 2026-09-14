@@ -7,6 +7,7 @@ from process_simplification.production_exceptions.constants import (
 	APPROVED,
 	AWAITING_STOCK_ENTRY,
 	COMPLETED,
+	WITHDRAWN,
 	MATERIAL_REQUEST_TYPES,
 )
 from process_simplification.production_reporting.constants import (
@@ -50,7 +51,7 @@ def request_query(user: str | None = None) -> str:
 	if roles.intersection({WAREHOUSE_OPERATOR_ROLE, "Stock User", "Stock Manager"}):
 		types = ", ".join(frappe.db.escape(value) for value in sorted(MATERIAL_REQUEST_TYPES))
 		statuses = ", ".join(
-			frappe.db.escape(value) for value in sorted({APPROVED, AWAITING_STOCK_ENTRY, COMPLETED})
+			frappe.db.escape(value) for value in sorted({APPROVED, AWAITING_STOCK_ENTRY, COMPLETED, WITHDRAWN})
 		)
 		stock_condition = (
 			f"(`tabProduction Exception Request`.`request_type` in ({types}) "
@@ -75,5 +76,5 @@ def request_permission(doc, ptype: str | None = None, user: str | None = None, d
 		and _company_allowed(doc, companies)
 		and doc
 		and doc.request_type in MATERIAL_REQUEST_TYPES
-		and doc.status in {APPROVED, AWAITING_STOCK_ENTRY, COMPLETED}
+		and doc.status in {APPROVED, AWAITING_STOCK_ENTRY, COMPLETED, WITHDRAWN}
 	)

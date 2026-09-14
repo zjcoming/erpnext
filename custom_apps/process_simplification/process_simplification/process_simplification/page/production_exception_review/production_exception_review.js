@@ -6,6 +6,7 @@ function exceptionStatusMeta(status, translate = (message) => message) {
 		Applied: { label: translate("已写入过程损耗"), indicator: "green" },
 		Completed: { label: translate("库存已过账"), indicator: "green" },
 		Rejected: { label: translate("已驳回"), indicator: "red" },
+		Withdrawn: { label: translate("已撤回"), indicator: "gray" },
 	};
 	return statuses[status] || { label: status || translate("未知"), indicator: "gray" };
 }
@@ -117,6 +118,7 @@ if (typeof frappe !== "undefined") {
 			] }, render_input: true }),
 			status: frappe.ui.form.make_control({ parent: $root.find(".exception-history-status"), df: { fieldname: "status", fieldtype: "Select", label: __("处理结果"), options: [
 				{ label: __("全部结果"), value: "" }, { label: __("库存已过账"), value: "Completed" }, { label: __("已写入过程损耗"), value: "Applied" }, { label: __("已驳回"), value: "Rejected" },
+				{ label: __("已撤回"), value: "Withdrawn" },
 			] }, render_input: true }),
 			workOrder: frappe.ui.form.make_control({ parent: $root.find(".exception-history-work-order"), df: { fieldname: "work_order", fieldtype: "Link", options: "Work Order", label: __("生产工单") }, render_input: true }),
 		};
@@ -139,13 +141,16 @@ if (typeof frappe !== "undefined") {
 					<span>${__("生产工单")}：${documentLink("Work Order", row.work_order)}</span>
 					${item}
 					${row.source_warehouse ? `<span>${__("库存路径")}：${esc(row.source_warehouse)} → ${esc(row.target_warehouse)}</span>` : ""}
+					${row.item_code ? `<span>${__("任务安排")}：${row.material_action === "Continue" ? __("补料后继续，保留原任务") : __("交回剩余任务，过账后释放相应数量")}</span>` : ""}
 					<span>${__("申请时间")}：${esc(dateTime(row.requested_at))}</span>
 				</div>
 				<div class="review-reason-box"><span>${__("异常说明")}</span><strong>${esc(row.reason)}</strong></div>
 				${row.rejection_reason ? `<div class="review-alert is-danger">${__("驳回原因")}：${esc(row.rejection_reason)}</div>` : ""}
+				${row.withdrawal_reason ? `<div class="review-alert">${__("撤回原因")}：${esc(row.withdrawal_reason)}</div>` : ""}
 				<div class="exception-actions">
 					${actions.can_approve ? `<button class="btn btn-primary btn-sm exception-approve" data-request="${esc(row.name)}">${row.status === "Approved" ? __("重新生成库存单") : __("批准")}</button>` : ""}
 					${actions.can_reject ? `<button class="btn btn-default btn-sm exception-reject" data-request="${esc(row.name)}">${__("驳回")}</button>` : ""}
+					${row.can_withdraw ? `<button class="btn btn-default btn-sm exception-withdraw" data-request="${esc(row.name)}">${__("撤回申请")}</button>` : ""}
 					${actions.can_open_stock_entry ? `<button class="btn btn-default btn-sm exception-open-stock" data-stock-entry="${esc(row.stock_entry)}">${__("打开库存单")}</button>` : ""}
 				</div>
 			</article>`;
@@ -172,7 +177,7 @@ if (typeof frappe !== "undefined") {
 			$root.find(".exception-history-results").html(rows.length
 				? `<div class="review-history-list">${rows.map((row) => {
 					const meta = exceptionStatusMeta(row.status, __);
-					const handledAt = row.processed_at || row.reviewed_at || row.requested_at;
+					const handledAt = row.withdrawn_at || row.processed_at || row.reviewed_at || row.requested_at;
 					return `<article class="review-history-row exception-history-row" data-request="${esc(row.name)}" tabindex="0"><div class="review-history-main"><strong>${esc(row.employee_name || row.employee)} · ${esc(row.operation || "-")}</strong><span>${esc(dateTime(handledAt))}</span></div><div class="review-history-status"><span class="indicator-pill ${meta.indicator}">${esc(meta.label)}</span><small>${esc(exceptionTypeLabel(row.request_type, __))}</small></div><div class="review-history-metric"><span>${row.item_code ? __("数量") : __("损耗")}</span><strong>${number(row.qty)} ${esc(row.stock_uom || "")}</strong></div><div class="review-history-docs"><span>${documentLink("Job Card", row.job_card)}</span><span>${documentLink("Work Order", row.work_order)}</span></div><button class="btn btn-default btn-sm exception-view-details" data-request="${esc(row.name)}">${__("查看明细")}</button></article>`;
 				}).join("")}</div>`
 				: `<div class="text-muted worker-reporting-empty">${__("没有符合条件的异常审核记录。")}</div>`
@@ -231,6 +236,7 @@ if (typeof frappe !== "undefined") {
 				fields: [{ fieldtype: "HTML", options: `<div class="report-review-detail-grid">
 					${detail(__("状态"), `<span class="indicator-pill ${status.indicator}">${esc(status.label)}</span>`)}
 					${detail(__("异常类型"), esc(exceptionTypeLabel(row.request_type, __)))}
+					${row.item_code ? detail(__("任务安排"), row.material_action === "Continue" ? __("补料后继续") : __("交回剩余任务")) : ""}
 					${detail(__("员工"), esc(row.employee_name || row.employee || "-"))}
 					${detail(__("工序"), esc(row.operation || "-"))}
 					${detail(__("生产任务单"), documentLink("Job Card", row.job_card))}
@@ -241,6 +247,7 @@ if (typeof frappe !== "undefined") {
 					${detail(__("审核时间"), esc(dateTime(row.reviewed_at)))}
 					${detail(__("审核人"), esc(row.reviewed_by || "-"))}
 					${detail(__("库存单"), row.stock_entry ? documentLink("Stock Entry", row.stock_entry) : "-")}
+					${row.withdrawal_reason ? detail(__("撤回原因"), esc(row.withdrawal_reason)) : ""}
 					<div class="report-detail-item report-detail-wide"><span>${__("异常说明")}</span><strong>${esc(row.reason || "-")}</strong></div>
 					${row.rejection_reason ? `<div class="report-detail-item report-detail-wide"><span>${__("驳回原因")}</span><strong>${esc(row.rejection_reason)}</strong></div>` : ""}
 				</div>` }],
@@ -261,14 +268,14 @@ if (typeof frappe !== "undefined") {
 			const processLoss = row.request_type === "Process Loss";
 			const dialog = new frappe.ui.Dialog({
 				title: processLoss ? __("确认过程损耗") : __("批准退料/报废申请"),
-				fields: [{ fieldtype: "HTML", options: processLoss
+				fields: [{fieldname: "material_action", fieldtype: "Select", label: __("退料后的任务安排"), hidden: processLoss, read_only: row.status !== "Pending Approval", default: row.material_action || "Release", options: [{label: __("保留任务，补料后继续"),value:"Continue"},{label: __("交回相应剩余任务"),value:"Release"}]}, { fieldtype: "HTML", options: processLoss
 					? `<p>${__("批准后将把 {0} 写入 Job Card 过程损耗；不会计入工人合格数量和计件工资。", [number(row.qty)])}</p>`
 					: `<p>${__("批准后只生成原生库存移动草稿；仓管提交 Stock Entry 后库存才会变化。")}</p>` }],
 				primary_action_label: __("确认批准"),
 				primary_action: async () => {
 					dialog.get_primary_btn().prop("disabled", true);
 					try {
-						await frappe.call({ method: "process_simplification.api.production_exceptions.approve_exception", type: "POST", args: { request: row.name } });
+						await frappe.call({ method: "process_simplification.api.production_exceptions.approve_exception", type: "POST", args: { request: row.name, material_action: processLoss ? null : dialog.get_value("material_action") } });
 						dialog.hide();
 						frappe.show_alert({ message: processLoss ? __("过程损耗已写入 Job Card。") : __("库存移动草稿已生成。"), indicator: "green" });
 						await load();
@@ -279,6 +286,15 @@ if (typeof frappe !== "undefined") {
 			});
 			dialog.show();
 		}
+
+		$root.on("click", ".exception-withdraw", (event) => {
+			const row = findRequest($(event.currentTarget).data("request"));
+			if (!row?.can_withdraw) return;
+			frappe.prompt([{fieldname: "reason", fieldtype: "Small Text", label: __("撤回原因"), reqd: 1}], async (values) => {
+				await frappe.call({method: "process_simplification.api.production_exceptions.withdraw_exception", type: "POST", args: {request: row.name, reason: values.reason}});
+				await load();
+			}, __("撤回未过账申请（保留原记录）"), __("确认撤回"));
+		});
 
 		function reject(row) {
 			const dialog = new frappe.ui.Dialog({
@@ -339,11 +355,15 @@ if (typeof frappe !== "undefined") {
 			event.preventDefault();
 			frappe.set_route("Form", $(event.currentTarget).data("doctype"), $(event.currentTarget).data("name"));
 		});
+		const initHandling = () => { page.material_handling ||= createMaterialHandlingPanel(page, $root); };
+		if (typeof createMaterialHandlingPanel === "function") initHandling();
+		else frappe.require("/assets/process_simplification/js/material_handling.js?v=3").then(initHandling);
 		page.add_inner_button(__("查看历史"), focusHistory);
-		page.add_inner_button(__("刷新"), () => runExceptionReviewToolbarLoad(load));
+		page.add_inner_button(__("刷新"), () => { page.material_handling?.load?.(); runExceptionReviewToolbarLoad(load); });
 	};
 
 	frappe.pages["production-exception-review"].refresh = function (wrapper) {
+		wrapper.page?.material_handling?.load?.();
 		return wrapper.page?.production_exception_review?.load?.();
 	};
 }

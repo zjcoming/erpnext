@@ -16,6 +16,7 @@ function workerExceptionStatusMeta(status, translate = (message) => message) {
 		"Awaiting Stock Entry": { label: translate("已批准，待库存过账"), indicator: "blue" },
 		Applied: { label: translate("已登记损耗"), indicator: "green" },
 		Completed: { label: translate("库存已过账"), indicator: "green" },
+		Withdrawn: { label: translate("已撤回"), indicator: "gray" },
 		Rejected: { label: translate("已驳回"), indicator: "red" },
 	};
 	return statuses[status] || { label: status || translate("未知"), indicator: "gray" };
@@ -49,6 +50,20 @@ function workerExceptionMaterialOption(
 			material?.stock_uom || ""
 		}`,
 	};
+}
+
+function workerExceptionMaterialState(options = {}, requestType, cause) {
+	if (requestType === "Process Loss") return { materials: [], message: "" };
+	const routeField = requestType === "Material Scrap" ? "scrap_warehouse"
+		: cause === "Material Defect" ? "quarantine_warehouse" : "return_warehouse";
+	const materials = (options.materials || []).filter((row) => row[routeField] && Number(row.requestable_qty) > 0)
+		.map((row) => ({ ...row, target_warehouse: row[routeField] }));
+	const label = routeField === "scrap_warehouse" ? "报废仓" : "待检隔离仓";
+	const message = materials.length ? "" : options.empty_material_message
+		|| options.warehouse_settings?.messages?.[routeField]
+		|| (routeField === "return_warehouse" ? "当前没有可退回的未用物料，请确认已发料并检查待处理申请。"
+			: `未配置可用的${label}。请联系主管在公司设置中关联仓库，然后点击“刷新物料”。`);
+	return { materials, message };
 }
 
 function workReportButtonMeta(assignment, translate = (message) => message) {
@@ -633,17 +648,14 @@ function mountWorkerReportingPage({ page, root, mode = "queue" }) {
 			freeze: true,
 			freeze_message: __("正在核对可退物料和可登记损耗数量..."),
 		});
-		const options = response.message || { materials: [], process_loss_available_qty: 0 };
+		let options = response.message || { materials: [], process_loss_available_qty: 0 };
 		const typeLabels = {
 			[__("退回未用物料")]: "Material Return",
+			[__("物料有问题，先退待检")]: "Material Return",
 			[__("物料报废")]: "Material Scrap",
 			[__("生产损耗")]: "Process Loss",
 		};
-		const causeLabels = {
-			[__("来料/物料异常")]: "Material Defect",
-			[__("操作失误")]: "Operation Error",
-			[__("其他")]: "Other",
-		};
+		const exceptionRequestKey = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
 		let materialChoices = new Map();
 		let dialog;
 
@@ -651,38 +663,47 @@ function mountWorkerReportingPage({ page, root, mode = "queue" }) {
 			return typeLabels[dialog.get_value("request_type")] || "";
 		}
 
+		function selectedCause() {
+			return dialog.get_value("request_type") === __("物料有问题，先退待检") ? "Material Defect" : "Other";
+		}
+
 		function refreshMaterialChoices() {
+			if (!dialog) return;
 			const requestType = selectedType();
-			const materialRows = (options.materials || []).filter(
-				(material) => requestType !== "Material Scrap" || material.scrap_warehouse
-			);
+			const materialState = workerExceptionMaterialState(options, requestType, selectedCause());
+			const materialRows = materialState.materials;
 			materialChoices = new Map(materialRows.map((material) => [material.key, material]));
-			const autocompleteOptions = materialRows.map((material) =>
-				workerExceptionMaterialOption(material, requestType, __, number)
-			);
+			const selectOptions = [{ label: __("请选择物料"), value: "" }, ...materialRows.map((material) => ({
+				label: `${material.item_name || material.item_code} · ${material.item_code}（${__("可申请")} ${number(material.requestable_qty)} ${material.stock_uom || ""}）`, value: material.key,
+			}))];
 			const isMaterial = requestType === "Material Return" || requestType === "Material Scrap";
 			dialog.set_df_property("material_choice", "hidden", !isMaterial);
 			dialog.set_df_property("material_choice", "reqd", isMaterial);
-			dialog.fields_dict.material_choice.set_data(autocompleteOptions);
+			dialog.set_df_property("material_choice", "options", selectOptions);
+			dialog.set_df_property("refresh_materials", "hidden", !isMaterial);
+			dialog.set_df_property("material_notice", "options", materialState.message ? `<div class="alert alert-warning" role="status">${frappe.utils.escape_html(__(materialState.message))}</div>` : "");
+			dialog.get_primary_btn().prop("disabled", isMaterial && !materialRows.length);
 			dialog.set_df_property("material_choice", "description", "");
-			dialog.set_value("material_choice", "");
+			dialog.set_value("material_choice", materialRows.length === 1 ? materialRows[0].key : "");
 			dialog.set_value("available_qty", isMaterial ? 0 : options.process_loss_available_qty);
 			dialog.set_df_property(
 				"posting_note",
 				"options",
 				`<p class="text-muted">${isMaterial
-					? __("多人派工时，可退上限按个人派工数量和 BOM 折算；待审核的退料或报废会先占用个人额度，并按整件向下取整减少可报数量。补料后相应额度自动恢复。主管批准后系统只生成原生库存移动草稿，库存人员提交单据后才会改变库存。")
+					? __("选择物料并填写实际交回数量即可，仓库路径由系统带出。主管确认后由库房收料；默认保留你的任务，补料后继续做。需要交回任务请在说明中写明，由主管安排。")
 					: __("生产损耗按本工序成品数量登记。主管批准后写入工序过程损耗，不计入合格数量和计件工资，不生成库存移动单。")}</p>`
 			);
+			refreshAvailableQty();
 		}
 
 		function refreshAvailableQty() {
+			if (!dialog) return;
 			const requestType = selectedType();
 			const material = materialChoices.get(dialog.get_value("material_choice"));
 			dialog.set_df_property(
 				"material_choice",
 				"description",
-				material ? `${__("物料编码")}：${material.item_code}` : ""
+				material ? `${material.source_warehouse} → ${material.target_warehouse}` : ""
 			);
 			dialog.set_value(
 				"available_qty",
@@ -698,11 +719,16 @@ function mountWorkerReportingPage({ page, root, mode = "queue" }) {
 				{ fieldname: "job_card", fieldtype: "Data", label: __("Job Card"), read_only: 1, default: options.job_card },
 				{ fieldname: "operation", fieldtype: "Data", label: __("工序"), read_only: 1, default: options.operation },
 				{ fieldname: "request_type", fieldtype: "Select", label: __("申请类型"), reqd: 1, options: Object.keys(typeLabels), onchange: refreshMaterialChoices },
-				{ fieldname: "cause", fieldtype: "Select", label: __("原因类别"), reqd: 1, options: Object.keys(causeLabels) },
-				{ fieldname: "material_choice", fieldtype: "Autocomplete", label: __("物料与仓库路径"), reqd: 1, options: [], onchange: refreshAvailableQty },
+				{ fieldname: "material_notice", fieldtype: "HTML" },
+				{ fieldname: "material_choice", fieldtype: "Select", label: __("选择物料"), reqd: 1, options: [], onchange: refreshAvailableQty },
+				{ fieldname: "refresh_materials", fieldtype: "Button", label: __("刷新物料"), click: async () => {
+					const latest = await frappe.call({method: "process_simplification.api.production_exceptions.get_exception_options", args: {assignment: row.name}});
+					options = latest.message || {};
+					refreshMaterialChoices();
+				} },
 				{ fieldname: "available_qty", fieldtype: "Float", label: __("个人当前最多可申请数量"), read_only: 1 },
 				{ fieldname: "qty", fieldtype: "Float", label: __("申请数量"), reqd: 1 },
-				{ fieldname: "reason", fieldtype: "Small Text", label: __("情况说明"), reqd: 1 },
+				{ fieldname: "reason", fieldtype: "Small Text", label: __("补充说明（选填）"), reqd: 0 },
 				{
 					fieldname: "posting_note",
 					fieldtype: "HTML",
@@ -716,8 +742,8 @@ function mountWorkerReportingPage({ page, root, mode = "queue" }) {
 				const maximum = requestType === "Process Loss"
 					? options.process_loss_available_qty
 					: material?.requestable_qty || 0;
-				if (!requestType || !causeLabels[values.cause]) {
-					frappe.msgprint(__("请选择有效的申请类型和原因类别。"));
+				if (!requestType) {
+					frappe.msgprint(__("请选择有效的申请类型。"));
 					return;
 				}
 				if (requestType !== "Process Loss" && !material) {
@@ -738,10 +764,11 @@ function mountWorkerReportingPage({ page, root, mode = "queue" }) {
 							assignment: row.name,
 							request_type: requestType,
 							qty: values.qty,
-							cause: causeLabels[values.cause],
-							reason: values.reason,
-							request_key: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`,
+							cause: selectedCause(),
+							reason: values.reason || values.request_type,
+							request_key: exceptionRequestKey,
 							material_key: material?.key,
+							material_action: "Continue",
 						},
 					});
 					dialog.hide();
@@ -754,7 +781,6 @@ function mountWorkerReportingPage({ page, root, mode = "queue" }) {
 		});
 		dialog.show();
 		dialog.set_value("request_type", Object.keys(typeLabels)[0]);
-		dialog.set_value("cause", Object.keys(causeLabels)[0]);
 		refreshMaterialChoices();
 	}
 
@@ -795,6 +821,7 @@ const workerReportingApi = {
 	workerExceptionStatusMeta,
 	workerExceptionTypeLabel,
 	workerExceptionMaterialOption,
+	workerExceptionMaterialState,
 	workReportButtonMeta,
 	workReportTimerButtonMeta,
 	workReportBlockMessage,

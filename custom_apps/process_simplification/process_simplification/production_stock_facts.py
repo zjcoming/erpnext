@@ -18,10 +18,10 @@ def aggregate_work_order_stock_facts(stock_entry_details, stock_entries=None):
 	"""Aggregate submitted stock movement by Work Order, component and source.
 
 	Alternative-item rows are attributed to ``original_item`` because that is the
-	component requirement they fulfil.  Material transfers and returns deliberately
-	use opposite warehouse sides: a normal transfer leaves ``s_warehouse`` while a
-	return restores ``t_warehouse``.  Manufacture and material-consumption entries
-	are direct component consumption from ``s_warehouse``.
+	component requirement they fulfil. Transfers use ``s_warehouse``; returns
+	reduce that original source even when they move into scrap or quarantine.
+	Manufacture and material-consumption entries are direct component consumption
+	from ``s_warehouse``.
 	"""
 	entry_by_name = {
 		row.get("name"): frappe._dict(row)
@@ -71,7 +71,7 @@ def aggregate_work_order_stock_facts(stock_entry_details, stock_entries=None):
 			facts[(work_order, item_code, warehouse)].consumed_qty += qty
 
 	for work_order, item_code, qty, detail, entry in returns:
-		original_source = entry.get("custom_return_source_warehouse") or detail.get("custom_return_source_warehouse")
+		original_source = detail.get("custom_return_source_warehouse") or entry.get("custom_return_source_warehouse")
 		issued_sources = sorted(
 			key[2] for key, fact in facts.items()
 			if key[:2] == (work_order, item_code) and fact.gross_issued_qty > 0
@@ -122,6 +122,7 @@ def load_work_order_stock_facts(work_orders):
 			"docstatus",
 			"item_code",
 			"original_item",
+			"custom_return_source_warehouse",
 			"s_warehouse",
 			"t_warehouse",
 			"transfer_qty",

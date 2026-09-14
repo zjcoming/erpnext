@@ -23,6 +23,10 @@ QTY_EPSILON = 1e-9
 
 
 def before_submit(doc, method=None):
+	from process_simplification.production_exceptions.handling import validate_stock
+	validate_stock(doc)
+	if doc.get("custom_material_handling_request"):
+		doc.flags.material_handling_verified = True
 	from process_simplification.production_exceptions.service import validate_linked_stock_entry
 
 	validate_linked_stock_entry(doc)
@@ -45,6 +49,8 @@ def before_submit(doc, method=None):
 
 
 def on_trash(doc, method=None):
+	if doc.get("custom_material_handling_request") or frappe.db.exists("Material Handling Request", {"stock_entry": doc.name}):
+		frappe.throw("关联物料处理的库存单不能删除，请撤回或取消。")
 	from process_simplification.production_exceptions.service import (
 		prevent_linked_stock_entry_delete,
 	)
@@ -720,10 +726,34 @@ class SubassemblyReservationStockEntryMixin:
 		from process_simplification.production_exceptions.service import complete_linked_stock_entry
 
 		complete_linked_stock_entry(self)
+		from process_simplification.production_exceptions.handling import complete_stock
+		complete_stock(self)
 		from process_simplification.notifications import notify_production_stock_completed
 
 		notify_production_stock_completed(self, replenishment_result=replenishment_result)
 		return result
+
+	def update_work_order(self):
+		# Only a validated closeout return may settle stock on a stopped order.
+		# Preserve Stopped status; never reopen production to return its leftovers.
+		if self.flags.material_handling_verified and self.work_order and self.is_return and self.purpose == "Material Transfer for Manufacture":
+			work_order = frappe.get_doc("Work Order", self.work_order)
+			if work_order.status in {"Stopped", "Completed", "Closed"}:
+				work_order.update_required_items()
+				return
+		return super().update_work_order()
+
+	def before_cancel(self):
+		from process_simplification.production_exceptions.service import validate_cancel_linked_stock_entry
+		from process_simplification.production_exceptions.handling import assert_no_downstream, validate_cancel
+		# Worker flow owns Job Card -> Work Order locks before downstream stock locks.
+		validate_cancel_linked_stock_entry(self)
+		validate_cancel(self)
+		assert_no_downstream(self)
+		self.flags.material_handling_verified = bool(self.get("custom_material_handling_request"))
+		parent = getattr(super(), "before_cancel", None)
+		if parent:
+			return parent()
 
 	def on_cancel(self):
 		from process_simplification.production_workflow.service import (
@@ -737,6 +767,8 @@ class SubassemblyReservationStockEntryMixin:
 		from process_simplification.production_exceptions.service import reopen_cancelled_stock_entry
 
 		reopen_cancelled_stock_entry(self)
+		from process_simplification.production_exceptions.handling import cancel_stock
+		cancel_stock(self)
 		from process_simplification.production_workflow.service import (
 			release_issue_request_reservations,
 		)

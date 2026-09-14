@@ -366,9 +366,17 @@ def create_release_movement(request, qty: float):
 	return doc
 
 
+def assert_request_release_cancellable(request, rows=None):
+	rows = _movement_rows(job_card=request.job_card, for_update=True) if rows is None else rows
+	releases = {row.name for row in rows if row.movement_type == RELEASE and row.reference_doctype == "Production Exception Request" and row.reference_name == request.name}
+	if any(row.movement_type == REDISPATCH and row.source_movement in releases for row in rows):
+		frappe.throw(_("该退料释放的任务已经重新派工，不能直接取消。请保留原退料记录，由主管按补料流程恢复生产，避免改变其他工人的任务和报工。"))
+
+
 def reverse_request_releases(request, stock_entry: str):
 	"""Append reversals atomically with cancellation; never rewrite assignment history."""
 	rows = _movement_rows(job_card=request.job_card, for_update=True)
+	assert_request_release_cancellable(request, rows)
 	for release in rows:
 		if release.movement_type != RELEASE or release.reference_doctype != "Production Exception Request" or release.reference_name != request.name:
 			continue

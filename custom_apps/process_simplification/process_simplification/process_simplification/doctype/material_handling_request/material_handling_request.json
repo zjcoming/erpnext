@@ -1,0 +1,218 @@
+{
+ "doctype": "DocType",
+ "name": "Material Handling Request",
+ "module": "Process Simplification",
+ "autoname": "format:MHR-{YYYY}-{#####}",
+ "fields": [
+  {
+   "fieldname": "request_key",
+   "fieldtype": "Data",
+   "label": "请求编号",
+   "read_only": 1,
+   "unique": 1,
+   "hidden": 1
+  },
+  {
+   "fieldname": "action",
+   "fieldtype": "Select",
+   "label": "处理方式",
+   "read_only": 1,
+   "options": "Closeout Return\nCloseout Quarantine\nCloseout Scrap\nRelease\nScrap\nRework\nSupplier Return\nDispose"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "状态",
+   "read_only": 1,
+   "default": "Pending Approval",
+   "options": "Pending Approval\nAwaiting Stock Entry\nCompleted\nRejected\nWithdrawn",
+   "search_index": 1
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "公司",
+   "read_only": 1,
+   "options": "Company"
+  },
+  {
+   "fieldname": "work_order",
+   "fieldtype": "Link",
+   "label": "生产工单",
+   "read_only": 1,
+   "options": "Work Order",
+   "search_index": 1
+  },
+  {
+   "fieldname": "source_stock_entry",
+   "fieldtype": "Link",
+   "label": "来源退料单",
+   "read_only": 1,
+   "options": "Stock Entry",
+   "search_index": 1
+  },
+  {
+   "fieldname": "reason",
+   "fieldtype": "Small Text",
+   "label": "处理说明",
+   "read_only": 1
+  },
+  {
+   "fieldname": "items",
+   "fieldtype": "Table",
+   "label": "物料明细",
+   "read_only": 1,
+   "options": "Material Handling Item"
+  },
+  {
+   "fieldname": "purchase_receipt",
+   "fieldtype": "Link",
+   "label": "原采购收货单",
+   "read_only": 1,
+   "options": "Purchase Receipt"
+  },
+  {
+   "fieldname": "purchase_return",
+   "fieldtype": "Link",
+   "label": "采购退货单",
+   "read_only": 1,
+   "options": "Purchase Receipt"
+  },
+  {
+   "fieldname": "rework_bom",
+   "fieldtype": "Link",
+   "label": "返工物料清单",
+   "read_only": 1,
+   "options": "BOM"
+  },
+  {
+   "fieldname": "rework_order",
+   "fieldtype": "Link",
+   "label": "返工工单",
+   "read_only": 1,
+   "options": "Work Order"
+  },
+  {
+   "fieldname": "stock_entry",
+   "fieldtype": "Link",
+   "label": "库存移动单",
+   "read_only": 1,
+   "options": "Stock Entry"
+  },
+  {
+   "fieldname": "requested_by",
+   "fieldtype": "Link",
+   "label": "申请人",
+   "read_only": 1,
+   "options": "User"
+  },
+  {
+   "fieldname": "requested_at",
+   "fieldtype": "Datetime",
+   "label": "申请时间",
+   "read_only": 1
+  },
+  {
+   "fieldname": "reviewed_by",
+   "fieldtype": "Link",
+   "label": "确认人",
+   "read_only": 1,
+   "options": "User"
+  },
+  {
+   "fieldname": "reviewed_at",
+   "fieldtype": "Datetime",
+   "label": "确认时间",
+   "read_only": 1
+  },
+  {
+   "fieldname": "processed_by",
+   "fieldtype": "Link",
+   "label": "过账人",
+   "read_only": 1,
+   "options": "User"
+  },
+  {
+   "fieldname": "processed_at",
+   "fieldtype": "Datetime",
+   "label": "过账时间",
+   "read_only": 1
+  },
+  {
+   "fieldname": "withdrawal_reason",
+   "fieldtype": "Small Text",
+   "label": "撤回/驳回原因",
+   "read_only": 1
+  },
+  {
+   "fieldname": "withdrawn_by",
+   "fieldtype": "Link",
+   "label": "撤回人",
+   "read_only": 1,
+   "options": "User"
+  },
+  {
+   "fieldname": "withdrawn_at",
+   "fieldtype": "Datetime",
+   "label": "撤回时间",
+   "read_only": 1
+  }
+ ],
+ "field_order": [
+  "request_key",
+  "action",
+  "status",
+  "company",
+  "work_order",
+  "source_stock_entry",
+  "reason",
+  "items",
+  "purchase_receipt",
+  "purchase_return",
+  "rework_bom",
+  "rework_order",
+  "stock_entry",
+  "requested_by",
+  "requested_at",
+  "reviewed_by",
+  "reviewed_at",
+  "processed_by",
+  "processed_at",
+  "withdrawal_reason",
+  "withdrawn_by",
+  "withdrawn_at"
+ ],
+ "istable": 0,
+ "engine": "InnoDB",
+ "track_changes": 1,
+ "permissions": [
+  {
+   "role": "Process Simplification Owner",
+   "read": 1
+  },
+  {
+   "role": "Process Simplification Production Manager",
+   "read": 1
+  },
+  {
+   "role": "Process Simplification Warehouse Operator",
+   "read": 1
+  },
+  {
+   "role": "Stock User",
+   "read": 1
+  },
+  {
+   "role": "Stock Manager",
+   "read": 1
+  },
+  {
+   "role": "System Manager",
+   "read": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "title_field": "action",
+ "search_fields": "work_order,source_stock_entry"
+}

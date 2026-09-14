@@ -67,12 +67,14 @@ function workerExceptionHistoryCardHtml(row = {}, helpers = {}) {
 	const subject = row.request_type === "Process Loss"
 		? row.operation
 		: `${row.item_name || row.item_code || ""}${row.item_name && row.item_code ? `（${row.item_code}）` : ""}`;
-	const detail = row.rejection_reason || row.review_note || "";
-	return `<article class="worker-exception-history-card">
+	const detail = row.withdrawal_reason || row.rejection_reason || row.review_note || "";
+	return `<article class="worker-exception-history-card" data-request="${escapeHtml(row.name)}">
 		<div><strong>${escapeHtml(type)}</strong><span class="indicator-pill ${escapeHtml(status.indicator)}">${escapeHtml(status.label)}</span></div>
 		<span>${escapeHtml(subject || "-")} · ${formatNumber(row.qty)}</span>
+		${row.request_type !== "Process Loss" ? `<small>${row.material_action === "Continue" ? translate("补料后继续，保留原任务") : translate("交回剩余任务")}</small>` : ""}
 		<small class="text-muted">${escapeHtml(formatDateTime(row.requested_at))}</small>
 		${detail ? `<p class="${row.status === "Rejected" ? "text-danger" : "text-muted"}">${escapeHtml(detail)}</p>` : ""}
+		${row.status === "Pending Approval" ? `<button class="btn btn-default worker-withdraw-exception">${translate("撤回重填")}</button>` : ""}
 	</article>`;
 }
 
@@ -206,6 +208,13 @@ if (typeof frappe !== "undefined") {
 			});
 		}
 
+		$root.on("click", ".worker-withdraw-exception", event => {
+			const request = $(event.currentTarget).closest("article").data("request");
+			frappe.confirm(__("撤回这条尚未审核的申请，释放数量后重新填写？"), async () => {
+				await frappe.call({method:"process_simplification.api.production_exceptions.withdraw_exception", type:"POST", args:{request, reason:__("工人撤回重填")}});
+				await load();
+			});
+		});
 		$root.on("submit", ".worker-history-filters", (event) => {
 			event.preventDefault();
 			load({ page: 1 });

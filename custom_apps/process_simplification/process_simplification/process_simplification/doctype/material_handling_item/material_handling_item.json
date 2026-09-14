@@ -1,0 +1,112 @@
+{
+ "doctype": "DocType",
+ "name": "Material Handling Item",
+ "module": "Process Simplification",
+ "autoname": "hash",
+ "fields": [
+  {
+   "fieldname": "material_key",
+   "fieldtype": "Data",
+   "label": "来源键",
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
+   "fieldname": "item_code",
+   "fieldtype": "Link",
+   "label": "物料",
+   "read_only": 1,
+   "in_list_view": 1,
+   "options": "Item"
+  },
+  {
+   "fieldname": "item_name",
+   "fieldtype": "Data",
+   "label": "物料名称",
+   "read_only": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "original_item",
+   "fieldtype": "Link",
+   "label": "原需求物料",
+   "read_only": 1,
+   "options": "Item"
+  },
+  {
+   "fieldname": "stock_uom",
+   "fieldtype": "Link",
+   "label": "单位",
+   "read_only": 1,
+   "in_list_view": 1,
+   "options": "UOM"
+  },
+  {
+   "fieldname": "qty",
+   "fieldtype": "Float",
+   "label": "数量",
+   "read_only": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "source_warehouse",
+   "fieldtype": "Link",
+   "label": "来源仓库",
+   "read_only": 1,
+   "options": "Warehouse"
+  },
+  {
+   "fieldname": "target_warehouse",
+   "fieldtype": "Link",
+   "label": "目标仓库",
+   "read_only": 1,
+   "options": "Warehouse"
+  },
+  {
+   "fieldname": "original_source_warehouse",
+   "fieldtype": "Link",
+   "label": "原发料仓",
+   "read_only": 1,
+   "options": "Warehouse"
+  },
+  {
+   "fieldname": "source_detail",
+   "fieldtype": "Data",
+   "label": "来源明细",
+   "read_only": 1
+  },
+  {
+   "fieldname": "lots_json",
+   "fieldtype": "Long Text",
+   "label": "批次序列号快照",
+   "read_only": 1,
+   "hidden": 1
+  },
+  {
+   "fieldname": "purchase_receipt_item",
+   "fieldtype": "Data",
+   "label": "原采购收货明细",
+   "read_only": 1
+  }
+ ],
+ "field_order": [
+  "material_key",
+  "item_code",
+  "item_name",
+  "original_item",
+  "stock_uom",
+  "qty",
+  "source_warehouse",
+  "target_warehouse",
+  "original_source_warehouse",
+  "source_detail",
+  "lots_json",
+  "purchase_receipt_item"
+ ],
+ "istable": 1,
+ "engine": "InnoDB",
+ "track_changes": 1,
+ "permissions": [],
+ "sort_field": "modified",
+ "sort_order": "DESC"
+}
