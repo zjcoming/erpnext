@@ -26,6 +26,7 @@ from process_simplification.notifications import (
 	disable_standard_material_request_receipt_email,
 	notify_exception_approved,
 	notify_material_request_received,
+	notify_reorder_material_request,
 	notify_operation_completed,
 	notify_quick_order_submitted,
 	notify_users,
@@ -101,6 +102,24 @@ class TestProcessNotifications(IntegrationTestCase):
 			},
 		)
 		settings.save(ignore_permissions=True)
+
+	def test_native_auto_reorder_submit_notifies_factory_procurement_once(self):
+		from frappe.utils import add_days, nowdate
+
+		buyer = self._make_user(WAREHOUSE_OPERATOR_ROLE)
+		self._configure(PROCUREMENT_RESPONSIBILITY, buyer)
+		warehouse = frappe.db.get_value("Warehouse", {"company": self.company, "is_group": 0, "disabled": 0}, "name")
+		item = frappe.get_doc(dict(doctype="Item", item_code="NOTIFY-REORDER-" + random_string(8), item_group="Products", stock_uom="Nos", is_stock_item=1)).insert()
+		for automatic in (0, 1):
+			request = frappe.get_doc(dict(doctype="Material Request", company=self.company, material_request_type="Purchase", auto_created_via_reorder=automatic, schedule_date=add_days(nowdate(), 1), items=[dict(item_code=item.name, qty=4, warehouse=warehouse)])).insert().submit()
+			for _ in range(2):
+				notify_reorder_material_request(request)
+			logs = frappe.get_all("Notification Log", filters={"for_user": buyer, "document_type": "Material Request", "document_name": request.name}, fields=["subject", "link", "app"])
+			self.assertEqual(len(logs), automatic)
+			if automatic:
+				self.assertIn("自动补货申请待处理", logs[0].subject)
+				self.assertEqual(logs[0].app, APP_NAME)
+				self.assertEqual(logs[0].link, "/app/material-request/" + request.name)
 
 	def test_alert_is_persistent_realtime_and_deduplicated(self):
 		worker = self._make_user("Production Worker")

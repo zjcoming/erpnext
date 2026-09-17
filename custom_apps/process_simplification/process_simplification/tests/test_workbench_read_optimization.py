@@ -309,6 +309,7 @@ class TestWorkbenchReadOptimization(TestCase):
 		self.enterContext(patch.object(workbench, "_", lambda message: message))
 		self.enterContext(patch.object(workbench, "ensure_submitted_sales_order"))
 		self.enterContext(patch.object(workbench, "get_available_qty_to_reserve", return_value=35))
+		self.enterContext(patch.object(workbench, "is_batch_item", return_value=False))
 		self.enterContext(patch.object(workbench, "now_datetime", return_value=datetime(2026, 9, 10, 12)))
 		self.enterContext(patch.object(production, "now_datetime", return_value=datetime(2026, 9, 10, 12)))
 		self.readiness = self.enterContext(patch.object(production, "get_production_plan_readiness", return_value={}))

@@ -37,6 +37,9 @@ class WorkbenchRow:
 	delivered_qty: float
 	pending_qty: float
 	reserved_qty: float = 0
+	booked_reserved_qty: float = 0
+	invalid_reserved_qty: float = 0
+	has_batch_no: bool = False
 	available_to_reserve: float = 0
 	finished_stock_coverage_qty: float = 0
 	production_required_qty: float = 0

@@ -785,6 +785,25 @@ test("production status meta uses colors for the actual production state", () =>
 	assert.deepEqual(productionWorkbench.productionStatusMeta("unknown"), { indicator: "gray" });
 });
 
+test("unavailable batch reservations use a Chinese red state and remain filterable", () => {
+	assert.deepEqual(productionWorkbench.productionStatusMeta("batch_reservation_blocked"), {
+		indicator: "red", label: "批次预留需核对",
+	});
+	const blocked = demand("BATCH", {
+		status_code: "batch_reservation_blocked", status_label: "batch_reservation_blocked",
+		work_orders: [], next_actions: [{ action: "view_sales_order", label: "查看销售订单", enabled: true }],
+	});
+	const html = productionWorkbench.productionDemandHtml(blocked, helpers);
+	assert.match(html, /indicator-pill red">批次预留需核对/);
+	assert.doesNotMatch(html, /batch_reservation_blocked/);
+	assert.match(html, />查看销售订单<\/button>/);
+	assert.deepEqual(productionWorkbench.filterProductionDemands([...fixture, blocked], {
+		status: "batch_reservation_blocked",
+	}).map(row => row.demand_key), ["BATCH"]);
+	const source = require("node:fs").readFileSync(require.resolve("../../process_simplification/page/production_workbench/production_workbench.js"), "utf8");
+	assert.match(source, /<option value="batch_reservation_blocked">\$\{__\("批次预留需核对"\)\}<\/option>/);
+});
+
 test("purchase summary excludes manufactured items and aggregates their source Work Orders", () => {
 	const result = productionWorkbench.aggregatePurchasedMaterials([
 		{

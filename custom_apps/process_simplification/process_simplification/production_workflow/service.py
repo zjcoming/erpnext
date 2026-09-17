@@ -185,6 +185,9 @@ def _evaluate_work_order_dispatch(doc):
 			available = max(flt(get_available_qty_to_reserve(*key)), 0) + flt(
 				group["owned_reserved"]
 			)
+			available = _executable_available_qty(
+				*key, work_order=doc.name, ordinary_available=available
+			)
 			remaining = max(flt(group["required"]) - flt(group["consumed"]), 0)
 			if available + 1e-6 < remaining:
 				short_keys.append(key)
@@ -376,9 +379,37 @@ def _current_available_by_item(work_order) -> dict[tuple[str, str], float]:
 	for key, owned_reserved in owned_reservations.items():
 		# Global availability excludes every hard reservation. Add this exact Work
 		# Order row's remaining reservation back because it belongs to the caller.
-		available[key] = max(
-			flt(get_available_qty_to_reserve(*key)) + owned_reserved,
-			0,
+		available[key] = _executable_available_qty(
+			*key,
+			work_order=work_order.name,
+			ordinary_available=max(flt(get_available_qty_to_reserve(*key)) + owned_reserved, 0),
+		)
+	return available
+
+
+def _executable_available_qty(item_code, warehouse, *, work_order=None, ordinary_available=None):
+	"""Read effective batch stock while preserving ordinary quantity reservations."""
+	from process_simplification.batch_compat import get_batch_stock_facts
+
+	batch = get_batch_stock_facts(item_code, warehouse)
+	if batch is None:
+		return max(flt(
+			get_available_qty_to_reserve(item_code, warehouse)
+			if ordinary_available is None else ordinary_available
+		), 0)
+	available = max(flt(batch.get("free_qty")), 0)
+	if work_order:
+		names = frappe.get_all(
+			"Stock Reservation Entry",
+			filters={
+				"docstatus": 1, "voucher_type": "Work Order", "voucher_no": work_order,
+				"item_code": item_code, "warehouse": warehouse,
+			},
+			pluck="name", limit=0,
+		)
+		available += sum(
+			max(flt((batch.get("effective_reserved_by_sre") or {}).get(name)), 0)
+			for name in names
 		)
 	return available
 
@@ -427,11 +458,107 @@ def _insert_guided_stock_entry(
 			is_additional_transfer_entry=is_additional_transfer_entry,
 		)
 	)
+	_correct_batch_backflush_after_returns(entry, work_order)
 	entry.custom_process_workflow_action = action
 	entry.custom_process_requested_by = frappe.session.user
 	entry.remarks = _("Created from the simplified production hand-off workflow.")
 	entry.insert(ignore_permissions=True)
 	return entry
+
+
+def _correct_batch_backflush_after_returns(entry, work_order):
+	"""Repair only guided, transferred-material batch drafts after a return.
+
+	Native get_available_materials treats a return as another inward transfer.
+	Use the existing return-route ledger, which already subtracts manufacture
+	consumption and matches batch identities, then let native stock posting
+	validate the resulting draft as usual.
+	"""
+	if entry.get("purpose") != "Manufacture" or work_order.get("skip_transfer"):
+		return
+	from process_simplification.batch_compat import get_stock_snapshot, is_batch_item
+
+	batch_rows = [row for row in entry.items if row.s_warehouse and is_batch_item(row.item_code)]
+	if not batch_rows or entry.get_backflush_based_on() != "Material Transferred for Manufacture":
+		return
+	if not frappe.db.exists("Stock Entry", {
+		"work_order": work_order.name, "docstatus": 1,
+		"purpose": "Material Transfer for Manufacture", "is_return": 1,
+	}):
+		return
+	from process_simplification.production_exceptions.material_routes import load_routes, stock_rows
+
+	templates = {(row.item_code, row.get("original_item") or row.item_code): row for row in batch_rows}
+	template_by_item = {row.item_code: row for row in batch_rows}
+	routes = [route for route in load_routes(work_order.name)
+		if route.item_code in template_by_item]
+	remaining_fg = max(flt(work_order.material_transferred_for_manufacturing) - flt(work_order.produced_qty), 0)
+	if not remaining_fg:
+		return
+	fraction = min(flt(entry.fg_completed_qty) / remaining_fg, 1)
+	available_by_component, required_by_component = {}, {}
+	for route in routes:
+		available_by_component[route.original_item] = available_by_component.get(route.original_item, 0) + flt(route.native_available_qty)
+	for row in work_order.get("required_items") or []:
+		required_by_component[row.item_code] = required_by_component.get(row.item_code, 0) + flt(row.required_qty)
+	quantities = {}
+	for component, available in available_by_component.items():
+		qty = available * fraction
+		uom = next(route.stock_uom for route in routes if route.original_item == component)
+		if frappe.get_cached_value("UOM", uom, "must_be_whole_number"):
+			qty = frappe.utils.ceil(qty)
+		bom_limit = required_by_component.get(component, available) * flt(entry.fg_completed_qty) / flt(work_order.qty)
+		quantities[component] = min(qty, available, bom_limit)
+
+	# Ignore only this WO's own WIP promises when checking current physical lots;
+	# another order's reservations and moved/expired batches remain unavailable.
+	own_reservations = frappe.get_all("Stock Reservation Entry", filters={
+		"voucher_type": "Work Order", "voucher_no": work_order.name, "docstatus": 1,
+	}, pluck="name", limit=0)
+	pools, rebuilt = {}, []
+	for route in routes:
+		key = (route.item_code, route.source_warehouse)
+		if key not in pools:
+			facts = get_stock_snapshot(*key, ignore_sre=own_reservations,
+				posting_date=entry.posting_date, posting_time=entry.posting_time)
+			pools[key] = [dict(facts.batch_available_qty), max(flt(facts.available_qty), 0)]
+		pool, free_qty = pools[key]
+		remaining = quantities.get(route.original_item, 0)
+		lots, selected_qty = [], 0
+		for lot in route.lots:
+			take = min(flt(lot.qty), max(flt(pool.get(lot.batch_no)), 0), free_qty, remaining)
+			if take <= 1e-9:
+				continue
+			lots.append(frappe._dict({**lot, "qty": take}))
+			pool[lot.batch_no] -= take
+			free_qty -= take
+			remaining -= take
+			selected_qty += take
+		pools[key][1] = free_qty
+		quantities[route.original_item] = remaining
+		if selected_qty:
+			selected_route = frappe._dict({**route, "lots": lots})
+			for values in stock_rows(selected_route, selected_qty, None):
+				template = templates.get((route.item_code, route.original_item), template_by_item[route.item_code])
+				values.update(item_name=template.item_name, description=template.description,
+					expense_account=template.expense_account, cost_center=template.cost_center)
+				rebuilt.append(values)
+	if any(qty > 1e-8 for qty in quantities.values()):
+		_throw("本次完工所需的已发料批次库存不足，请核对在制仓的退料、调拨和批次状态后重试。")
+
+	removed_bundles = {row.serial_and_batch_bundle for row in batch_rows if row.serial_and_batch_bundle}
+	kept = [row for row in entry.items if row not in batch_rows]
+	entry.set("items", [])
+	for values in rebuilt:
+		entry.append("items", values)
+	for row in kept:
+		entry.append("items", row)
+	# Native generation may have created unlinked draft bundles for the rows
+	# replaced above. Only those new, unposted bundles can be discarded.
+	for name in removed_bundles:
+		bundle = frappe.get_doc("Serial and Batch Bundle", name)
+		if bundle.docstatus == 0 and not bundle.voucher_no:
+			frappe.delete_doc("Serial and Batch Bundle", name, ignore_permissions=True)
 
 
 def _guided_component_issue_quantities(
@@ -645,18 +772,31 @@ def _new_work_order_reservation(
 	from_stock_entry=None,
 	from_production_plan=None,
 	from_detail=None,
+	source_detail_doc=None,
 ):
 	if qty <= 0:
 		return None
 	details = _item_stock_details(work_order_item.item_code)
 	reservation_warehouse = warehouse or work_order_item.source_warehouse
-	available = max(
-		flt(get_available_qty_to_reserve(work_order_item.item_code, reservation_warehouse)),
-		0,
-	)
+	if details.get("has_batch_no"):
+		from process_simplification.production_workflow.stock_reservation import locked_available_qty
+
+		# Work Order batch-mode validation is deliberately permissive in native
+		# ERPNext. Lock the shared pool before deriving this exact new promise.
+		available = locked_available_qty(work_order_item.item_code, reservation_warehouse)
+	else:
+		available = max(flt(get_available_qty_to_reserve(work_order_item.item_code, reservation_warehouse)), 0)
 	qty = min(flt(qty), available)
 	if qty <= 0:
 		return None
+	batch_entries = []
+	if source_detail_doc is not None and details.get("has_batch_no") and not details.get("has_serial_no"):
+		from process_simplification.batch_compat import source_batch_allocation
+
+		batch_entries = source_batch_allocation(source_detail_doc, qty)
+		qty = min(qty, sum(max(flt(row.get("qty")), 0) for row in batch_entries))
+		if qty <= 0:
+			return None
 	frappe.db.set_value("Work Order", work_order.name, "reserve_stock", 1, update_modified=False)
 	sre = frappe.new_doc("Stock Reservation Entry")
 	sre.update(
@@ -683,6 +823,8 @@ def _new_work_order_reservation(
 			"from_voucher_detail_no": from_detail,
 		}
 	)
+	for row in batch_entries:
+		sre.append("sb_entries", row)
 	sre.flags.ignore_permissions = True
 	sre.insert(ignore_permissions=True)
 	sre.submit()
@@ -1345,6 +1487,7 @@ def reserve_replenishment_output(stock_entry):
 			warehouse=reservation_warehouse,
 			from_stock_entry=stock_entry.name,
 			from_detail=finished_row.name,
+			source_detail_doc=finished_row,
 		)
 		reserved_qty = min(flt(sre.reserved_qty) if sre else 0, row_qty)
 		result.reserved_qty += reserved_qty

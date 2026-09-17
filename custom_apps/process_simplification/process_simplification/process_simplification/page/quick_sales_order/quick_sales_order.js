@@ -377,7 +377,7 @@ frappe.pages["quick-sales-order"].on_page_load = function (wrapper) {
 
 			<section class="quick-order-guidance" aria-label="${__("快速开单适用范围")}">
 				<strong>${__("什么时候使用标准销售订单？")}</strong>
-				<span>${__("多个交期、同产品分行定价、外币或特殊税费、产品组合、委外、客户供料、序列号或批次等情况。")}</span>
+				<span>${__("多个交期、同产品分行定价、外币或特殊税费、产品组合、委外、客户供料、序列号等情况。批次产品可直接开单，实际批次由库房确认。")}</span>
 			</section>
 
 			<div class="quick-order-announcer sr-only" aria-live="polite"></div>

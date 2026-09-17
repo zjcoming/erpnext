@@ -374,6 +374,15 @@ class TestDesktopNavigationIntegration(IntegrationTestCase):
 			len(GROUPS),
 		)
 
+	def test_workspace_save_keeps_one_native_sidebar_identity(self):
+		workspace = frappe.get_doc("Workspace", "process-simplification")
+		for _ in range(2):
+			workspace.save(ignore_permissions=True)
+			self.assertFalse(frappe.db.exists("Workspace Sidebar", "process-simplification"))
+			canonical = frappe.get_doc("Workspace Sidebar", SIDEBAR_NAME)
+			self.assertEqual((canonical.module, canonical.app), (SIDEBAR_NAME, "process_simplification"))
+			self.assertTrue(canonical.items)
+
 	def test_sidebar_identity_matches_the_page_module_for_native_route_fallback(self):
 		sidebar = frappe.get_doc("Workspace Sidebar", SIDEBAR_NAME)
 

@@ -1,9 +1,10 @@
-{% from "templates/print/factory_sheet.html" import start, finish, field, qty, val, item_name, stock_qty with context %}
+{% from "templates/print/factory_sheet.html" import start, finish, field, qty, val, item_name, stock_qty, batch_details with context %}
+{% set batch_summary = get_print_batch_summary(doc) %}
 {% set returning = doc.get("is_return") %}
 <div class="ps-sheet ps-delivery-sheet">{{ start("销售退货入库单" if returning else "销售出库单") }}
 <table class="ps-sheet-info"><tbody><tr>{{ field("客户", doc.get("customer_name") or doc.get("customer")) }}{{ field("过账日期", doc.get("posting_date")) }}{{ field("原出库单", doc.get("return_against")) }}</tr><tr>{{ field("联系人", doc.get("contact_display")) }}{{ field("联系电话", doc.get("contact_mobile") or doc.get("contact_phone")) }}{{ field("方向", "客户退货入库" if returning else "销售发货出库") }}</tr></tbody></table>
 {% if doc.get("shipping_address") %}<p><strong>收货地址：</strong>{{ doc.shipping_address | striptags | e }}</p>{% endif %}
 <table class="ps-sheet-items"><colgroup><col style="width:6%"><col style="width:34%"><col style="width:20%"><col style="width:40%"></colgroup><thead><tr><th>序号</th><th>物料 / 来源</th><th class="ps-sheet-right">{{ "退货数量" if returning else "出库数量" }}</th><th>{{ "退入仓库" if returning else "出库仓库" }}</th></tr></thead><tbody>
-{% for item in doc.get("items", []) %}<tr><td class="ps-sheet-center">{{ loop.index }}</td><td>{{ item_name(item) }}{% if item.get("against_sales_order") %}<div><small>销售单：{{ item.against_sales_order | e }}</small></div>{% endif %}</td><td class="ps-sheet-right">{{ qty(item.get("qty")) }} {{ _(item.get("uom") or "") | e }}{{ stock_qty(item) }}</td><td>{{ val(item.get("warehouse")) }}{% if item.get("target_warehouse") %}<div>目标仓库：{{ item.target_warehouse | e }}</div>{% endif %}</td></tr>{% endfor %}
+{% for item in doc.get("items", []) %}<tr><td class="ps-sheet-center">{{ loop.index }}</td><td>{{ item_name(item, show_batch=False) }}{{ batch_details(item, batch_summary) }}{% if item.get("against_sales_order") %}<div><small>销售单：{{ item.against_sales_order | e }}</small></div>{% endif %}</td><td class="ps-sheet-right">{{ qty(item.get("qty")) }} {{ _(item.get("uom") or "") | e }}{{ stock_qty(item) }}</td><td>{{ val(item.get("warehouse")) }}{% if item.get("target_warehouse") %}<div>目标仓库：{{ item.target_warehouse | e }}</div>{% endif %}</td></tr>{% endfor %}
 </tbody></table><p class="ps-sheet-hint">退货数量保留系统负号，请结合单据方向核对。</p>
 {{ finish(doc.get("remarks"), "仓库经办", "客户 / 交接确认") }}</div>

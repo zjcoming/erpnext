@@ -1,0 +1,80 @@
+diff --git a/erpnext/stock/reorder_item.py b/erpnext/stock/reorder_item.py
+index 496d725f1f..f8ab585049 100644
+--- a/erpnext/stock/reorder_item.py
++++ b/erpnext/stock/reorder_item.py
+@@ -7,7 +7,7 @@ from math import ceil
+ 
+ import frappe
+ from frappe import _
+-from frappe.utils import add_days, cint, escape_html, flt, nowdate
++from frappe.utils import add_days, cint, escape_html, flt, getdate, nowdate
+ 
+ import erpnext
+ 
+@@ -189,19 +189,35 @@ def get_reorder_levels_for_variants(itemwise_reorder):
+ def get_item_warehouse_projected_qty(items_to_consider):
+ 	item_warehouse_projected_qty = {}
+ 	items_to_consider = list(items_to_consider.keys())
++	if not items_to_consider:
++		return item_warehouse_projected_qty
++	batch_items = set(
++		frappe.get_all(
++			"Item", filters={"name": ["in", items_to_consider], "has_batch_no": 1}, pluck="name"
++		)
++	)
++	usable_batch_stock = {}
+ 
+ 	warehouse_parent_map = frappe._dict(
+ 		frappe.get_all("Warehouse", fields=["name", "parent_warehouse"], as_list=True)
+ 	)
+ 
+-	for item_code, warehouse, projected_qty in frappe.db.sql(
+-		"""select item_code, warehouse, projected_qty
++	for item_code, warehouse, projected_qty, actual_qty in frappe.db.sql(
++		"""select item_code, warehouse, projected_qty, actual_qty
+ 		from tabBin where item_code in ({})
+ 			and (warehouse != '' and warehouse is not null)""".format(
+ 			", ".join(["%s"] * len(items_to_consider))
+ 		),
+ 		items_to_consider,
+ 	):
++		if item_code in batch_items:
++			if item_code not in usable_batch_stock:
++				usable_batch_stock[item_code] = _usable_batch_stock_for_reorder(item_code)
++			# Keep native incoming supply and demand. Replace only the physical
++			# stock component; subtracting SREs here would count demand twice.
++			usable_qty = usable_batch_stock[item_code].get(warehouse, 0)
++			unusable_qty = max(flt(actual_qty) - max(usable_qty, 0), 0)
++			projected_qty = flt(projected_qty) - unusable_qty
+ 		if item_code not in item_warehouse_projected_qty:
+ 			item_warehouse_projected_qty.setdefault(item_code, {})
+ 
+@@ -220,6 +236,28 @@ def get_item_warehouse_projected_qty(items_to_consider):
+ 	return item_warehouse_projected_qty
+ 
+ 
++def _usable_batch_stock_for_reorder(item_code):
++	"""Physical lots only: no SRE/POS deduction, since this adjusts Bin projection."""
++	from erpnext.stock.doctype.batch.batch import get_batch_qty
++
++	# Stock-level mode retains expired lots and bypasses pending POS deductions.
++	# Apply validity here so only unusable physical stock is removed from Bin.
++	batches = get_batch_qty(
++		item_code=item_code,
++		for_stock_levels=True,
++		ignore_reserved_stock=True,
++		consider_negative_batches=True,
++	)
++	disabled = set(frappe.get_all("Batch", filters={"item": item_code, "disabled": 1}, pluck="name"))
++	qty_by_warehouse = {}
++	today = getdate(nowdate())
++	for batch in batches:
++		if batch.batch_no in disabled or (batch.expiry_date and getdate(batch.expiry_date) < today):
++			continue
++		qty_by_warehouse[batch.warehouse] = qty_by_warehouse.get(batch.warehouse, 0) + flt(batch.qty)
++	return qty_by_warehouse
++
++
+ def create_material_request(material_requests):
+ 	"""Create indent on reaching reorder level"""
+ 	mr_list = []

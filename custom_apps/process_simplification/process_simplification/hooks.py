@@ -17,14 +17,15 @@ app_include_css = [
 	"/assets/process_simplification/css/process_ui.css?v=14",
 	"/assets/process_simplification/css/executive_dashboard.css?v=2",
 	"/assets/process_simplification/css/purchasing.css?v=6",
-	"/assets/process_simplification/css/warehouse.css?v=2",
+	"/assets/process_simplification/css/warehouse.css?v=3",
 	"/assets/process_simplification/css/process_pwa.css?v=1",
 	"/assets/process_simplification/css/hengsuan_branding.css?v=2",
 	"/assets/process_simplification/css/document_scan.css?v=7",
 ]
 app_include_js = [
 	"/assets/process_simplification/js/role_landing.js?v=1",
-	"/assets/process_simplification/js/item_identity.js?v=2",
+	"/assets/process_simplification/js/item_identity.js?v=4",
+	"/assets/process_simplification/js/batch_quick_entry.js?v=1",
 	"/assets/process_simplification/js/worker_assignment.js?v=14",
 	"/assets/process_simplification/js/worker_reporting.js?v=17",
 	"/assets/process_simplification/js/material_handling.js?v=3",
@@ -33,7 +34,7 @@ app_include_js = [
 	"/assets/process_simplification/js/notification_sync.js?v=1",
 	"/assets/process_simplification/js/process_pwa.js?v=1",
 	"/assets/process_simplification/js/hengsuan_branding.js?v=3",
-	"/assets/process_simplification/js/page_refresh.js?v=8",
+	"/assets/process_simplification/js/page_refresh.js?v=9",
 ]
 
 after_request = ["process_simplification.page_refresh.after_request"]
@@ -43,6 +44,12 @@ sales_order_draft_creation = "process_simplification.sales_order_creation.create
 override_whitelisted_methods = {
 	"frappe.desk.form.save.savedocs": "process_simplification.sales_order_creation.savedocs",
 	"erpnext.controllers.accounts_controller.get_missing_company_details": "process_simplification.print_localization.skip_automatic_company_details",
+	"erpnext.stock.doctype.batch.batch.get_batch_qty": "process_simplification.batch_permissions.get_batch_qty",
+	"erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle.get_auto_data": "process_simplification.batch_permissions.get_auto_data",
+	"erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle.get_serial_batch_ledgers": "process_simplification.batch_permissions.get_serial_batch_ledgers",
+	"erpnext.controllers.queries.get_batch_no": "process_simplification.batch_permissions.get_batch_no",
+	"frappe.desk.search.search_link": "process_simplification.batch_permissions.search_link",
+	"frappe.desk.search.search_widget": "process_simplification.batch_permissions.search_widget",
 }
 
 page_js = {"print": "public/js/print_defaults.js"}
@@ -65,6 +72,7 @@ after_migrate = "process_simplification.install.after_migrate"
 jinja = {
 	"methods": [
 		"process_simplification.printing.get_document_scan_qr",
+		"process_simplification.batch_display.get_print_batch_summary",
 		"process_simplification.print_localization.get_print_amount_in_words",
 	]
 }
@@ -77,6 +85,10 @@ extend_doctype_class = {
 }
 
 doc_events = {
+	"Workspace": {"on_update": "process_simplification.navigation.repair_workspace_sidebar"},
+	"Serial and Batch Bundle": {
+		"before_validate": "process_simplification.stock_permissions.validate_batch_bundle_scope",
+	},
 	"*": {
 		"after_insert": "process_simplification.page_refresh.document_changed",
 		"on_change": "process_simplification.page_refresh.document_changed",
@@ -86,6 +98,7 @@ doc_events = {
 		"after_insert": "process_simplification.notifications.publish_notification_sound",
 	},
 	"Material Request": {
+		"on_submit": "process_simplification.notifications.notify_reorder_material_request",
 		"on_change": "process_simplification.notifications.notify_material_request_received",
 	},
 	"Purchase Receipt": {
@@ -118,6 +131,7 @@ doc_events = {
 }
 
 permission_query_conditions = {
+	"Serial and Batch Bundle": "process_simplification.batch_permissions.bundle_query",
 	"Material Handling Request": "process_simplification.production_exceptions.handling.query_condition",
 	"Stock Entry": "process_simplification.stock_permissions.stock_entry_query",
 	"Job Card": "process_simplification.production_reporting.permissions.job_card_query",
@@ -131,6 +145,7 @@ permission_query_conditions = {
 }
 
 has_permission = {
+	"Serial and Batch Bundle": "process_simplification.batch_permissions.bundle_permission",
 	"Material Handling Request": "process_simplification.production_exceptions.handling.document_permission",
 	"Job Card": "process_simplification.production_reporting.permissions.job_card_permission",
 	"Work Order": "process_simplification.production_reporting.permissions.work_order_permission",

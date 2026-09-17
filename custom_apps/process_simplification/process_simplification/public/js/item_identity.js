@@ -78,17 +78,26 @@ if (typeof frappe !== "undefined" && frappe.ui?.form?.on) {
 	frappe.ui.form.on("Item", {
 		refresh(frm) {
 			if (frm.is_new()) return;
-			setTimeout(() => {
+			frappe.after_ajax(() => setTimeout(() => {
 				if (!frm.doc || frm.doc.name !== frappe.get_route()[2]) return;
 				const meta = itemIdentityMeta(frm.doc.item_code || frm.doc.name, frm.doc.item_name, __);
+				let intro = itemIdentityIntroHtml(frm.doc.item_code || frm.doc.name, frm.doc.item_name, {
+					translate: __,
+					escapeHtml: frappe.utils.escape_html,
+				});
+				if (frm.doc.is_stock_item && !frappe.model.can_read("Bin")) {
+					// Native dashboard returns [] without Bin access, which looks like zero stock.
+					frm.set_df_property("stock_levels_section", "depends_on", "eval:false");
+					frm.toggle_display("stock_levels_section", false);
+					intro += `<br><small>${frappe.utils.escape_html(__(
+						"当前岗位无法在此页查看库存数量，请由库房人员在库房工作台核对实际可用量。"
+					))}</small>`;
+				}
 				frm.set_intro(
-					itemIdentityIntroHtml(frm.doc.item_code || frm.doc.name, frm.doc.item_name, {
-						translate: __,
-						escapeHtml: frappe.utils.escape_html,
-					}),
+					intro,
 					meta.has_meaningful_name ? "blue" : "orange"
 				);
-			}, 0);
+			}, 0));
 		},
 	});
 }

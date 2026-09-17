@@ -1,10 +1,29 @@
+function warehouseBatchHtml(item, esc, number) {
+	if (!item.has_batch_no) return "";
+	const groups = [["批次", item.batches], ["拒收批次", item.rejected_batches]];
+	const details = groups.flatMap(([label, lots]) => (lots || []).map((lot) =>
+		'<small>' + label + '：' + esc(lot.batch_no) + ' · ' + number(lot.qty) + ' ' + esc(lot.stock_uom || "") + '</small>'
+	)).join("");
+	return '<div class="warehouse-batches"><small>按批次管理 · 在原单核对实际批次</small>' + details + '</div>';
+}
+
+function warehouseBatchNavigationHtml(model, esc) {
+	const reports = (model?.reports || []).map((report) =>
+		'<a class="btn btn-default" href="/desk/query-report/' + encodeURIComponent(report.name) + '">' + esc(report.label) + '</a>'
+	).join(" ");
+	const configuration = model?.can_configure ?
+		'<details><summary>批次管理（可选）</summary><p>普通物料无需设置。需要使用时，在库存设置启用，再对指定物料勾选“有批次”。可手动建立批次，也可按需配置自动编号；已有库存的物料需先按原生规则处理。</p>' +
+		'<a href="/desk/stock-settings">库存设置</a> · <a href="/desk/item">物料配置</a></details>' : "";
+	return reports + configuration;
+}
+
 function warehouseDocumentHtml(row, queue, esc, number) {
 	const slug = row.doctype.toLowerCase().replaceAll(" ", "-");
 	const href = "/desk/" + slug + "/" + encodeURIComponent(row.name);
 	const items = (row.items || []).map((item) => {
 		const warehouses = item.warehouse || [item.source_warehouse, item.target_warehouse].filter(Boolean).join(" → ");
 		return '<li><div><strong>' + esc(item.item_name) + '</strong><small>' + esc(item.item_code) +
-			(warehouses ? " · " + esc(warehouses) : "") + '</small></div><span>' +
+			(warehouses ? " · " + esc(warehouses) : "") + '</small>' + warehouseBatchHtml(item, esc, number) + '</div><span>' +
 			(queue === "purchase" ? "待收 " : "") + number(item.qty) + " " + esc(item.uom || "") + '</span></li>';
 	});
 	const detail = items.length > 3 ? '<details><summary>另外 ' + (items.length - 3) +
@@ -22,7 +41,7 @@ function warehouseDocumentHtml(row, queue, esc, number) {
 		'</p>' + openAction + '<ul class="warehouse-items">' + items.slice(0, 3).join("") + '</ul>' + detail + '</article>';
 }
 
-if (typeof module !== "undefined" && module.exports) module.exports = { warehouseDocumentHtml };
+if (typeof module !== "undefined" && module.exports) module.exports = { warehouseDocumentHtml, warehouseBatchHtml, warehouseBatchNavigationHtml };
 
 if (typeof frappe !== "undefined") {
 	frappe.pages["warehouse-workbench"].on_page_load = function (wrapper) {
@@ -31,7 +50,8 @@ if (typeof frappe !== "undefined") {
 		const number = (value) => Number(value || 0).toLocaleString("zh-CN", { maximumFractionDigits: 6 });
 		const root = $('<div class="warehouse-workbench">' +
 			'<p class="text-muted">先处理待办，也可以直接查询库存和收发记录。</p>' +
-			'<nav class="warehouse-shortcuts" aria-label="库存查询与记录"></nav>' +
+				'<nav class="warehouse-shortcuts" aria-label="库存查询与记录"></nav>' +
+				'<div class="warehouse-batch-navigation"></div>' +
 			'<div class="warehouse-filters"><div><label for="warehouse-company">公司</label>' +
 			'<select id="warehouse-company" class="form-control"><option value="">全部可访问公司</option></select></div>' +
 			'<div><label for="warehouse-search">查找待办</label><input id="warehouse-search" class="form-control" ' +
@@ -75,7 +95,8 @@ if (typeof frappe !== "undefined") {
 					background: options.background,
 					args: { company: state.company, queue: state.queue, search: state.search, start: state.cursors.at(-1) },
 					apply(response) {
-				const model = response.message;
+					const model = response.message;
+					root.find(".warehouse-batch-navigation").html(warehouseBatchNavigationHtml(model.batch_navigation, esc));
 				state.companies = model.companies;
 				if (model.companies.length === 1) state.company = model.companies[0];
 				state.queue = model.queue;

@@ -44,6 +44,8 @@ def set_default_language(language: str = "zh"):
 
 def after_install():
 	set_default_language()
+	# Single defaults may already exist before this first-install hook.
+	ensure_landing_defaults(new_install=True)
 	ensure_scan_site_id()
 	ensure_factory_letterhead()
 	ensure_factory_print_formats()
@@ -62,10 +64,11 @@ def after_install():
 	disable_standard_material_request_receipt_email()
 	ensure_pwa_defaults()
 	ensure_receipt_defaults()
-	ensure_landing_defaults()
 
 
 def after_migrate():
+	# Preserve existing empty/disabled choices while initializing older sites.
+	ensure_landing_defaults()
 	ensure_scan_site_id()
 	ensure_factory_letterhead()
 	ensure_factory_print_formats()
@@ -83,4 +86,3 @@ def after_migrate():
 	disable_standard_material_request_receipt_email()
 	ensure_pwa_defaults()
 	ensure_receipt_defaults()
-	ensure_landing_defaults()

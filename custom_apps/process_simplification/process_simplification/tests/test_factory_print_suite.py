@@ -10,13 +10,14 @@ from process_simplification import printing
 
 
 class TestFactoryPrintSuite(TestCase):
-	def render(self, doctype, **fields):
+	def render(self, doctype, batch_summary=None, **fields):
 		env = SandboxedEnvironment(loader=FileSystemLoader(str(printing.FACTORY_LETTERHEAD_TEMPLATE.parents[2])), undefined=StrictUndefined)
 		return env.get_template("templates/print/" + printing.FACTORY_FORMATS[doctype][1]).render(
 			doc=frappe._dict(doctype=doctype, name="TEST-1", **fields),
 			frappe=SimpleNamespace(utils=SimpleNamespace(fmt_money=lambda v, **kw: f'{kw.get("currency")} {float(v or 0):.2f}')),
 			_=lambda value: {"Nos": "个", "Box": "箱"}.get(value, value),
 			get_print_amount_in_words=lambda doc: "金额大写",
+			get_print_batch_summary=lambda doc: batch_summary or {},
 			letter_head="<div>本公司</div>", no_letterhead=False, footer="",
 			print_settings=frappe._dict(repeat_header_footer=True),
 		)
@@ -29,6 +30,29 @@ class TestFactoryPrintSuite(TestCase):
 		for text in ("生产完工入库单", "RAW", "FG", "2 箱", "20 个", "8 个", "原料仓", "成品仓", "不合并汇总"):
 			self.assertIn(text, html)
 		self.assertNotIn("valuation_rate", html)
+
+	def test_native_bundle_batches_print_once_with_stock_unit_quantities(self):
+		summary = {"LINE-1": {"batches": [
+			{"batch_no": "A<01>", "qty": 12.5, "stock_uom": "Kg"},
+			{"batch_no": "A02", "qty": 17.5, "stock_uom": "Kg"},
+		], "rejected_batches": []}}
+		for doctype in ("Purchase Receipt", "Stock Entry", "Delivery Note"):
+			html = self.render(doctype, batch_summary=summary, items=[
+				frappe._dict(name="LINE-1", item_code="RAW", qty=3, uom="Box", stock_uom="Kg", batch_no="STALE"),
+			])
+			self.assertEqual(html.count("A&lt;01&gt;"), 1)
+			self.assertIn("12.5 Kg", html)
+			self.assertIn("17.5 Kg", html)
+			self.assertNotIn("STALE", html)
+
+	def test_purchase_receipt_print_separates_accepted_and_rejected_batches(self):
+		html = self.render("Purchase Receipt", batch_summary={"LINE-1": {
+			"batches": [{"batch_no": "ACCEPT", "qty": 30, "stock_uom": "Kg"}],
+			"rejected_batches": [{"batch_no": "REJECT", "qty": 2.5, "stock_uom": "Kg"}],
+		}}, items=[frappe._dict(name="LINE-1", item_code="RAW", qty=3, uom="Box")])
+		self.assertIn("接收批次：ACCEPT", html)
+		self.assertIn("拒收批次：REJECT", html)
+		self.assertIn("2.5 Kg", html)
 
 	def test_purchase_return_preserves_negative_accepted_rejected_and_warehouses(self):
 		html = self.render("Purchase Receipt", is_return=1, return_against="PR-ORIGINAL", items=[

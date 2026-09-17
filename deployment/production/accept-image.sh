@@ -55,6 +55,8 @@ docker compose --project-name "${project_name}" --env-file "${env_file}" --file 
     grep -qx "SOURCE_REVISION=$EXPECTED_SOURCE_REVISION" release.env
     grep -qx "FRAPPE_PATCH_MANIFEST_SHA256=$(sha256sum frappe-patches.json | cut -d " " -f 1)" release.env
     ./env/bin/python -c "import hashlib,json,pathlib; m=json.loads(pathlib.Path(\"frappe-patches.json\").read_text()); assert all(hashlib.sha256((pathlib.Path(\"apps/frappe\") / p).read_bytes()).hexdigest() == h[\"patched\"] for p,h in m[\"files\"].items()), \"Frappe patch checksum mismatch\""
+    grep -qx "ERPNEXT_PATCH_MANIFEST_SHA256=$(sha256sum erpnext-patches.json | cut -d " " -f 1)" release.env
+    ./env/bin/python -c "import hashlib,json,pathlib; m=json.loads(pathlib.Path(\"erpnext-patches.json\").read_text()); assert all(hashlib.sha256((pathlib.Path(\"apps/erpnext\") / p).read_bytes()).hexdigest() == h[\"patched\"] for p,h in m[\"files\"].items()), \"ERPNext patch checksum mismatch\""
     apps="$(bench --site "$SITE_NAME" list-apps --format text)"
     grep -qw frappe <<<"$apps"
     grep -qw erpnext <<<"$apps"
@@ -63,4 +65,7 @@ docker compose --project-name "${project_name}" --env-file "${env_file}" --file 
   '
 
 docker compose --project-name "${project_name}" --env-file "${env_file}" --file "${compose_file}" ps --all
+docker compose --project-name "${project_name}" --env-file "${env_file}" --file "${compose_file}" exec -T \
+  backend ./env/bin/python - "${site_name}" < "${repo_root}/deployment/production/check-site-navigation.py"
+
 echo "Production image acceptance passed: ${image}"

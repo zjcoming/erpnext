@@ -287,10 +287,14 @@ def attach_work_order_source_reservations(required_items, stock_reservation_entr
 		if not all(key):
 			continue
 		reservation_delta_by_source[key] += (
-			flt(entry.get("reserved_qty"))
-			- flt(entry.get("delivered_qty"))
-			- flt(entry.get("transferred_qty"))
-			- flt(entry.get("consumed_qty"))
+			flt(entry.get("effective_reserved_qty"))
+			if entry.get("effective_reserved_qty") is not None
+			else (
+				flt(entry.get("reserved_qty"))
+				- flt(entry.get("delivered_qty"))
+				- flt(entry.get("transferred_qty"))
+				- flt(entry.get("consumed_qty"))
+			)
 		)
 
 	for item in required_items or []:
@@ -306,6 +310,25 @@ def attach_work_order_source_reservations(required_items, stock_reservation_entr
 			0,
 		)
 	return required_items
+
+
+def _attach_effective_batch_reservations(entries):
+	"""Bound own hard reservations by valid stock, without reallocating plans."""
+	from process_simplification.batch_compat import get_batch_stock_facts
+
+	pools = {}
+	for entry in entries or []:
+		key = (entry.get("item_code"), entry.get("warehouse"))
+		if not all(key):
+			continue
+		if key not in pools:
+			pools[key] = get_batch_stock_facts(*key)
+		batch = pools[key]
+		if batch is not None:
+			entry["effective_reserved_qty"] = max(
+				flt((batch.get("effective_reserved_by_sre") or {}).get(entry.get("name"))), 0
+			)
+	return entries
 
 
 def _source_reserved_qty(item) -> float:
@@ -370,6 +393,7 @@ def _loaded_work_order_stock_pool(
 	snapshot,
 	loaded_commitment_qty=0,
 	loaded_plan_reservation_qty=0,
+	loaded_reserved_qty=0,
 ) -> float:
 	"""Return stock allocatable across the Work Orders loaded by this workbench.
 
@@ -390,7 +414,12 @@ def _loaded_work_order_stock_pool(
 		- flt(loaded_plan_reservation_qty),
 		0,
 	)
-	return max(flt(snapshot.get("available_qty")) - external_commitment_qty, 0)
+	available = max(flt(snapshot.get("available_qty")) - external_commitment_qty, 0)
+	if snapshot.get("batch_free_qty") is not None:
+		# The existing commitment calculation owns plan sharing and priority. Only
+		# cap its result by executable free stock plus these WOs' own valid locks.
+		available = min(available, max(flt(snapshot.batch_free_qty), 0) + max(flt(loaded_reserved_qty), 0))
+	return available
 
 
 def build_allocation_conflict(
@@ -979,6 +1008,7 @@ def allocate_work_order_readiness(plans, stock_snapshots, supply_documents=None)
 				snapshot,
 				loaded_commitments.get(key, 0),
 				loaded_plan_reservations.get(key, 0),
+				reserved_stock.get(key, 0),
 			)
 			- reserved_stock.get(key, 0),
 			0,
@@ -1071,6 +1101,7 @@ def allocate_work_order_readiness(plans, stock_snapshots, supply_documents=None)
 						snapshot,
 						loaded_commitments.get(key, 0),
 						loaded_plan_reservations.get(key, 0),
+						reserved_stock.get(key, 0),
 					)
 					- reserved_stock.get(key, 0),
 					0,
@@ -1346,6 +1377,7 @@ def get_production_plan_readiness(company=None, sales_order_items=None):
 			"voucher_no": ["in", work_order_names],
 		},
 		fields=[
+			"name",
 			"voucher_no",
 			"voucher_detail_no",
 			"item_code",
@@ -1359,6 +1391,7 @@ def get_production_plan_readiness(company=None, sales_order_items=None):
 		],
 		limit=0,
 	)
+	_attach_effective_batch_reservations(stock_reservation_entries)
 	attach_work_order_source_reservations(required_items, stock_reservation_entries)
 	attach_work_order_stock_facts(work_orders, required_items)
 	job_cards = frappe.get_all(

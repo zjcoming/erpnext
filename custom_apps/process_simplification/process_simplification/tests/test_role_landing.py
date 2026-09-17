@@ -74,6 +74,33 @@ class TestRoleLandingIntegration(IntegrationTestCase):
 		frappe.clear_cache()
 		super().tearDown()
 
+	def test_fresh_install_seeds_rows_after_single_defaults_are_persisted(self):
+		frappe.set_user("Administrator")
+		doc = frappe.get_single(landing.SETTINGS_DOCTYPE)
+		doc.enable_role_landing = 1
+		doc.set("role_landing_pages", [])
+		doc.save()
+		self.assertIn("enable_role_landing", frappe.db.get_singles_dict(landing.SETTINGS_DOCTYPE))
+		landing.ensure_defaults(new_install=True)
+		stored = frappe.get_single(landing.SETTINGS_DOCTYPE)
+		self.assertEqual([(row.role, row.landing_page) for row in stored.role_landing_pages], list(landing.DEFAULT_PAGES))
+		stored.role_landing_pages.reverse()
+		stored.save()
+		landing.ensure_defaults(new_install=True)
+		self.assertEqual([row.role for row in frappe.get_single(landing.SETTINGS_DOCTYPE).role_landing_pages], [role for role, _ in reversed(landing.DEFAULT_PAGES)])
+
+	def test_upgrade_keeps_saved_empty_and_disabled_choices(self):
+		frappe.set_user("Administrator")
+		for enabled in (0, 1):
+			doc = frappe.get_single(landing.SETTINGS_DOCTYPE)
+			doc.enable_role_landing = enabled
+			doc.set("role_landing_pages", [])
+			doc.save()
+			landing.ensure_defaults()
+			stored = frappe.get_single(landing.SETTINGS_DOCTYPE)
+			self.assertEqual(stored.enable_role_landing, enabled)
+			self.assertEqual(stored.role_landing_pages, [])
+
 	def test_existing_role_users_receive_permitted_home_pages(self):
 		from frappe.boot import get_bootinfo
 
@@ -109,6 +136,12 @@ class TestRoleLandingIntegration(IntegrationTestCase):
 	def test_settings_save_clears_cached_boot_and_reordering_is_retained(self):
 		frappe.set_user("Administrator")
 		doc = frappe.get_single(landing.SETTINGS_DOCTYPE)
+		# An empty, intentionally disabled configuration cannot exercise reordering.
+		doc.set("role_landing_pages", [
+			{"role": role, "landing_page": page, "enabled": 1}
+			for role, page in landing.DEFAULT_PAGES
+		])
+		doc.save()
 		with patch.object(frappe, "clear_cache") as clear:
 			doc.role_landing_pages.reverse()
 			doc.save()

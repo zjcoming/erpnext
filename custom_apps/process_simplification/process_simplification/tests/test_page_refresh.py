@@ -78,6 +78,23 @@ class TestPageRefresh(TestCase):
 		self.assertNotEqual(a, refresh.versions_for("a", ["tasks"]))
 		self.assertEqual(b, refresh.versions_for("b", ["tasks"]))
 
+	def test_batch_master_change_invalidates_inventory_pages_without_exposing_a_batch_name(self):
+		before = refresh.versions_for("a", ["orders", "warehouse", "production", "purchase"])
+		refresh.document_changed(frappe._dict(doctype="Batch", name="PRIVATE-BATCH", disabled=1))
+		self.assertEqual(frappe.local.ps_page_changes, {
+			("all", topic) for topic in ("orders", "production", "purchase", "warehouse", "tasks", "dashboard")
+		})
+		refresh.flush_changes()
+		after = refresh.versions_for("a", ["orders", "warehouse", "production", "purchase"])
+		self.assertTrue(all(before[topic] != after[topic] for topic in before))
+
+	def test_expiry_day_change_invalidates_versions_without_a_stock_posting(self):
+		with patch.object(refresh, "nowdate", return_value="2026-09-14"):
+			before = refresh.versions_for("a", ["orders", "warehouse", "production", "purchase"])
+		with patch.object(refresh, "nowdate", return_value="2026-09-15"):
+			after = refresh.versions_for("a", ["orders", "warehouse", "production", "purchase"])
+		self.assertTrue(all(before[topic] != after[topic] for topic in before))
+
 	def test_company_changes_do_not_invalidate_other_companies(self):
 		a = {**self.scope, "companies": ["Factory A"]}
 		b = {**self.scope, "companies": ["Factory B"]}

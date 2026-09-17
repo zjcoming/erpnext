@@ -40,8 +40,9 @@ class TestSharedMaterialAllocation(UnitTestCase):
 		patcher.start()
 		self.addCleanup(patcher.stop)
 
+	@patch("process_simplification.batch_compat.get_batch_stock_facts", return_value=None)
 	@patch("process_simplification.api.shortage.frappe.db.get_value")
-	def test_stock_snapshot_separates_free_stock_from_production_reservations(self, get_value):
+	def test_stock_snapshot_separates_free_stock_from_production_reservations(self, get_value, batch_facts):
 		from process_simplification.api.shortage import get_material_stock_snapshot
 
 		get_value.return_value = {

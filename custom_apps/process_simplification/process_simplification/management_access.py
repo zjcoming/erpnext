@@ -228,6 +228,10 @@ SALES_OPERATOR_PERMISSIONS = {
 
 WAREHOUSE_OPERATOR_PERMISSIONS = {
 	**{doctype: {"read", "select"} for doctype in REFERENCE_READ_DOCTYPES},
+	# Native selectors create/revise bundles and stock posting submits them. Batch master-data
+	# changes (expiry/disabled) remain with an explicitly authorized administrator.
+	"Batch": {"select", "create"},
+	"Serial and Batch Bundle": {"read", "select", "create", "write", "submit"},
 	"Account": {"read", "select"},
 	"Sales Order": {"read", "select"},
 	"Production Plan": {"read", "select"},
@@ -247,11 +251,11 @@ WAREHOUSE_OPERATOR_PERMISSIONS = {
 	"Stock Entry Type": {"read", "select"},
 	"Stock Ledger Entry": {"read", "select", "report"},
 	"Stock Reservation Entry": {"read", "select", "create", "write", "submit"},
-	"Stock Entry": {"read", "select", "create", "write", "submit"},
-	"Delivery Note": {"read", "select", "create", "write", "submit"},
+	"Stock Entry": {"read", "select", "create", "write", "submit", "print"},
+	"Delivery Note": {"read", "select", "create", "write", "submit", "print"},
 	"Material Request": {"read", "select", "create", "write", "submit"},
 	"Purchase Order": {"read", "select", "create", "write"},
-	"Purchase Receipt": {"read", "select", "create", "write", "submit"},
+	"Purchase Receipt": {"read", "select", "create", "write", "submit", "print"},
 }
 
 PRODUCTION_MANAGER_PERMISSIONS = {
@@ -519,6 +523,7 @@ def ensure_management_document_permissions():
 				"if_owner": 0,
 			}
 			permission = frappe.db.get_value("Custom DocPerm", filters)
+			existing_permission = bool(permission)
 			if not permission:
 				add_permission(doctype, role, permlevel=0, ptype="read")
 				permission = frappe.db.get_value("Custom DocPerm", filters)
@@ -528,6 +533,10 @@ def ensure_management_document_permissions():
 				permission_type: int(permission_type in allowed_permissions)
 				for permission_type in DOCUMENT_PERMISSION_FIELDS
 			}
+			if existing_permission and doctype in {"Batch", "Serial and Batch Bundle"}:
+				# Preserve existing customer grants. New records use the full matrix
+				# above, including removal of add_permission's default read grant.
+				updates = {permission_type: 1 for permission_type in allowed_permissions}
 			frappe.db.set_value(
 				"Custom DocPerm",
 				permission,
@@ -571,9 +580,14 @@ def ensure_management_report_roles():
 
 
 def ensure_management_access():
+	from process_simplification.stock_permissions import ensure_company_warehouse_reference_permissions
+
 	ensure_management_roles()
 	ensure_management_role_profiles()
 	ensure_management_document_permissions()
+	# Used by installation, every migration and explicit permission repairs. Keep
+	# native form settings readable alongside their minimum role-level grants.
+	ensure_company_warehouse_reference_permissions()
 	ensure_management_page_roles()
 	ensure_management_report_roles()
 

@@ -28,6 +28,7 @@ from process_simplification.workbench_read import workbench_read
 
 STATUS_LABELS = {
 	"master_data_blocked": "基础资料异常",
+	"batch_reservation_blocked": "批次预留需核对",
 	"unplanned": "待安排",
 	"planning_required": "待创建生产计划",
 	"legacy_work_order": "旧工单未纳入计划",
@@ -65,6 +66,8 @@ def _risk_for_demand(delivery_timing: str, status_code: str):
 		return "red", 95, "缺少交期"
 	if status_code == "master_data_blocked":
 		return "red", 90, "生产资料阻塞"
+	if status_code == "batch_reservation_blocked":
+		return "red", 85, "批次预留需核对"
 	if delivery_timing in {"today", "within_7_days"} and status_code in {
 		"unplanned",
 		"planning_required",
@@ -132,6 +135,18 @@ def get_allocated_production_row(sales_order: str, sales_order_item: str):
 	return None
 
 
+def _apply_batch_reservation_block(demand):
+	"""Do not turn an unusable existing reservation into a new production action."""
+	if _positive(demand, "invalid_reserved_qty") > 1e-8:
+		demand["status_code"] = "batch_reservation_blocked"
+		demand["status_label"] = STATUS_LABELS["batch_reservation_blocked"]
+		risk = _risk_for_demand(demand.get("delivery_timing"), "batch_reservation_blocked")
+		demand["risk_level"], demand["risk_score"], demand["risk_label"] = risk
+		demand["next_actions"] = []
+		_unique_action(demand["next_actions"], "调整批次预留", "view_sales_order")
+	return demand
+
+
 def build_production_demand(order, row, work_orders=None, today=None):
 	order = frappe._dict(order or {})
 	row = frappe._dict(row or {})
@@ -141,6 +156,7 @@ def build_production_demand(order, row, work_orders=None, today=None):
 	unplanned_production_qty = _positive(row, "unplanned_production_qty")
 	overplanned_qty = _positive(row, "overplanned_qty")
 	completed_unreserved_qty = _positive(row, "completed_unreserved_qty")
+	invalid_reserved_qty = _positive(row, "invalid_reserved_qty")
 	if not any(
 		(
 			production_required_qty,
@@ -148,6 +164,7 @@ def build_production_demand(order, row, work_orders=None, today=None):
 			unplanned_production_qty,
 			overplanned_qty,
 			completed_unreserved_qty,
+			invalid_reserved_qty,
 		)
 	):
 		return None
@@ -181,7 +198,7 @@ def build_production_demand(order, row, work_orders=None, today=None):
 		_unique_action(actions, "回补订单", "reserve_completed_stock")
 	_unique_action(actions, "查看销售订单", "view_sales_order")
 
-	return {
+	return _apply_batch_reservation_block({
 		"demand_key": row.get("sales_order_item"),
 		"sales_order": row.get("sales_order") or order.get("name"),
 		"sales_order_item": row.get("sales_order_item"),
@@ -199,6 +216,7 @@ def build_production_demand(order, row, work_orders=None, today=None):
 		"days_to_delivery": days_to_delivery,
 		"pending_qty": _positive(row, "pending_qty"),
 		"reserved_qty": _positive(row, "reserved_qty"),
+		"invalid_reserved_qty": invalid_reserved_qty,
 		"available_to_reserve": _positive(row, "available_to_reserve"),
 		"finished_stock_coverage_qty": _positive(row, "finished_stock_coverage_qty"),
 		"production_required_qty": production_required_qty,
@@ -222,7 +240,7 @@ def build_production_demand(order, row, work_orders=None, today=None):
 		"materials": [],
 		"work_orders": [dict(wo) for wo in work_orders],
 		"next_actions": actions,
-	}
+	})
 
 
 def attach_material_coverage(demands, coverage):
@@ -294,6 +312,7 @@ def attach_material_coverage(demands, coverage):
 			risk = _risk_for_demand(demand["delivery_timing"], demand["status_code"])
 			demand["risk_level"], demand["risk_score"], demand["risk_label"] = risk
 		demand["materials"].sort(key=lambda row: (row.get("warehouse") or "", row.get("item_code") or ""))
+		_apply_batch_reservation_block(demand)
 	return result
 
 
@@ -387,6 +406,7 @@ def attach_production_plan_readiness(demands, readiness_by_sales_order_item):
 		if purchased_shortages:
 			_unique_action(demand.next_actions, "处理缺料", "handle_shortage")
 		_unique_action(demand.next_actions, "检查工单物料", "check_materials")
+		_apply_batch_reservation_block(demand)
 	return result
 
 

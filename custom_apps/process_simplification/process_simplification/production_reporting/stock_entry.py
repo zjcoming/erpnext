@@ -741,7 +741,25 @@ class SubassemblyReservationStockEntryMixin:
 			if work_order.status in {"Stopped", "Completed", "Closed"}:
 				work_order.update_required_items()
 				return
-		return super().update_work_order()
+		result = super().update_work_order()
+		# Native cancellation refreshes WIP SRE children before validating the
+		# reversed stock ledger, but omits submitted material returns from child
+		# usage. Reconcile at this point as well as after cancellation so a valid
+		# batch does not appear over-reserved while that stock check is running.
+		if (
+			self.docstatus == 2
+			and self.get("purpose") == "Manufacture"
+			and self.get("custom_process_workflow_action") == "Receipt Request"
+			and self.get("work_order")
+		):
+			from process_simplification.batch_compat import is_batch_item
+
+			if any(row.s_warehouse and is_batch_item(row.item_code) for row in self.items) and frappe.db.exists(
+				"Stock Entry", {"work_order": self.work_order, "docstatus": 1,
+					"purpose": "Material Transfer for Manufacture", "is_return": 1},
+			):
+				_reconcile_work_order_reservations(self)
+		return result
 
 	def before_cancel(self):
 		from process_simplification.production_exceptions.service import validate_cancel_linked_stock_entry

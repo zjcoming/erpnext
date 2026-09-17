@@ -20,7 +20,7 @@
 
 默认发布标签是 `hengsuan/erpnext:v16.33.0-hs.20260909.1`。正式构建应保留脚本输出的镜像 ID、源码提交和压缩包 SHA-256。
 
-构建会对固定版本 Frappe 应用 `patches/` 中的事务并发补丁，并核对修改前后的文件 SHA-256；上游文件变化时会停止构建。镜像保留 `frappe-patches.json`，`release.env` 记录其校验值，验收脚本同时检查实际源码。升级 Frappe 时需重新审查补丁，不能跳过校验。2026-09-10 的工作台与事务修复验证见 [专项报告](../../custom_apps/process_simplification/docs/performance_fix_validation_20260910.md)。包含这些修复的发布必须使用新镜像标签，并先将拟发布代码纳入对应 Git 提交；当前构建脚本不会打包未提交改动。
+构建会对固定版本 Frappe 应用 `patches/` 中的事务并发补丁，并核对修改前后的文件 SHA-256；上游文件变化时会停止构建。镜像保留 `frappe-patches.json`，`release.env` 记录其校验值，验收脚本同时检查实际源码。升级 Frappe 时需重新审查补丁，不能跳过校验。2026-09-10 的工作台与事务修复验证见 [专项报告](../../custom_apps/process_simplification/docs/performance_fix_validation_20260910.md)。包含这些修复的发布必须使用新镜像标签，并先将拟发布代码纳入对应 Git 提交；默认构建不会打包未提交改动。
 
 ## 服务器目录
 
@@ -77,3 +77,19 @@ docker compose up -d --wait
 ```
 
 Compose 会先执行初始化检查和迁移，业务进程只在迁移成功后启动。回滚前必须确认新版本迁移是否允许旧代码继续使用，并保留升级前的完整逻辑备份。
+
+### 最新工作区的本地验收快照
+
+本地验收可显式设置 `SOURCE_MODE=working-tree`，并使用独立镜像标签。此模式只复制应用包、安装元数据及 Dockerfile 实际依赖的部署文件，拒绝符号链接和私密目录；不会复制站点、数据库或密钥。快照清单对每个输入文件计算 SHA-256，摘要进入镜像标签与 `release.env`，源码版本显示 `HEAD-worktree-摘要`，不会伪装为干净提交。`BUILD_EVIDENCE_DIR` 可保存 `source-manifest.json`。正式 Git 发布仍采用默认 committed 模式。
+
+```sh
+SOURCE_MODE=working-tree ERP_IMAGE=hengsuan/erpnext:local-acceptance APP_VERSION=local-acceptance BUILD_EVIDENCE_DIR=/path/to/evidence ./deployment/production/build-image.sh
+```
+
+ERPNext 批次补货修复也通过版本固定的补丁打包，镜像中保留 `erpnext-patches.json`；构建与验收均检查实际文件指纹。
+
+### 初始化与桌面导航发布检查
+
+完成初始化的站点不能仍以 `setup-wizard` 作为默认桌面。可将 `check-site-navigation.py` 复制到 backend 容器，用 bench Python 运行并传入站点名；该检查只读，未完成建账的新站允许保留原生向导。验收数据准备脚本若直接执行 ERPNext 建账，必须补齐 Frappe 原生 `run_post_setup_complete` 阶段，不能只写完成标记。
+
+此检查不能代替浏览器验收：从正常登录入口进入岗位首页，再实际点击“桌面”，确认原生桌面；还应核对刷新、退出重登、直达单据和备份恢复后的同一操作。生产升级应保留已有岗位首页配置，不因本地验收初始化错误修改产品跳转逻辑。

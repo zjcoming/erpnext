@@ -63,9 +63,13 @@ DEFAULT_PAGES = (
 )
 
 
-def ensure_defaults():
-	"""Initialize once, retaining an intentionally disabled or emptied configuration."""
-	if "enable_role_landing" in frappe.db.get_singles_dict(SETTINGS_DOCTYPE):
+def ensure_defaults(*, new_install=False):
+	"""Seed fresh installs; upgrades retain deliberately empty or disabled choices.
+
+	Frappe can persist Single defaults before after_install, so field existence
+	alone cannot distinguish a fresh installation from an existing configuration.
+	"""
+	if not new_install and "enable_role_landing" in frappe.db.get_singles_dict(SETTINGS_DOCTYPE):
 		return
 	settings = frappe.get_single(SETTINGS_DOCTYPE)
 	settings.enable_role_landing = 1

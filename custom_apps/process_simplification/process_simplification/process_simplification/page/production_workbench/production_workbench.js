@@ -194,6 +194,7 @@ function productionStatusMeta(status) {
 		awaiting_receipt: { indicator: "blue" },
 		awaiting_issue: { indicator: "blue" },
 		master_data_blocked: { indicator: "red" },
+		batch_reservation_blocked: { indicator: "red", label: "批次预留需核对" },
 		awaiting_order_reservation: { indicator: "gray" },
 		overplanned: { indicator: "gray" },
 	};
@@ -772,6 +773,7 @@ function productionDemandHtml(demand, helpers) {
 	);
 	const nextActionLabel = (currentTask ? `${currentTask.workOrder.production_item_name || currentTask.workOrder.production_item} · ${currentTask.label}` : null)
 		|| primaryAction?.label
+		|| productionStatusMeta(demand.status_code).label
 		|| demand.status_label
 		|| t("查看详情");
 	return `
@@ -787,7 +789,7 @@ function productionDemandHtml(demand, helpers) {
 				<div class="production-demand-fact"><span>${esc(t("客户交期"))}</span><strong>${esc(date(demand.delivery_date)) || esc(t("未设置"))}</strong></div>
 				<div class="production-demand-fact ps-plan-start"><span>${esc(t("计划开工"))}</span><strong>${esc(date(plannedStart)) || esc(t("未安排"))}</strong></div>
 				<div class="production-demand-fact ps-production-quantity"><span>${esc(t("需生产 / 未安排"))}</span><strong>${number(demand.production_required_qty)} / ${number(demand.unplanned_production_qty)}</strong></div>
-				<div class="production-demand-risk"><span class="indicator-pill ${esc(demand.risk_level || "gray")}">${esc(demand.risk_label || "")}</span><span class="indicator-pill ${esc(productionStatusMeta(demand.status_code).indicator)}">${esc(demand.status_label || "")}</span></div>
+				<div class="production-demand-risk"><span class="indicator-pill ${esc(demand.risk_level || "gray")}">${esc(demand.risk_label || "")}</span><span class="indicator-pill ${esc(productionStatusMeta(demand.status_code).indicator)}">${esc(t(productionStatusMeta(demand.status_code).label || demand.status_label || ""))}</span></div>
 				<span class="production-demand-next-action"><small>${esc(t("下一步"))}</small><strong>${esc(t(nextActionLabel))}</strong><span class="workbench-expand-label"><span class="when-closed">${esc(t("展开处理"))} ▾</span><span class="when-open">${esc(t("收起"))} ▴</span></span></span>
 			</summary>
 			<div class="production-demand-details">
@@ -882,7 +884,7 @@ if (typeof frappe !== "undefined") {
 				<div class="production-filter-bar">
 					<input class="form-control production-search" data-filter="search" placeholder="${__("搜索订单、客户、产品或工单")}">
 					<select class="form-control" data-filter="deliveryWindow"><option value="">${__("全部交期")}</option><option value="overdue">${__("已逾期")}</option><option value="today">${__("今日交期")}</option><option value="within_7_days">${__("7 天内交期")}</option><option value="later">${__("稍后交期")}</option><option value="missing">${__("缺少交期")}</option></select>
-					<select class="form-control" data-filter="status"><option value="">${__("全部状态")}</option><option value="master_data_blocked">${__("基础资料异常")}</option><option value="planning_required">${__("待创建生产计划")}</option><option value="legacy_work_order">${__("旧工单未纳入计划")}</option><option value="material_shortage">${__("缺底层原材料")}</option><option value="awaiting_supply">${__("等待到料")}</option><option value="waiting_subassembly">${__("等待半成品")}</option><option value="awaiting_receipt">${__("待完工入库")}</option><option value="awaiting_issue">${__("待生产发料")}</option><option value="ready_to_start">${__("可开工")}</option><option value="in_production">${__("生产中")}</option><option value="partially_completed">${__("部分完工")}</option><option value="awaiting_order_reservation">${__("待回补订单")}</option><option value="overplanned">${__("超计划生产")}</option></select>
+					<select class="form-control" data-filter="status"><option value="">${__("全部状态")}</option><option value="master_data_blocked">${__("基础资料异常")}</option><option value="batch_reservation_blocked">${__("批次预留需核对")}</option><option value="planning_required">${__("待创建生产计划")}</option><option value="legacy_work_order">${__("旧工单未纳入计划")}</option><option value="material_shortage">${__("缺底层原材料")}</option><option value="awaiting_supply">${__("等待到料")}</option><option value="waiting_subassembly">${__("等待半成品")}</option><option value="awaiting_receipt">${__("待完工入库")}</option><option value="awaiting_issue">${__("待生产发料")}</option><option value="ready_to_start">${__("可开工")}</option><option value="in_production">${__("生产中")}</option><option value="partially_completed">${__("部分完工")}</option><option value="awaiting_order_reservation">${__("待回补订单")}</option><option value="overplanned">${__("超计划生产")}</option></select>
 					<select class="form-control" data-filter="risk"><option value="">${__("全部风险")}</option><option value="red">${__("高风险")}</option><option value="orange">${__("需关注")}</option><option value="blue">${__("处理中")}</option><option value="green">${__("正常")}</option></select>
 					<select class="form-control" data-filter="customer"><option value="">${__("全部客户")}</option></select>
 					<label><input type="checkbox" data-filter="shortageOnly"> ${__("只看缺料")}</label>

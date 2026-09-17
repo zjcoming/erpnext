@@ -35,11 +35,13 @@ WORKDIR /home/frappe/frappe-bench
 # The applicator checks every source hash and fails closed on upstream drift.
 COPY --chown=frappe:frappe deployment/production/patches /tmp/frappe-patches
 RUN ./env/bin/python /tmp/frappe-patches/apply_frappe_patches.py apps/frappe && \
-    cp /tmp/frappe-patches/frappe-patches.json ./frappe-patches.json
+    cp /tmp/frappe-patches/frappe-patches.json ./frappe-patches.json && \
+    ./env/bin/python /tmp/frappe-patches/apply_erpnext_patches.py apps/erpnext && \
+    cp /tmp/frappe-patches/erpnext-patches.json ./erpnext-patches.json
 
 # Copy only the custom app's install metadata and package. The build context is
-# produced with git archive, so local sites, credentials and dirty files cannot
-# enter the image.
+# produced from a Git archive or an explicit, hashed local acceptance snapshot.
+# Neither mode copies site data or credentials.
 COPY --chown=frappe:frappe custom_apps/process_simplification/pyproject.toml \
   custom_apps/process_simplification/README.md \
   apps/process_simplification/
@@ -68,6 +70,7 @@ RUN rm -rf \
 FROM ${RUNTIME_IMAGE} AS runtime
 
 ARG SOURCE_REVISION=unknown
+ARG SOURCE_SNAPSHOT_SHA256=committed
 ARG FRAPPE_COMMIT=5cba016e86b54b57f34a3864282b92300ef20fb0
 ARG ERPNEXT_COMMIT=b24c9eba551905e256e336ff170a91a92d197a2f
 ARG APP_VERSION=16.33.0-hs.20260909.1
@@ -76,6 +79,7 @@ LABEL org.opencontainers.image.title="恒算 ERP" \
       org.opencontainers.image.description="ERPNext v16 production image with process_simplification" \
       org.opencontainers.image.version="${APP_VERSION}" \
       org.opencontainers.image.revision="${SOURCE_REVISION}" \
+      com.hengsuan.source-snapshot="${SOURCE_SNAPSHOT_SHA256}" \
       org.opencontainers.image.vendor="重庆恒算科技有限公司" \
       org.opencontainers.image.source="https://github.com/zjcoming/erpnext"
 
@@ -89,9 +93,11 @@ RUN cp -a sites/assets ./assets && \
     printf '%s\n' \
       "APP_VERSION=${APP_VERSION}" \
       "SOURCE_REVISION=${SOURCE_REVISION}" \
+      "SOURCE_SNAPSHOT_SHA256=${SOURCE_SNAPSHOT_SHA256}" \
       "FRAPPE_COMMIT=${FRAPPE_COMMIT}" \
       "ERPNEXT_COMMIT=${ERPNEXT_COMMIT}" \
       "FRAPPE_PATCH_MANIFEST_SHA256=$(sha256sum frappe-patches.json | cut -d ' ' -f 1)" \
+      "ERPNEXT_PATCH_MANIFEST_SHA256=$(sha256sum erpnext-patches.json | cut -d ' ' -f 1)" \
       > /home/frappe/frappe-bench/release.env
 
 VOLUME ["/home/frappe/frappe-bench/sites", "/home/frappe/frappe-bench/logs"]

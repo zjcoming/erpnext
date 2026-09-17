@@ -60,3 +60,7 @@ python3 deployment/production/patches/apply_frappe_patches.py /path/to/frappe --
 ```
 
 隔离 WSGI、真实 TCP 并发及生产发布是不同证据；生产是否生效以对应发布记录和镜像校验为准。
+
+## ERPNext 批次补货补丁（2026-09-15）
+
+`erpnext-patches.json` 固定 ERPNext v16.33.0 的 `erpnext/stock/reorder_item.py` 原始和修改后 SHA-256。`apply_erpnext_patches.py` 采用相同的拒绝未知源码、只读检查和重复应用校验。镜像同时保存此清单及其校验值。补丁只将不可用实物批次从补货预期库存中剔除，不改写库存余额、不重复扣除预留，也不改变普通物料规则。升级 ERPNext 时必须重新审查和回归。

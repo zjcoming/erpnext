@@ -776,6 +776,26 @@ def notify_quick_order_submitted(
 
 
 @_notification_event
+def notify_reorder_material_request(doc, method=None):
+	"""Send native automatic replenishment requests to the configured factory buyer."""
+	if not (
+		cint(doc.get("docstatus")) == 1
+		and cint(doc.get("auto_created_via_reorder"))
+		and doc.get("material_request_type") == "Purchase"
+		and doc.get("company")
+	):
+		return []
+	return notify_users(
+		responsibility_recipients(doc.company, PROCUREMENT_RESPONSIBILITY),
+		subject="自动补货申请待处理：{0}".format(escape_html(doc.name)),
+		description="库存达到补货条件，系统已生成采购申请 {0}。请核对数量并安排供应商采购。".format(escape_html(doc.name)),
+		document_type="Material Request",
+		document_name=doc.name,
+		link="/app/material-request/{0}".format(quote(doc.name, safe="")),
+	)
+
+
+@_notification_event
 def notify_material_request_received(doc, method=None):
 	"""Notify production and factory management when purchased material arrives."""
 	if doc.get("material_request_type") == "Purchase":

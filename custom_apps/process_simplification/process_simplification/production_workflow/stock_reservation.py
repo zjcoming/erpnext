@@ -23,7 +23,15 @@ def locked_available_qty(item_code, warehouse, *, ignore_sre=None):
 	reserved = sum(max(flt(row.reserved_qty) - flt(row.delivered_qty)
 		- flt(row.transferred_qty) - flt(row.consumed_qty), 0)
 		for row in query.for_update().run(as_dict=True))
-	return max(flt(actual) - reserved, 0)
+	available = max(flt(actual) - reserved, 0)
+	# Keep the same physical pool and lock order. Batch eligibility only narrows
+	# what this pool can promise; it never changes plan priority or ownership.
+	from process_simplification.batch_compat import get_batch_stock_facts
+
+	batch = get_batch_stock_facts(item_code, warehouse, ignore_sre=ignore_sre)
+	if batch is not None:
+		available = min(available, max(flt(batch.get("free_qty")), 0))
+	return available
 
 
 _GUIDED_SRE_VOUCHER_FLAG = "process_simplification_guided_sre_voucher"

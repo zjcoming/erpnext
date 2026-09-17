@@ -5,6 +5,7 @@ from frappe import _
 from frappe.utils import cint, flt, getdate, nowdate
 
 from process_simplification.api.utils import apply_current_item_names
+from process_simplification.batch_display import batch_navigation, document_batch_summary
 from process_simplification.management_access import (
 	CAPABILITY_WAREHOUSE_WORKBENCH,
 	user_company_scope,
@@ -96,7 +97,7 @@ def _read_queue(queue, companies, search="", start=0, page_length=20, item_codes
 			return rows, None
 
 
-def _document_row(doc, queue):
+def _document_row(doc, queue, batch_summary=None):
 	items = []
 	for item in doc.get("items") or []:
 		qty = flt(item.qty)
@@ -110,6 +111,7 @@ def _document_row(doc, queue):
 			"warehouse": item.get("warehouse"), "source_warehouse": item.get("s_warehouse"),
 			"target_warehouse": item.get("t_warehouse"),
 			"schedule_date": item.get("schedule_date"),
+			**((batch_summary or {}).get(item.get("name") or str(item.get("idx") or ""), {})),
 		})
 	due_date = min((item["schedule_date"] for item in items if item["schedule_date"]), default=None) if queue == "purchase" else None
 	return {
@@ -140,10 +142,15 @@ def get_workbench(company=None, queue=None, search=None, start=0, page_length=20
 		categories.append({"key": key, "label": label, "has_pending": bool(first)})
 	queue = queue or next((row["key"] for row in categories if row["has_pending"]), "issue")
 	documents, next_start = _read_queue(queue, selected_companies, search, start, page_length, item_codes)
-	rows = [_document_row(doc, queue) for doc in documents]
+	batch_item_codes = sorted({item.item_code for doc in documents for item in doc.get("items") or []})
+	batch_items = set(frappe.get_all(
+		"Item", filters={"name": ["in", batch_item_codes], "has_batch_no": 1}, pluck="name",
+	)) if batch_item_codes and queue != "purchase" else set()
+	rows = [_document_row(doc, queue, document_batch_summary(doc, check_permission=False, batch_items=batch_items)) for doc in documents]
 	apply_current_item_names([item for row in rows for item in row["items"]])
 	return {
 		"companies": companies, "company": company, "queue": queue, "categories": categories,
 		"rows": rows,
+		"batch_navigation": batch_navigation(),
 		"start": start, "next_start": next_start, "has_more": next_start is not None,
 	}

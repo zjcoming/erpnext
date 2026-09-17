@@ -9,8 +9,11 @@ import frappe
 from frappe import _
 from frappe.utils import cint, flt, getdate, now_datetime
 
-from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
-	get_available_qty_to_reserve,
+from process_simplification.batch_compat import (
+	get_available_qty as get_available_qty_to_reserve,
+	get_stock_snapshot,
+	is_batch_item,
+	source_batch_allocation,
 )
 
 from process_simplification.api.setup import get_default_bom
@@ -354,6 +357,25 @@ def get_current_completed_unreserved_qty(
 	entry_names = [entry.name for entry in manufacture_entries or [] if entry.get("name")]
 	if not entry_names:
 		return 0
+	if is_batch_item(item_code):
+		# The warehouse may contain other receipts of this item. Only quantities
+		# still available from these completed batches can be handed back.
+		details = frappe.get_all(
+			"Stock Entry Detail",
+			filters={"parent": ["in", entry_names], "item_code": item_code, "is_finished_item": 1},
+			fields=["name", "parent", "item_code", "t_warehouse", "transfer_qty", "serial_and_batch_bundle", "batch_no"],
+			order_by="creation asc", limit=0,
+		)
+		budget = {}
+		available = 0.0
+		maximum = min(historical_unreserved_qty, pending_unreserved_qty)
+		for detail in details:
+			if not detail.t_warehouse or available >= maximum:
+				continue
+			available += sum(flt(entry["qty"]) for entry in source_batch_allocation(
+				detail, maximum - available, batch_budget=budget,
+			))
+		return min(available, maximum)
 	warehouses = {
 		row.t_warehouse
 		for row in frappe.get_all(
@@ -388,6 +410,10 @@ def _status_and_actions(row: WorkbenchRow, has_bom: bool):
 	if row.pending_qty <= 0:
 		row.status = "已完成"
 		row.next_actions = [action("查看订单", "view_sales_order")]
+		return
+	if flt(row.invalid_reserved_qty) > 1e-8:
+		row.status = "批次预留需核对"
+		row.next_actions = [action("调整批次预留", "view_sales_order")]
 		return
 
 	if row.reserved_qty > 0:
@@ -440,6 +466,19 @@ def get_order_workbench(sales_order: str):
 		delivered_qty = delivered_stock_qty(item)
 		pending_qty = pending_delivery_qty(item)
 		reserved_qty = get_effective_reserved_qty(so.name, item.name)
+		booked_reserved_qty = reserved_qty
+		batch_managed = is_batch_item(item.item_code)
+		if batch_managed and booked_reserved_qty > 0:
+			reservations = frappe.get_all(
+				"Stock Reservation Entry",
+				filters={"docstatus": 1, "voucher_type": "Sales Order", "voucher_no": so.name,
+					"voucher_detail_no": item.name},
+				fields=["name", "warehouse"], limit=0,
+			)
+			snapshots = {warehouse: get_stock_snapshot(item.item_code, warehouse)
+				for warehouse in {entry.warehouse for entry in reservations if entry.warehouse}}
+			reserved_qty = sum(flt(snapshots.get(entry.warehouse, {}).get(
+				"effective_reservation_qty", {}).get(entry.name, 0)) for entry in reservations)
 		available_to_reserve = (
 			get_available_qty_to_reserve(item.item_code, item.warehouse) if item.warehouse else 0
 		)
@@ -459,7 +498,7 @@ def get_order_workbench(sales_order: str):
 			manufacture_entries=manufacture_entries,
 			completed_qty=completed_qty,
 			completed_reserved_qty=completed_reserved_qty,
-			pending_unreserved_qty=pending_qty - production.reserved_qty,
+			pending_unreserved_qty=pending_qty - booked_reserved_qty,
 		)
 		has_bom = bool(get_default_bom(item.item_code))
 
@@ -479,6 +518,9 @@ def get_order_workbench(sales_order: str):
 			delivered_qty=delivered_qty,
 			pending_qty=pending_qty,
 			reserved_qty=production.reserved_qty,
+			booked_reserved_qty=booked_reserved_qty,
+			invalid_reserved_qty=max(booked_reserved_qty - reserved_qty, 0),
+			has_batch_no=batch_managed,
 			available_to_reserve=production.available_to_reserve,
 			finished_stock_coverage_qty=production.finished_stock_coverage_qty,
 			production_required_qty=production.production_required_qty,

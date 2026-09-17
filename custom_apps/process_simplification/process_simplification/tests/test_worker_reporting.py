@@ -1446,6 +1446,7 @@ class TestWorkerReporting(IntegrationTestCase):
 		try:
 			with self.set_user("Administrator"):
 				frappe.db.set_single_value("Stock Settings","enable_serial_and_batch_no_for_item",1)
+				frappe.db.set_single_value("Stock Settings","auto_create_serial_and_batch_bundle_for_outward",1)
 				self._ensure_item(self.TEST_RAW_MATERIAL,is_purchase_item=True)
 				frappe.db.set_value("Item",self.TEST_RAW_MATERIAL,{"has_serial_no":int(serial),"has_batch_no":int(not serial),"stock_uom":"Nos" if serial else "Kg"})
 				frappe.clear_document_cache("Item",self.TEST_RAW_MATERIAL)

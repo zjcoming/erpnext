@@ -124,7 +124,7 @@ def get_material_stock_snapshot(item_code: str, warehouse: str | None) -> frappe
 	# separately. Production readiness adds each loaded Work Order's own
 	# stock_reserved_qty back to that Work Order instead of sharing it globally.
 	available_qty = max(actual_qty - committed_qty, 0)
-	return frappe._dict(
+	snapshot = frappe._dict(
 		{
 			"can_calculate": True,
 			"actual_qty": actual_qty,
@@ -134,6 +134,19 @@ def get_material_stock_snapshot(item_code: str, warehouse: str | None) -> frappe
 			"free_qty": max(available_qty - production_committed_qty, 0),
 		}
 	)
+	from process_simplification.batch_compat import get_batch_stock_facts
+
+	batch = get_batch_stock_facts(item_code, warehouse)
+	if batch is not None:
+		# Retain the ledger quantity for display and the existing soft-commitment
+		# semantics. Readiness adds only its loaded graph back below this ceiling.
+		snapshot.batch_effective_qty = min(actual_qty, max(normalize_qty(batch.get("effective_qty")), 0))
+		snapshot.batch_free_qty = max(normalize_qty(batch.get("free_qty")), 0)
+		snapshot.available_qty = max(snapshot.batch_effective_qty - committed_qty, 0)
+		snapshot.free_qty = min(
+			max(snapshot.available_qty - production_committed_qty, 0), snapshot.batch_free_qty
+		)
+	return snapshot
 
 
 def _snapshot_free_qty(snapshot) -> float:

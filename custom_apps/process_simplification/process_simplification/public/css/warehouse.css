@@ -1,5 +1,10 @@
 .warehouse-workbench { max-width: 1120px; margin: 0 auto; padding: 20px 0; }
 .warehouse-shortcuts { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.warehouse-batch-navigation:empty { display: none; }
+.warehouse-batch-navigation:not(:empty) { margin-bottom: 18px; }
+.warehouse-batch-navigation details { margin-top: 10px; color: var(--text-muted); font-size: 13px; }
+.warehouse-batch-navigation summary { cursor: pointer; padding: 8px 0; }
+.warehouse-batches { margin-top: 6px; padding-left: 8px; border-left: 2px solid var(--border-color); }
 .warehouse-workbench .btn { min-height: 40px; }
 .warehouse-filters { display: grid; grid-template-columns: minmax(160px, 1fr) 2fr; gap: 16px; margin-bottom: 18px; }
 .warehouse-filters > div { min-width: 0; }

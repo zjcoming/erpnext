@@ -241,11 +241,17 @@ class TestManagementAccess(IntegrationTestCase):
 			"parent_warehouse": frappe.db.get_value("Warehouse", {"company": self.company, "is_group": 1}, "name"),
 		}).insert(ignore_permissions=True).name
 		frappe.db.set_value("Company", self.company, "default_fg_warehouse", other_warehouse)
+		for field in ("default_warehouse", "sample_retention_warehouse"):
+			frappe.db.set_single_value("Stock Settings", field, other_warehouse)
+		frappe.clear_document_cache("Stock Settings", "Stock Settings")
+		self.addCleanup(frappe.clear_document_cache, "Stock Settings", "Stock Settings")
 		ensure_company_warehouse_reference_permissions()
 		user = self._make_user(WAREHOUSE_OPERATOR_ROLE)
 		self._set_access(user, [WAREHOUSE_OPERATOR_ROLE])
 		frappe.set_user(user)
 		self.assertTrue(frappe.has_permission("Company", "read", doc=self.company))
+		self.assertTrue(frappe.has_permission("Stock Settings", "read"))
+		self.assertFalse(frappe.has_permission("Stock Settings", "write"))
 		self.assertFalse(frappe.has_permission("Warehouse", "read", doc=other_warehouse))
 		self.assertFalse(frappe.has_permission("Purchase Order", "submit"))
 		validate_filters_permissions(
@@ -315,7 +321,7 @@ class TestManagementAccess(IntegrationTestCase):
 		}).insert(ignore_permissions=True)
 		item = frappe.get_doc({
 			"doctype": "Item", "item_code": f"Access Scope {random_string(8)}",
-			"item_group": "All Item Groups", "stock_uom": "Nos", "is_stock_item": 1,
+			"item_group": "All Item Groups", "stock_uom": "Nos", "is_stock_item": 1, "valuation_rate": 5,
 		}).insert(ignore_permissions=True)
 		def receipt(warehouse):
 			return make_stock_entry(item_code=item.name, to_warehouse=warehouse, company=self.company,
@@ -481,6 +487,12 @@ class TestManagementAccess(IntegrationTestCase):
 		warehouse_stock = permission("Stock Entry", WAREHOUSE_OPERATOR_ROLE)
 		self.assertTrue(warehouse_stock.read and warehouse_stock.create and warehouse_stock.write and warehouse_stock.submit)
 		self.assertFalse(warehouse_stock.cancel or warehouse_stock.delete or warehouse_stock.amend)
+
+		warehouse_bundle = permission("Serial and Batch Bundle", WAREHOUSE_OPERATOR_ROLE)
+		self.assertTrue(warehouse_bundle.read and warehouse_bundle.select and warehouse_bundle.create
+			and warehouse_bundle.write and warehouse_bundle.submit)
+		self.assertFalse(warehouse_bundle.cancel or warehouse_bundle.delete or warehouse_bundle.amend
+			or warehouse_bundle.report)
 
 		warehouse_stock_entry_type = permission("Stock Entry Type", WAREHOUSE_OPERATOR_ROLE)
 		self.assertTrue(warehouse_stock_entry_type.read and warehouse_stock_entry_type.select)

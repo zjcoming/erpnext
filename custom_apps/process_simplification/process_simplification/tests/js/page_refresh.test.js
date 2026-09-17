@@ -126,6 +126,23 @@ test("editing and hidden pages preserve pending changes until safe foreground re
 	f.page.editable = () => false; f.versions.tasks = "B"; f.show(); await drain(); await f.tick(1000);
 	assert.equal(f.counters().loads, before + 1);
 });
+test("returning to a page rechecks a new expiry-day version without a socket event", async () => {
+	const f = fixture(); f.controller.activate(f.page); await drain(); await f.tick(3000);
+	const before = f.counters().loads;
+	f.hide(); await f.tick(86400000);
+	f.versions.tasks = "NEXT-EXPIRY-DAY";
+	f.show(); await drain(); await f.tick(1000);
+	assert.equal(f.counters().loads, before + 1);
+});
+test("batch master events mark an editing quick order as changed without replacing its inputs", async () => {
+	const f = fixture(); f.page.topics = ["orders", "purchase"]; f.page.manual = true;
+	f.controller.activate(f.page); await drain();
+	const before = f.counters().loads;
+	f.controller.event({ topics: ["orders", "production", "purchase", "warehouse"] });
+	await f.tick(30000);
+	assert.equal(f.page.dirty, true);
+	assert.equal(f.counters().loads, before);
+});
 test("failed notification fetch retains the version so the next check retries", async () => {
 	const f = fixture(); let attempts = 0;
 	f.options.notifications = async () => { attempts++; if (attempts === 1) throw new Error("offline"); };

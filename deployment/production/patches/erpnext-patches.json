@@ -1,0 +1,10 @@
+{
+  "baseline_commit": "b24c9eba551905e256e336ff170a91a92d197a2f",
+  "patch": "erpnext-v16.33.0-batch-reorder.patch",
+  "files": {
+    "erpnext/stock/reorder_item.py": {
+      "original": "f2bf32ab5b24dbddcc127b60c1ebd05b88349f6007277d1201ce498d12d2a25e",
+      "patched": "1faea6e05eda3231c6bfdd5a44889aab27b0e16934bc0bd410817ccfebf6e389"
+    }
+  }
+}

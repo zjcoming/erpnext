@@ -13,9 +13,11 @@ The quick page is intentionally limited to routine orders:
 - Optional: customer purchase-order number and one order remark.
 - Derived by the server: company, currency, price list suggestion, UOM, warehouse, reservable finished-goods
   quantity, production demand and BOM snapshot.
-- Not supported: per-line dates or warehouses, duplicate product rows, product bundles, variants, serial or
-  batch selection, subcontracting, customer-supplied material, special currency/tax/UOM payloads and other
-  advanced Sales Order options. Use the standard Sales Order form for these cases.
+- Batch-managed products use the same quick-order fields; actual batches are confirmed on native stock
+  documents. Quick ordering does not choose batches.
+- Not supported: per-line dates or warehouses, duplicate product rows, product bundles, variants, serialized
+  products, subcontracting, customer-supplied material, special currency/tax/UOM payloads and other advanced
+  Sales Order options. Use the standard Sales Order form for these cases.
 
 The lightweight preview is informative only. `确认下单` always runs a complete server preflight, and submit
 repeats mutable checks. A change in stock, BOM, shortage or commercial validation requires confirmation again.
@@ -38,6 +40,23 @@ action in the order workbench and shortage-purchase flow after the standard Sale
 
 The removed “允许分批发货” checkbox is not replaced by a custom policy. Standard ERPNext fulfillment behavior
 continues to apply; no partial-delivery text is written into terms.
+
+## Optional native batch management
+
+Existing Stock Settings and each Item's has_batch_no remain authoritative. Installation and migration
+do not enable batch tracking for ordinary items or reset a customer's batch preferences. Production-plan
+priority, shared stock allocation and worker reporting retain their existing behavior.
+
+The stock adapter combines native eligible batch balances with both quantity and batch reservations.
+Known-source production replenishment retains actual source batches. Warehouse operators use native
+batch selectors, and the default receipt, stock-entry and delivery print formats show saved stock-UOM
+batch quantities. Scoped operators select/create batches through their authorized stock documents;
+full batch master data and unrestricted native traceability reports require separate authority.
+
+Read the Chinese [batch operation cards](docs/batch_quick_start.md) before enabling a new item.
+The [design](docs/batch_compatibility_design_20260914.md) describes compatibility boundaries; the
+[implementation and validation record](docs/batch_compatibility_validation_20260914.md) records the
+tested environment and remaining delivery gates.
 
 ## Master-data prerequisites
 

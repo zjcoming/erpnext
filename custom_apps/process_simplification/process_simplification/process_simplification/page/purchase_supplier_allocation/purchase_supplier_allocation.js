@@ -28,10 +28,14 @@ function purchaseOverview(model) {
 			: "草稿已生成，待有采购单提交权限的负责人核对并提交。") + "草稿已占用申请数量，无需重复分配。";
 	} else if (unallocated) {
 		title = `${unallocated} 项物料待分配供应商`;
-		hint = "先选供应商，再确认数量和单价。同一物料可拆给多个供应商。";
+		hint = model.can_create
+			? "先选供应商，再确认数量和单价。同一物料可拆给多个供应商。"
+			: "等待有采购单创建权限的负责人分配供应商。本页可查看申请与到货进度。";
 	} else if (waiting) {
 		title = `${waiting} 张采购单待收货`;
-		hint = "每到一批货，登记并提交一张收货单，系统会通知负责人。";
+		hint = model.orders.some((order) => order.can_receive)
+			? "每到一批货，登记并提交一张收货单，系统会通知负责人。"
+			: "等待库房登记到货并提交收货单。本页可查看每批收货进度。";
 	} else if (model.items.length && received === model.items.length) {
 		title = "本次申请已到齐";
 		hint = "可在到货通知中查看每批收货记录。";

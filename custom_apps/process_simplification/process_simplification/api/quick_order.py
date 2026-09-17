@@ -9,9 +9,7 @@ from frappe.desk.search import sanitize_searchfield
 from frappe.utils import add_days, cint, escape_html, getdate, now_datetime, nowdate, parse_json
 
 from erpnext import get_default_company
-from erpnext.stock.doctype.stock_reservation_entry.stock_reservation_entry import (
-	get_available_qty_to_reserve,
-)
+from process_simplification.batch_compat import get_available_qty as get_available_qty_to_reserve
 
 from process_simplification.api.quick_order_impact import evaluate_order_material_risk
 from process_simplification.api.setup import get_company_defaults, get_default_bom
@@ -192,7 +190,6 @@ def search_quick_order_products(doctype, txt, searchfield, start, page_len, filt
 			and item.is_sales_item = 1
 			and item.has_variants = 0
 			and item.has_serial_no = 0
-			and item.has_batch_no = 0
 			and not exists (
 				select 1 from `tabProduct Bundle` bundle
 				where bundle.new_item_code = item.name
@@ -289,8 +286,8 @@ def get_quick_order_item_defaults(item_code: str, company: str | None = None):
 		throw_chinese("产品已停用：{0}".format(item_code))
 	if not item.is_sales_item:
 		throw_chinese("产品不是销售物料：{0}".format(item_code))
-	if item.has_variants or item.has_serial_no or item.has_batch_no:
-		throw_chinese("产品 {0} 需要标准销售订单处理规格、序列号或批次。".format(item_code))
+	if item.has_variants or item.has_serial_no:
+		throw_chinese("产品 {0} 需要标准销售订单处理规格或序列号。".format(item_code))
 	if frappe.db.exists(
 		"Product Bundle",
 		{"new_item_code": item_code, "disabled": 0},
@@ -310,6 +307,7 @@ def get_quick_order_item_defaults(item_code: str, company: str | None = None):
 	return {
 		"item_code": item.item_code,
 		"item_name": item.item_name,
+		"has_batch_no": bool(item.has_batch_no),
 		"stock_uom": item.stock_uom,
 		"warehouse": warehouse,
 		"rate": normalize_qty(price.get("price_list_rate")),

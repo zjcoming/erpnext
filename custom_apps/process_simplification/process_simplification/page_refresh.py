@@ -60,6 +60,8 @@ DOCUMENT_TOPICS = {
 	"Monthly Worker Wage Summary": {"tasks", "wages"},
 	"BOM": {"orders", "production", "purchase"},
 	"Item": {"orders", "production", "purchase", "warehouse", "tasks", "dashboard"},
+	"Batch": {"orders", "production", "purchase", "warehouse", "tasks", "dashboard"},
+	"Serial and Batch Bundle": {"orders", "production", "purchase", "warehouse", "tasks", "dashboard"},
 	"Item Group": {"dashboard"},
 	"Warehouse": {"orders", "production", "purchase", "warehouse", "tasks", "dashboard"},
 	"Company": set(TOPICS) - {"notifications"},

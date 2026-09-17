@@ -112,19 +112,20 @@ class TestRequestTransaction(TestCase):
 			patch.object(frappe, "has_permission", return_value=True),
 			patch.object(frappe, "get_doc", return_value=SimpleNamespace(company="Factory")),
 			patch.object(actions, "_row_from_workbench", side_effect=[
-				SimpleNamespace(completed_unreserved_qty=5), SimpleNamespace(completed_unreserved_qty=2)
+				frappe._dict(completed_unreserved_qty=5), frappe._dict(completed_unreserved_qty=2)
 			]) as rows,
 			patch.object(actions, "_locked_row_from_workbench", side_effect=[
-				frappe.QueryDeadlockError(1213), SimpleNamespace(completed_unreserved_qty=2)
+				frappe.QueryDeadlockError(1213), frappe._dict(completed_unreserved_qty=2)
 			]),
 			patch.object(actions, "get_sales_order_item", return_value=SimpleNamespace(item_code="FG")),
 			patch.object(actions, "item_stock_qty", return_value=10),
 			patch.object(actions, "_manufactured_finished_rows", return_value=[
 				SimpleNamespace(t_warehouse="FG-WH", transfer_qty=8, parent="MFG-8", name="MFG-ROW")
 			]),
+			patch.object(actions, "is_batch_item", return_value=False),
 			patch.object(actions, "get_available_qty_to_reserve", return_value=2),
 			patch.object(actions, "normalize_qty", side_effect=float),
-			patch.object(actions, "_new_sre", return_value=SimpleNamespace(name="SRE-2")) as reserve,
+			patch.object(actions, "_new_sre", return_value=SimpleNamespace(name="SRE-2", reserved_qty=2)) as reserve,
 		):
 			self.assertEqual(actions.reserve_completed_stock("SO-10", "SO-ROW"),
 				{"stock_reservation_entries": ["SRE-2"]})
