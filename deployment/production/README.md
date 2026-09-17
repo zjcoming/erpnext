@@ -34,7 +34,7 @@
 └── releases/
 ```
 
-从 `.env.example` 生成 `.env`，两个密码文件各写一行随机强密码并设为 `chmod 600`。`frontend` 默认只监听 `127.0.0.1:8080`，由 1Panel/OpenResty 为 `erp.hengsuankeji.com` 提供 HTTPS 反向代理。
+从 `.env.example` 生成 `.env`，两个密码文件各写一行随机强密码并设为 `chmod 600`，属主应与镜像内应用用户一致（当前 UID/GID 为 1000:1000），确保初始化容器可读取。恢复管理员密码后也应保留该属主和权限。`frontend` 默认只监听 `127.0.0.1:8080`，由 1Panel/OpenResty 为 `erp.hengsuankeji.com` 提供 HTTPS 反向代理。
 
 加载镜像并启动：
 
@@ -93,3 +93,11 @@ ERPNext 批次补货修复也通过版本固定的补丁打包，镜像中保留
 完成初始化的站点不能仍以 `setup-wizard` 作为默认桌面。可将 `check-site-navigation.py` 复制到 backend 容器，用 bench Python 运行并传入站点名；该检查只读，未完成建账的新站允许保留原生向导。验收数据准备脚本若直接执行 ERPNext 建账，必须补齐 Frappe 原生 `run_post_setup_complete` 阶段，不能只写完成标记。
 
 此检查不能代替浏览器验收：从正常登录入口进入岗位首页，再实际点击“桌面”，确认原生桌面；还应核对刷新、退出重登、直达单据和备份恢复后的同一操作。生产升级应保留已有岗位首页配置，不因本地验收初始化错误修改产品跳转逻辑。
+
+发布前可用目标镜像执行只读密钥文件可读性检查，再进入维护窗口：
+
+```bash
+docker compose run --rm --no-deps --entrypoint bash site-init -c 'test -r /run/secrets/db_root_password && test -r /run/secrets/admin_password'
+```
+
+检查失败时先核对宿主机文件属主及容器 UID，保持限制性文件权限；不要开放所有用户读取密码文件。
