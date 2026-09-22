@@ -259,6 +259,52 @@ class TestManagementAccess(IntegrationTestCase):
 			[{"fieldname": "company", "fieldtype": "Link", "options": "Company"}],
 		)
 
+	def test_custom_company_warehouses_allow_settings_checks_without_granting_stock_access(self):
+		from frappe.custom.doctype.property_setter.property_setter import make_property_setter
+		from process_simplification.initialization import get_status
+		from process_simplification.stock_permissions import ensure_company_warehouse_reference_permissions
+
+		fields = (
+			"custom_default_semi_finished_warehouse",
+			"custom_material_quarantine_warehouse",
+			"custom_material_rework_warehouse",
+		)
+		blocked_warehouses = []
+		for field in fields:
+			warehouse = frappe.get_doc({
+				"doctype": "Warehouse", "warehouse_name": "Settings Scope " + random_string(8),
+				"company": self.company, "is_group": 0,
+			}).insert(ignore_permissions=True).name
+			blocked_warehouses.append(warehouse)
+			frappe.db.set_value("Company", self.company, field, warehouse)
+			# Reproduce an existing site whose custom fields still use the old default.
+			make_property_setter("Company", field, "ignore_user_permissions", 0, "Check")
+		frappe.clear_document_cache("Company", self.company)
+		self.addCleanup(frappe.clear_document_cache, "Company", self.company)
+		self.addCleanup(frappe.clear_cache, doctype="Company")
+		user = self._make_user(OWNER_ROLE, WAREHOUSE_OPERATOR_ROLE)
+		self._set_access(user, [OWNER_ROLE, WAREHOUSE_OPERATOR_ROLE])
+		frappe.set_user(user)
+		self.assertTrue(frappe.has_permission("Process Simplification Settings", "read"))
+		with self.assertRaises(frappe.PermissionError):
+			get_status(company=self.company)
+
+		frappe.set_user("Administrator")
+		ensure_company_warehouse_reference_permissions()
+		frappe.set_user(user)
+		self.assertEqual(get_status(company=self.company)["company"], self.company)
+		self.assertEqual(frappe.get_list("Company", pluck="name"), [self.company])
+		self.assertEqual(self._top_level_permissions(user, "Warehouse"), {self.warehouse})
+		for warehouse in (self.warehouse, *blocked_warehouses):
+			with self.subTest(warehouse=warehouse):
+				allowed = warehouse == self.warehouse
+				self.assertEqual(bool(frappe.has_permission("Warehouse", "read", doc=warehouse)), allowed)
+				entry = frappe.get_doc({
+					"doctype": "Stock Entry", "company": self.company,
+					"items": [{"t_warehouse": warehouse}],
+				})
+				self.assertEqual(bool(frappe.has_permission("Stock Entry", "read", doc=entry)), allowed)
+
 	def test_worker_rejects_foreign_company_before_binding(self):
 		worker = self._make_user()
 		employee = self._make_employee()

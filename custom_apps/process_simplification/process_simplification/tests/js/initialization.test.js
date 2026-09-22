@@ -8,13 +8,42 @@ const filename = path.join(__dirname, "../../process_simplification/doctype/proc
 const escape = (value) => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 function setup(call) {
 	const handlers = {};
-	const context = vm.createContext({ frappe: { ui: { form: { on: (_, events) => Object.assign(handlers, events) } }, call, utils: { escape_html: escape } } });
+	const context = vm.createContext({ frappe: { session: { user: "Administrator" }, ui: { form: { on: (_, events) => Object.assign(handlers, events) } }, call, utils: { escape_html: escape } } });
 	vm.runInContext(readFileSync(filename, "utf8"), context);
 	const wrapper = { value: "", html(value) { this.value = value; return this; }, off() { return this; }, on() { return this; } };
-	const frm = { fields_dict: { initialization_status: { $wrapper: wrapper } } };
-	return { context, frm, wrapper, handlers };
+	const buttons = {};
+	const frm = { fields_dict: { initialization_status: { $wrapper: wrapper } }, add_custom_button(label, handler) { buttons[label] = handler; } };
+	return { context, frm, wrapper, handlers, buttons };
 }
 const good = { company: "Factory", checks: [{ label: "自动预留库存", value: "已关闭", detail: "按业务动作预留", status: "info", doctype: "Stock Settings", name: "Stock Settings" }], next_steps: [] };
+
+test("opening and saving settings do not run initialization; the button runs it explicitly", async () => {
+	const calls = [];
+	const { frm, wrapper, handlers, buttons } = setup(async (request) => {
+		calls.push(request);
+		return { message: good };
+	});
+	handlers.refresh(frm);
+	handlers.after_save(frm);
+	assert.equal(calls.length, 0);
+	assert.match(wrapper.value, /检查按需运行/);
+	await buttons["重新检查"]();
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0].method, "process_simplification.initialization.get_status");
+	assert.match(wrapper.value, /当前公司：Factory/);
+});
+
+test("saving during a manual check prevents the old response from restoring stale results", async () => {
+	let complete;
+	const { frm, wrapper, handlers, buttons } = setup(() => new Promise((resolve) => { complete = resolve; }));
+	handlers.refresh(frm);
+	const pending = buttons["重新检查"]();
+	handlers.after_save(frm);
+	complete({ message: good });
+	await pending;
+	assert.match(wrapper.value, /检查按需运行/);
+	assert.doesNotMatch(wrapper.value, /基础配置检查通过/);
+});
 
 test("manual reservation is not shown as a setup error; data is escaped", () => {
 	const { context } = setup();

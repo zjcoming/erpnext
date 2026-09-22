@@ -57,6 +57,8 @@ def ensure_company_warehouse_reference_permissions():
 		"Company": (
 			"default_warehouse_for_sales_return", "default_in_transit_warehouse",
 			"default_wip_warehouse", "default_fg_warehouse", "default_scrap_warehouse",
+			"custom_default_semi_finished_warehouse", "custom_material_quarantine_warehouse",
+			"custom_material_rework_warehouse",
 		),
 		"Stock Settings": ("default_warehouse", "sample_retention_warehouse"),
 	}.items():

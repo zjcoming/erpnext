@@ -9,7 +9,7 @@ frappe.ui.form.on("Process Simplification Settings", {
 			frm.__psInitializationCompany = company;
 			psRefreshInitialization(frm);
 		}, "检查哪家公司", "检查"), "开用前检查");
-		psRefreshInitialization(frm);
+		psResetInitialization(frm);
 		frm.add_custom_button("检查安装条件", () => psRefreshPWAStatus(frm), "手机应用");
 		frm.add_custom_button("查看安装引导", () => {
 			if (frm.is_dirty()) return frappe.msgprint("请先保存设置，再查看安装引导。");
@@ -20,7 +20,7 @@ frappe.ui.form.on("Process Simplification Settings", {
 	after_save(frm) {
 		if (psCanConfigurePWA()) {
 			psRefreshPWAStatus(frm);
-			psRefreshInitialization(frm);
+			psResetInitialization(frm);
 		}
 	},
 	setup(frm) {
@@ -43,6 +43,12 @@ frappe.ui.form.on("Process Simplification Settings", {
 		});
 	},
 });
+
+function psResetInitialization(frm) {
+	// A refresh/save invalidates both an old result and any in-flight manual check.
+	frm.__psInitializationRequest = (frm.__psInitializationRequest || 0) + 1;
+	frm.fields_dict.initialization_status?.$wrapper.html('<p class="text-muted">首次启用或调整基础配置后，可点击上方“开用前检查 → 重新检查”。检查按需运行，不影响使用本页设置。</p>');
+}
 
 function psInitializationHtml(status, escape) {
 	const errors = (status.checks || []).filter((row) => row.status === "error").length;
