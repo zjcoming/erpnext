@@ -83,6 +83,10 @@ body.hs-login .page-card-head .app-logo {
 	color: #315a9d;
 }
 
+.hs-login-footer .hs-login-icp {
+	color: inherit;
+}
+
 .body-sidebar .hs-branded-header .header-logo img {
 	width: 32px;
 	height: 32px;

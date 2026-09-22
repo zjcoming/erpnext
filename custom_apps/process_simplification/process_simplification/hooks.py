@@ -8,7 +8,7 @@ app_logo_url = "/assets/process_simplification/images/hengsuan.svg"
 
 website_context = {"favicon": app_logo_url}
 update_website_context = "process_simplification.branding.update_website_context"
-web_include_css = ["/assets/process_simplification/css/hengsuan_branding.css?v=2"]
+web_include_css = ["/assets/process_simplification/css/hengsuan_branding.css?v=3"]
 
 required_apps = ["erpnext"]
 
@@ -19,7 +19,7 @@ app_include_css = [
 	"/assets/process_simplification/css/purchasing.css?v=6",
 	"/assets/process_simplification/css/warehouse.css?v=3",
 	"/assets/process_simplification/css/process_pwa.css?v=1",
-	"/assets/process_simplification/css/hengsuan_branding.css?v=2",
+	"/assets/process_simplification/css/hengsuan_branding.css?v=3",
 	"/assets/process_simplification/css/document_scan.css?v=7",
 ]
 app_include_js = [
