@@ -13,7 +13,7 @@ web_include_css = ["/assets/process_simplification/css/hengsuan_branding.css?v=3
 required_apps = ["erpnext"]
 
 app_include_css = [
-	"/assets/process_simplification/css/process_simplification.css?v=19",
+	"/assets/process_simplification/css/process_simplification.css?v=20",
 	"/assets/process_simplification/css/process_ui.css?v=14",
 	"/assets/process_simplification/css/executive_dashboard.css?v=2",
 	"/assets/process_simplification/css/purchasing.css?v=6",
@@ -93,6 +93,11 @@ extend_doctype_class = {
 
 doc_events = {
 	"Company": {"validate": "process_simplification.defaults.validate_company_manufacturing_warehouses"},
+	"Warehouse": {
+		"on_update": "process_simplification.warehouse_scope.warehouse_scope_changed",
+		"after_delete": "process_simplification.warehouse_scope.warehouse_scope_changed",
+		"after_rename": "process_simplification.warehouse_scope.warehouse_scope_changed",
+	},
 	"Workspace": {"on_update": "process_simplification.navigation.repair_workspace_sidebar"},
 	"Serial and Batch Bundle": {
 		"before_validate": "process_simplification.stock_permissions.validate_batch_bundle_scope",

@@ -40,7 +40,7 @@ class ProcessSimplificationAccessManagement {
 					<div class="ps-access-section-heading ps-access-scope-heading"><div><h3>${__("数据范围")}</h3><p>${__("岗位决定能做什么，数据范围决定能操作哪些公司和仓库。")}</p></div></div>
 					<div class="ps-access-scope-grid">
 						<section class="ps-access-scope-card"><h4>${__("公司")}</h4><div class="ps-access-option-list" data-company-list></div></section>
-						<section class="ps-access-scope-card"><h4>${__("仓库")}</h4><div class="ps-access-option-list" data-warehouse-list></div></section>
+						<section class="ps-access-scope-card"><h4>${__("仓库与仓库组")}</h4><p>${__("勾选仓库组后，包含组内现有和以后新增的子仓库。只负责某个仓库时，可单独勾选。")}</p><div class="ps-access-option-list" data-warehouse-list></div></section>
 						<section class="ps-access-scope-card"><h4>${__("关联员工")}</h4><p>${__("工人岗位必须关联一个在职员工。已经绑定后不能在此页面换绑。")}</p><select class="form-control" data-employee></select></section>
 					</div>
 					<section class="ps-access-effective"><h4>${__("当前岗位将获得")}</h4><div data-capabilities></div></section>
@@ -100,6 +100,8 @@ class ProcessSimplificationAccessManagement {
 		}).join(""));
 
 		this.render_companies();
+		this.warehouse_selection = new Set(data.warehouses || []);
+		this.warehouse_hide_descendants = new Set(data.warehouse_hide_descendants || []);
 		this.render_warehouses();
 		this.render_employee();
 		this.render_retained_profiles();
@@ -116,11 +118,36 @@ class ProcessSimplificationAccessManagement {
 	}
 
 	render_warehouses() {
-		const selected = new Set(this.current.warehouses || []);
 		const warehouses = this.current.scope_options?.warehouses || [];
-		this.root.find("[data-warehouse-list]").html(warehouses.map((warehouse) => `
-			<label data-warehouse-company="${this.escape(warehouse.company)}"><input type="checkbox" data-warehouse-scope="${this.escape(warehouse.name)}" ${selected.has(warehouse.name) ? "checked" : ""}><span>${this.escape(warehouse.warehouse_name || warehouse.name)}<small>${this.escape(warehouse.name)} · ${this.escape(warehouse.company)}</small></span></label>`).join("") || `<em>${__("没有可用仓库")}</em>`);
+		const rows = this.warehouse_scope_rows(warehouses);
+		this.root.find("[data-warehouse-list]").html(rows.map(({ warehouse, inherited, depth }) => {
+			const selected = this.warehouse_selection.has(warehouse.name);
+			const exact_group = warehouse.is_group && selected && this.warehouse_hide_descendants.has(warehouse.name);
+			const scope = warehouse.disabled && !inherited ? __("已停用，请取消此授权后保存") : inherited
+				? `${__("继承自")} ${inherited.warehouse_name || inherited.name}`
+				: warehouse.is_group ? (exact_group ? __("仅组本身") : __("包含全部子仓库，新增自动纳入")) : "";
+			return `<div class="ps-access-warehouse ${inherited ? "ps-access-warehouse-inherited" : ""}" data-warehouse-company="${this.escape(warehouse.company)}" style="--warehouse-depth:${Math.min(depth, 3)}">
+				<label><input type="checkbox" data-warehouse-scope="${this.escape(warehouse.name)}" ${selected || inherited ? "checked" : ""} ${inherited || (warehouse.disabled && !selected) ? "disabled" : ""}><span>${this.escape(warehouse.warehouse_name || warehouse.name)}${warehouse.is_group ? `<b class="ps-access-group-badge">${__("仓库组")}</b>` : ""}<small>${this.escape(warehouse.name)} · ${this.escape(warehouse.company)}</small>${scope ? `<small class="ps-access-warehouse-scope">${this.escape(scope)}</small>` : ""}</span></label>
+				${exact_group && !warehouse.disabled ? `<button type="button" class="btn btn-xs btn-default" data-include-descendants="${this.escape(warehouse.name)}">${__("改为包含子仓库")}</button>` : ""}
+			</div>`;
+		}).join("") || `<em>${__("没有可用仓库")}</em>`);
 		this.filter_warehouses(false);
+	}
+
+	warehouse_scope_rows(warehouses) {
+		const selected = this.warehouse_selection;
+		const exact = this.warehouse_hide_descendants;
+		return warehouses.map((warehouse) => {
+			const ancestors = warehouses.filter((group) => group.is_group && group.company === warehouse.company
+				&& group.lft < warehouse.lft && warehouse.rgt < group.rgt);
+			const inherited = ancestors.find((group) => selected.has(group.name) && !exact.has(group.name));
+			if (inherited) {
+				// Removing a group later should remove its inherited grants as well.
+				selected.delete(warehouse.name);
+				exact.delete(warehouse.name);
+			}
+			return { warehouse, inherited, depth: ancestors.length };
+		});
 	}
 
 	render_employee() {
@@ -149,15 +176,38 @@ class ProcessSimplificationAccessManagement {
 			this.render_capabilities();
 		});
 		this.root.find("[data-company-scope]").off("change.ps-access").on("change.ps-access", () => this.filter_warehouses(true));
+		this.root.find("[data-warehouse-list]").off("change.ps-access click.ps-access")
+			.on("change.ps-access", "[data-warehouse-scope]", (event) => {
+				const input = event.currentTarget;
+				if (input.checked) this.warehouse_selection.add(input.dataset.warehouseScope);
+				else {
+					this.warehouse_selection.delete(input.dataset.warehouseScope);
+					this.warehouse_hide_descendants.delete(input.dataset.warehouseScope);
+				}
+				this.render_warehouses();
+			})
+			.on("click.ps-access", "[data-include-descendants]", (event) => {
+				this.warehouse_hide_descendants.delete(event.currentTarget.dataset.includeDescendants);
+				this.render_warehouses();
+			});
 	}
 
 	filter_warehouses(clear_hidden) {
 		const companies = new Set(this.checked_values("company-scope"));
+		if (clear_hidden) {
+			for (const warehouse of this.current.scope_options?.warehouses || []) {
+				if (!companies.has(warehouse.company)) {
+					this.warehouse_selection.delete(warehouse.name);
+					this.warehouse_hide_descendants.delete(warehouse.name);
+				}
+			}
+			this.render_warehouses();
+			return;
+		}
 		this.root.find("[data-warehouse-company]").each((_, row) => {
 			const element = $(row);
 			const visible = companies.has(element.attr("data-warehouse-company"));
 			element.toggleClass("hide", !visible);
-			if (!visible && clear_hidden) element.find("input").prop("checked", false);
 		});
 	}
 
@@ -190,7 +240,8 @@ class ProcessSimplificationAccessManagement {
 				user,
 				profiles: this.checked_values("profile"),
 				companies: this.checked_values("company-scope"),
-				warehouses: this.checked_values("warehouse-scope"),
+				warehouses: Array.from(this.warehouse_selection || []),
+				warehouse_hide_descendants: Array.from(this.warehouse_hide_descendants || []),
 				employee,
 			},
 		});

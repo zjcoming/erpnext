@@ -16,14 +16,15 @@ function response(user, companies = []) {
 }
 
 function setup() {
-	const state = { calls: [], selectedUser: "user-a@example.test", renderCount: 0, companyChecked: false, contentHidden: true };
+	const state = { calls: [], html: {}, selectedUser: "user-a@example.test", renderCount: 0, companyChecked: false, contentHidden: true };
 	const elements = new Map();
 	const root = { find(selector) {
 		if (!elements.has(selector)) elements.set(selector, {
 			addClass() { if (selector === "[data-content]") state.contentHidden = true; return this; },
 			removeClass() { if (selector === "[data-content]") state.contentHidden = false; return this; },
 			text(value) { state.placeholder = value; return this; },
-			html(value) { state.companyChecked = /\schecked(?:\s|>)/.test(value); return this; },
+			html(value) { state.html[selector] = value; if (selector === "[data-company-list]") state.companyChecked = /\schecked(?:\s|>)/.test(value); return this; },
+			each() { return this; },
 			val() { return ""; },
 		});
 		return elements.get(selector);
@@ -77,6 +78,79 @@ test("autocomplete followed by blur preserves the first company click without re
 	assert.equal(state.renderCount, 1);
 	assert.equal(page.current.user.name, state.selectedUser);
 	assert.equal(state.saveDisabled, false);
+});
+
+const warehouseOptions = [
+	{ name: "Root", company: "Factory A", is_group: 1, lft: 1, rgt: 10 },
+	{ name: "Group", company: "Factory A", is_group: 1, lft: 2, rgt: 7 },
+	{ name: "Nested", company: "Factory A", is_group: 1, lft: 3, rgt: 6 },
+	{ name: "Leaf", company: "Factory A", is_group: 0, lft: 4, rgt: 5 },
+	{ name: "Sibling", company: "Factory A", is_group: 0, lft: 8, rgt: 9 },
+];
+
+function warehouseSetup(selected, exact = []) {
+	const result = setup();
+	result.page.current = { user: { name: result.state.selectedUser }, scope_options: { warehouses: warehouseOptions } };
+	result.page.warehouse_selection = new Set(selected);
+	result.page.warehouse_hide_descendants = new Set(exact);
+	return result;
+}
+
+test("group selection displays inherited descendants and saves only the group", async () => {
+	const { page, state } = warehouseSetup(["Group", "Leaf"]);
+	page.render_warehouses();
+	const html = state.html["[data-warehouse-list]"];
+	assert.match(html, /data-warehouse-scope="Leaf" checked disabled/);
+	assert.match(html, /继承自 Group/);
+	assert.match(html, /仓库组/);
+	assert.match(html, /data-warehouse-scope="Sibling"\s*>/);
+	assert.deepEqual([...page.warehouse_selection], ["Group"]);
+	const saving = page.save();
+	assert.deepEqual(Array.from(state.calls[0].args.warehouses), ["Group"]);
+	state.selectedUser = "changed@example.test";
+	state.calls[0].resolve({ message: true });
+	await saving;
+});
+
+test("removing a group drops inherited selections and permits a leaf-only grant", () => {
+	const { page } = warehouseSetup(["Group", "Leaf"]);
+	page.warehouse_scope_rows(warehouseOptions);
+	page.warehouse_selection.delete("Group");
+	let rows = page.warehouse_scope_rows(warehouseOptions);
+	assert.ok(rows.every((row) => !row.inherited));
+	assert.equal(page.warehouse_selection.size, 0);
+	page.warehouse_selection.add("Leaf");
+	rows = page.warehouse_scope_rows(warehouseOptions);
+	assert.ok(rows.every((row) => !row.inherited));
+	assert.deepEqual([...page.warehouse_selection], ["Leaf"]);
+});
+
+test("new warehouse options inherit from an existing group grant", () => {
+	const { page } = warehouseSetup(["Group"]);
+	const rows = page.warehouse_scope_rows([...warehouseOptions,
+		{ name: "New leaf", company: "Factory A", is_group: 0, lft: 5, rgt: 6 }]);
+	assert.equal(rows.at(-1).inherited.name, "Group");
+	assert.deepEqual([...page.warehouse_selection], ["Group"]);
+});
+
+test("an exact-node group retains its explicit leaves until expanded", () => {
+	const { page, state } = warehouseSetup(["Group", "Leaf"], ["Group"]);
+	page.render_warehouses();
+	assert.match(state.html["[data-warehouse-list]"], /仅组本身/);
+	assert.match(state.html["[data-warehouse-list]"], /data-include-descendants="Group"/);
+	assert.deepEqual([...page.warehouse_selection], ["Group", "Leaf"]);
+	page.warehouse_hide_descendants.delete("Group");
+	page.render_warehouses();
+	assert.deepEqual([...page.warehouse_selection], ["Group"]);
+	assert.match(state.html["[data-warehouse-list]"], /data-warehouse-scope="Leaf" checked disabled/);
+});
+
+test("removing a company clears its explicit group and exact-node selections", () => {
+	const { page, state } = warehouseSetup(["Group"], ["Group"]);
+	state.companyChecked = false;
+	page.filter_warehouses(true);
+	assert.equal(page.warehouse_selection.size, 0);
+	assert.equal(page.warehouse_hide_descendants.size, 0);
 });
 
 test("repeated Link change while the same user is loading issues one read", async () => {

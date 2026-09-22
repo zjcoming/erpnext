@@ -4,9 +4,9 @@ import frappe
 from frappe import _
 
 from process_simplification.management_access import (
+	ALL_APP_MANAGED_ROLES,
 	APP_MANAGED_ROLE_PROFILES,
 	APP_MANAGED_ROLES,
-	ALL_APP_MANAGED_ROLES,
 	CAPABILITY_LABELS,
 	EMPLOYEE_ROLE_PROFILE,
 	OWNER_ROLE,
@@ -15,8 +15,8 @@ from process_simplification.management_access import (
 	ROLE_DEFINITIONS,
 	SALES_OPERATOR_ROLE,
 	SENSITIVE_ROLES,
-	WAREHOUSE_OPERATOR_ROLE,
 	WAGE_MANAGER_ROLE,
+	WAREHOUSE_OPERATOR_ROLE,
 	WORKER_INCOMPATIBLE_ROLES,
 	WORKER_ROLE,
 	can_manage_sensitive_roles,
@@ -65,6 +65,17 @@ def _top_level_user_permissions(user: str, allow: str) -> set[str]:
 	return {row.for_value for row in rows if row.for_value and not row.applicable_for}
 
 
+def _warehouse_hide_descendants(user: str) -> set[str]:
+	return {
+		row.for_value
+		for row in frappe.get_all(
+			"User Permission", filters={"user": user, "allow": "Warehouse", "hide_descendants": 1},
+			fields=["for_value", "applicable_for"], limit=0,
+		)
+		if row.for_value and not row.applicable_for
+	}
+
+
 def _linked_employee(user: str):
 	employees = frappe.get_all(
 		"Employee",
@@ -79,11 +90,12 @@ def _linked_employee(user: str):
 
 def _scope_options(user: str):
 	companies = frappe.get_all("Company", fields=["name"], order_by="name", limit=0)
+	selected = _top_level_user_permissions(user, "Warehouse")
 	warehouses = frappe.get_all(
 		"Warehouse",
-		filters={"disabled": 0, "is_group": 0},
-		fields=["name", "warehouse_name", "company"],
-		order_by="company, warehouse_name, name",
+		or_filters={"disabled": 0, **({"name": ("in", sorted(selected))} if selected else {})},
+		fields=["name", "warehouse_name", "company", "is_group", "parent_warehouse", "lft", "rgt", "disabled"],
+		order_by="company, lft, name",
 		limit=0,
 	)
 	employees = frappe.db.sql(
@@ -157,6 +169,7 @@ def get_user_access(user: str):
 		),
 		"companies": sorted(_top_level_user_permissions(user, "Company")),
 		"warehouses": sorted(_top_level_user_permissions(user, "Warehouse")),
+		"warehouse_hide_descendants": sorted(_warehouse_hide_descendants(user)),
 		"employee": linked_employee,
 		"scope_options": _scope_options(user),
 		"can_manage_sensitive": can_manage_sensitive_roles(),
@@ -182,7 +195,7 @@ def _validate_scopes(requested_roles: set[str], companies: set[str], warehouses:
 	warehouse_companies = {
 		row.name: row.company
 		for row in warehouse_rows
-		if not row.disabled and not row.is_group
+		if not row.disabled
 	}
 	unknown_warehouses = warehouses.difference(warehouse_companies)
 	if unknown_warehouses:
@@ -197,11 +210,29 @@ def _validate_scopes(requested_roles: set[str], companies: set[str], warehouses:
 	if requested_roles.intersection(SCOPED_BUSINESS_ROLES) and not companies:
 		frappe.throw(_("Select at least one Company for this business岗位."))
 	if WAREHOUSE_OPERATOR_ROLE in requested_roles and not warehouses:
-		frappe.throw(_("The warehouse岗位 requires at least one leaf Warehouse."))
+		frappe.throw(_("库房岗位至少需要选择一个仓库或仓库组。"))
 	if WAGE_MANAGER_ROLE in requested_roles and not companies:
 		frappe.throw(_("The wage-management岗位 requires an explicit Company."))
 	if WORKER_ROLE in requested_roles and not employee:
 		frappe.throw(_("The worker岗位 requires an active Employee linked to this user."))
+
+
+def _normalize_warehouse_scopes(warehouses: set[str], hide_descendants: set[str]) -> set[str]:
+	"""Store group grants, not a snapshot of their current descendants."""
+	if not warehouses:
+		return set()
+	rows = frappe.get_all(
+		"Warehouse", filters={"name": ("in", sorted(warehouses))},
+		fields=["name", "company", "is_group", "lft", "rgt"], limit=0,
+	)
+	groups = [row for row in rows if row.is_group and row.name not in hide_descendants]
+	return {
+		row.name for row in rows
+		if not any(
+			group.company == row.company and group.lft < row.lft and row.rgt < group.rgt
+			for group in groups
+		)
+	}
 
 
 def _resolve_employee(user: str, employee: str | None):
@@ -237,7 +268,7 @@ def _bind_employee(user: str, employee):
 	return employee
 
 
-def _sync_scope_permissions(user: str, allow: str, values: set[str]):
+def _sync_scope_permissions(user: str, allow: str, values: set[str], hide_descendants=None):
 	from frappe.permissions import add_user_permission
 
 	rows = frappe.get_all(
@@ -250,7 +281,10 @@ def _sync_scope_permissions(user: str, allow: str, values: set[str]):
 		if not row.applicable_for:
 			frappe.delete_doc("User Permission", row.name, force=True, ignore_permissions=True)
 	for value in sorted(values):
-		add_user_permission(allow, value, user, ignore_permissions=True)
+		add_user_permission(
+			allow, value, user, ignore_permissions=True,
+			hide_descendants=int(value in (hide_descendants or set())),
+		)
 
 
 @frappe.whitelist(methods=["POST"])
@@ -261,6 +295,7 @@ def set_user_access(
 	companies=None,
 	warehouses=None,
 	employee: str | None = None,
+	warehouse_hide_descendants=None,
 ):
 	require_access_management()
 	user_details = _validate_target_user(user)
@@ -287,6 +322,14 @@ def set_user_access(
 
 	company_scope = _parse_set(companies)
 	warehouse_scope = _parse_set(warehouses)
+	# Legacy/native exact-node grants must not expand during an unrelated role edit.
+	hide_descendants = (
+		_warehouse_hide_descendants(user).intersection(warehouse_scope)
+		if warehouse_hide_descendants is None
+		else _parse_set(warehouse_hide_descendants)
+	)
+	if hide_descendants.difference(warehouse_scope):
+		frappe.throw(_("仅组本身的授权必须属于已选择的仓库范围。"))
 	employee_row = _resolve_employee(user, employee)
 	if WORKER_ROLE in requested_roles and employee_row:
 		if company_scope.difference({employee_row.company}):
@@ -314,11 +357,13 @@ def set_user_access(
 				frappe.PermissionError,
 			)
 	_validate_scopes(requested_roles, company_scope, warehouse_scope, employee_row)
+	warehouse_scope = _normalize_warehouse_scopes(warehouse_scope, hide_descendants)
+	hide_descendants.intersection_update(warehouse_scope)
 
 	assigned_profiles = migrate_user_to_management_role_profiles(user, requested_roles)
 	employee_row = _bind_employee(user, employee_row)
 	_sync_scope_permissions(user, "Company", company_scope)
-	_sync_scope_permissions(user, "Warehouse", warehouse_scope)
+	_sync_scope_permissions(user, "Warehouse", warehouse_scope, hide_descendants)
 	frappe.clear_cache(user=user)
 
 	return {
@@ -329,6 +374,7 @@ def set_user_access(
 		"assigned_roles": [role for role in APP_MANAGED_ROLES if role in requested_roles],
 		"companies": sorted(company_scope),
 		"warehouses": sorted(warehouse_scope),
+		"warehouse_hide_descendants": sorted(hide_descendants),
 		"employee": employee_row,
 		"message": _("Process Simplification岗位 and data scope updated."),
 	}

@@ -605,6 +605,46 @@
 	font-size: 10px;
 }
 
+.ps-access-warehouse label {
+	min-height: 44px;
+	padding-inline-start: calc(9px + var(--warehouse-depth, 0) * 12px);
+}
+
+.ps-access-option-list[data-warehouse-list] {
+	max-height: 360px;
+	gap: 3px;
+}
+
+.ps-access-warehouse label > span {
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
+.ps-access-group-badge {
+	display: inline-block;
+	margin-inline-start: 6px;
+	padding: 1px 5px;
+	border-radius: 4px;
+	background: rgba(15, 118, 110, 0.08);
+	color: var(--text-color);
+	font-size: 10px;
+	font-weight: 500;
+}
+
+.ps-access-warehouse-inherited label {
+	cursor: default;
+	background: rgba(15, 118, 110, 0.04);
+}
+
+.ps-access-warehouse small.ps-access-warehouse-scope {
+	color: var(--text-color);
+}
+
+.ps-access-warehouse > button {
+	margin: 0 9px 8px;
+	min-height: 44px;
+}
+
 .ps-access-option-list em,
 .ps-access-effective em {
 	color: var(--ps-exec-muted);
