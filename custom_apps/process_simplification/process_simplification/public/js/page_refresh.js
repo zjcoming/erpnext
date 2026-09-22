@@ -369,6 +369,7 @@ function setupPageRefresh(frappeRef, win, doc, $) {
 			"order-workbench": { topics: ["orders"], interval: 30000, load: page?.fulfillment_overview?.loadOverview },
 			"production-workbench": { topics: ["production"], interval: 30000, load: page?.production_workbench?.loadOverview },
 			"warehouse-workbench": { topics: ["warehouse"], interval: 5000, load: page?.warehouseWorkbench?.backgroundRefresh },
+			"purchase-rejection-followup": { topics: ["warehouse", "purchase"], interval: 5000, load: (opts) => page.rejection_refresh?.(opts) },
 			"shortage-purchase-planning": { topics: ["purchase"], interval: 30000, load: page?.shortage_refresh, protectInputs: true },
 			"purchase-supplier-allocation": { topics: ["purchase"], interval: 5000, load: (opts) => page.purchase_refresh?.(opts),
 				protectInputs: Boolean(frappeRef.route_options?.material_request || win.location.search.includes("material_request=")),

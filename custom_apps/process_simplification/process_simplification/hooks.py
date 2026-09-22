@@ -67,6 +67,7 @@ boot_session = [
 ]
 
 doctype_js = {
+	"Purchase Receipt": "public/js/purchase_receipt.js",
 	"Company": "public/js/company_manufacturing.js",
 	"Material Request": "public/js/material_request_purchasing.js",
 	"Warehouse": "public/js/warehouse_management.js",
@@ -85,6 +86,8 @@ jinja = {
 }
 
 extend_doctype_class = {
+	"Purchase Order": "process_simplification.purchasing.order_quantities.PurchaseOrderRequestCommitmentMixin",
+	"Purchase Receipt": "process_simplification.purchasing.receipt_quantities.PurchaseReceiptAcceptedQuantityMixin",
 	"Work Order": "process_simplification.production_reporting.work_order.WorkerReportingWorkOrderMixin",
 	"Job Card": "process_simplification.production_reporting.job_card.SimplifiedFlowJobCardMixin",
 	"Stock Entry": "process_simplification.production_reporting.stock_entry.SubassemblyReservationStockEntryMixin",
@@ -119,8 +122,12 @@ doc_events = {
 		"before_cancel": ["process_simplification.purchasing.receipts.lock_receipt_sources", "process_simplification.production_exceptions.handling_followup.before_cancel_return"],
 		"before_submit": "process_simplification.production_exceptions.handling_followup.validate_return",
 		"on_trash": "process_simplification.production_exceptions.handling_followup.prevent_delete",
-		"on_submit": ["process_simplification.purchasing.receipts.record_receipt_event", "process_simplification.production_exceptions.handling_followup.complete_return"],
-		"on_cancel": ["process_simplification.purchasing.receipts.record_receipt_event", "process_simplification.production_exceptions.handling_followup.cancel_return"],
+		"on_submit": ["process_simplification.purchasing.order_quantities.refresh_closed_order_commitments", "process_simplification.purchasing.receipts.record_receipt_event", "process_simplification.production_exceptions.handling_followup.complete_return"],
+		"on_cancel": ["process_simplification.purchasing.order_quantities.refresh_closed_order_commitments", "process_simplification.purchasing.receipts.record_receipt_event", "process_simplification.production_exceptions.handling_followup.cancel_return"],
+	},
+	"Purchase Invoice": {
+		"on_submit": "process_simplification.purchasing.order_quantities.refresh_closed_order_commitments",
+		"on_cancel": "process_simplification.purchasing.order_quantities.refresh_closed_order_commitments",
 	},
 	"Purchase Order": {
 		"before_validate": "process_simplification.purchasing.allocation.lock_order_sources",

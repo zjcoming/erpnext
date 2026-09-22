@@ -37,6 +37,23 @@ test("partly received orders remain in supplier followup", () => {
 	assert.equal(purchaseOverview({ orders: [po], items: [] }).waiting, 1);
 });
 
+test("a fully delivered PO with rejected goods still has a next action", () => {
+	const view = purchaseOverview({ orders: [{ docstatus: 1, status: "To Bill", per_received: 100 }],
+		items: [{ stock_qty: 700, received_qty: 600, available_qty: 0, ordered_pending_qty: 0, rejected_pending_qty: 100 }] });
+	assert.equal(view.waiting, 0);
+	assert.equal(view.rejected, 1);
+	assert.equal(view.title, "1 项物料拒收待处理");
+	assert.match(view.hint, /确认供应商是否补送/);
+	assert.match(view.hint, /避免重复采购/);
+});
+
+test("after rejected goods are returned the reopened PO is waiting for replacement", () => {
+	const view = purchaseOverview({ orders: [{ docstatus: 1, status: "To Receive and Bill", per_received: 600 / 700 * 100 }],
+		items: [{ stock_qty: 700, received_qty: 600, available_qty: 0, ordered_pending_qty: 100, rejected_pending_qty: 0 }] });
+	assert.equal(view.rejected, 0);
+	assert.equal(view.title, "1 张采购单待收货");
+});
+
 test("supplier followup preserves per-line units, overdue days, escaping and receiving permission", () => {
 	const { purchaseFollowupHtml } = require("../../process_simplification/page/purchase_supplier_allocation/purchase_supplier_allocation.js");
 	const helpers = { esc: (text) => String(text || "").replaceAll("<", "&lt;").replaceAll('"', "&quot;"), number: (value) => String(value || 0) };

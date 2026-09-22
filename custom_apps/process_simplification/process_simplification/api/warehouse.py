@@ -91,14 +91,21 @@ def _purchase_followup_action(companies):
 	return {"status": "ready", "has_pending": bool(requests), "request_count": len(requests)}
 
 
+def _rejection_action(companies):
+	from process_simplification.purchasing.rejections import get_summary
+	count = sum(get_summary(company)["receipt_count"] for company in companies)
+	return {"status": "ready", "has_pending": count > 0, "receipt_count": count}
+
+
 def _company_action_summary(company, can_purchase):
 	actions = []
 	for key, doctypes, callback in (
 		("shortage", ("Material Request", "Sales Order", "Work Order"), _shortage_action),
 		("purchase_followup", ("Material Request",), _purchase_followup_action),
+		("rejection_followup", ("Purchase Receipt",), _rejection_action),
 	):
 		action = {"key": key, "status": "unavailable"}
-		if can_purchase and all(frappe.has_permission(doctype, "read") for doctype in doctypes):
+		if (can_purchase or key == "rejection_followup") and all(frappe.has_permission(doctype, "read") for doctype in doctypes):
 			try:
 				action.update(callback([company]))
 			except frappe.PermissionError:

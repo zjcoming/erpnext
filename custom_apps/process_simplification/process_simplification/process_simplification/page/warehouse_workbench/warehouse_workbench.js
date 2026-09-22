@@ -54,6 +54,8 @@ function warehouseActionSummaryHtml(model, esc, number) {
 			hint: "核对当前缺口并安排采购，已由库存或采购覆盖的数量会自动扣除。" },
 		purchase_followup: { title: "采购申请待跟进", route: "purchase-supplier-allocation", action: "继续采购跟进",
 			hint: "继续分配供应商，或跟进采购单提交。已下单部分可在“采购待收货”中处理。" },
+		rejection_followup: { title: "拒收品待退回", route: "purchase-rejection-followup", action: "处理拒收与补货",
+			hint: "核对拒收品退货，再跟进原供应商补送或按实际缺口补采。" },
 	};
 	const actions = (model?.actions || []).filter((action) => definitions[action.key] && action.status !== "unavailable");
 	if (!actions.length) return "";
@@ -68,14 +70,16 @@ function warehouseActionSummaryHtml(model, esc, number) {
 		if (model.company) query.set("company", model.company);
 		if (action.key === "purchase_followup") query.set("view", "to_order");
 		const href = "/desk/" + definition.route + (query.size ? "?" + query.toString() : "");
-		const count = action.key === "shortage" ? number(action.material_count) + " 项物料" : number(action.request_count) + " 张申请";
+		const count = action.key === "shortage" ? number(action.material_count) + " 项物料" :
+			action.key === "rejection_followup" ? number(action.receipt_count) + " 张收货单" : number(action.request_count) + " 张申请";
 		const orders = action.key === "shortage" && action.sales_order_count > 0 ? " · 涉及 " + number(action.sales_order_count) + " 张销售订单" : "";
 		return '<article class="warehouse-action-card"><div><h3>' + definition.title + '</h3><p class="warehouse-action-count"><strong>' +
 			esc(count) + '</strong>' + esc(orders) + '</p><p class="warehouse-action-hint">' + definition.hint + '</p></div>' +
 			'<a class="btn btn-primary" href="' + esc(href) + '">' + definition.action + '</a></article>';
 	}).filter(Boolean).join("");
-	const clear = new Set(actions.map((action) => action.key)).size === 2 ? "当前没有缺料或待下单事项。" :
-		(actions[0].key === "shortage" ? "当前没有缺料待处理。" : "当前没有采购申请待下单 / 确认。");
+	const keys = new Set(actions.map((action) => action.key));
+	const clear = keys.size > 1 ? "当前没有" + [keys.has("shortage") && "缺料", keys.has("purchase_followup") && "待下单", keys.has("rejection_followup") && "拒收待退回"].filter(Boolean).join("、") + "事项。" :
+		(actions[0].key === "shortage" ? "当前没有缺料待处理。" : actions[0].key === "rejection_followup" ? "当前没有拒收品待退回。" : "当前没有采购申请待下单 / 确认。");
 	return cards ? '<section class="warehouse-action-summary" aria-label="采购待办">' + cards + '</section>' :
 		'<p class="warehouse-actions-clear">' + clear + '</p>';
 }

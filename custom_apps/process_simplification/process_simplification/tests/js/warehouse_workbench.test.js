@@ -117,3 +117,25 @@ test("a changed snapshot stays visibly unresolved even if its old count was zero
 	assert.match(html, /正在核对最新数据/);
 	assert.doesNotMatch(html, /当前没有/);
 });
+
+test("rejected receipt followup remains visible independently of shortage and pending purchase counts", () => {
+	const html = warehouseActionSummaryHtml({ company: "Factory A", actions: [
+		{ key: "shortage", status: "ready", has_pending: false },
+		{ key: "purchase_followup", status: "ready", has_pending: false },
+		{ key: "rejection_followup", status: "ready", has_pending: true, receipt_count: 2 },
+	] }, esc, String);
+	assert.match(html, /拒收品待退回/);
+	assert.match(html, /2 张收货单/);
+	assert.match(html, /purchase-rejection-followup\?company=Factory\+A/);
+	assert.doesNotMatch(html, /当前没有|0 张申请/);
+});
+
+test("rejection-only summaries preserve permission, failed-read and empty-state boundaries", () => {
+	assert.equal(warehouseActionSummaryHtml({ actions: [{ key: "rejection_followup", status: "unavailable", receipt_count: 999 }] }, esc, String), "");
+	const error = warehouseActionSummaryHtml({ actions: [{ key: "rejection_followup", status: "error", receipt_count: 99 }] }, esc, String);
+	assert.match(error, /读取失败/);
+	assert.doesNotMatch(error, /99|当前没有|href=/);
+	const empty = warehouseActionSummaryHtml({ actions: [{ key: "rejection_followup", status: "ready", has_pending: false }] }, esc, String);
+	assert.match(empty, /当前没有拒收品待退回/);
+	assert.doesNotMatch(empty, /采购申请|缺料/);
+});

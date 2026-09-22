@@ -5,7 +5,7 @@ import frappe
 
 from process_simplification import page_refresh
 from process_simplification.api import warehouse
-from process_simplification.purchasing import allocation
+from process_simplification.purchasing import allocation, rejections
 
 
 class TestWarehouseWorkbench(TestCase):
@@ -94,16 +94,38 @@ class TestWarehouseActionSummary(TestCase):
 		self.enterContext(patch.object(warehouse, "_companies", return_value=["Company A", "Company B"]))
 		self.enterContext(patch.object(warehouse, "user_has_capability", return_value=True))
 		self.enterContext(patch.object(frappe, "has_permission", return_value=True))
+		self.rejection_summary = self.enterContext(patch.object(rejections, "get_summary", return_value={
+			"status": "ready", "has_pending": False, "receipt_count": 0,
+		}))
 
-	def test_no_purchasing_capability_exposes_no_counts_or_queries(self):
+	def test_no_purchasing_capability_hides_purchasing_but_keeps_permitted_returns(self):
 		with patch.object(warehouse, "user_has_capability", return_value=False), patch.object(page_refresh, "company_shortages") as shortages, patch.object(allocation, "get_request_page") as requests:
 			result = warehouse.get_action_summary("Company A")
 		self.assertEqual(result["actions"], [
 			{"key": "shortage", "status": "unavailable"},
 			{"key": "purchase_followup", "status": "unavailable"},
+			{"key": "rejection_followup", "status": "ready", "has_pending": False, "receipt_count": 0},
 		])
 		shortages.assert_not_called()
 		requests.assert_not_called()
+		self.rejection_summary.assert_called_once_with("Company A")
+
+	def test_missing_receipt_permission_never_queries_rejection_counts(self):
+		with patch.object(frappe, "has_permission", side_effect=lambda doctype, ptype: doctype != "Purchase Receipt"), patch.object(page_refresh, "company_shortages", return_value={"shortages": []}), patch.object(allocation, "get_request_page", return_value={"rows": [], "next_start": None}):
+			result = warehouse.get_action_summary("Company A")
+		self.assertEqual(result["actions"][2], {"key": "rejection_followup", "status": "unavailable"})
+		self.rejection_summary.assert_not_called()
+		self.assertEqual(result["actions"][1]["request_count"], 0)
+
+	def test_rejection_failures_never_report_zero_or_hide_other_actions(self):
+		for error, status in ((frappe.PermissionError(), "unavailable"), (RuntimeError("failed rejection query"), "error")):
+			with self.subTest(status=status), patch.object(page_refresh, "company_shortages", return_value={"shortages": []}), patch.object(allocation, "get_request_page", return_value={"rows": [{"name": "MR-1", "company": "Company A"}], "next_start": None}), patch.object(frappe, "log_error") as log:
+				self.rejection_summary.side_effect = error
+				result = warehouse.get_action_summary("Company A")
+				self.assertEqual(result["actions"][2], {"key": "rejection_followup", "status": status})
+				self.assertEqual(result["actions"][1]["request_count"], 1)
+				self.assertEqual(bool(result.get("_refresh_stale")), status == "error")
+				self.assertEqual(log.call_count, int(status == "error"))
 
 	def test_missing_document_permission_hides_only_inaccessible_action(self):
 		with patch.object(frappe, "has_permission", side_effect=lambda doctype, ptype: doctype != "Sales Order"), patch.object(page_refresh, "company_shortages") as shortages, patch.object(allocation, "get_request_page", return_value={"rows": [], "next_start": None}):
@@ -160,6 +182,7 @@ class TestWarehouseActionSummary(TestCase):
 		self.assertEqual(result["actions"], [
 			{"key": "shortage", "status": "error"},
 			{"key": "purchase_followup", "status": "unavailable"},
+			{"key": "rejection_followup", "status": "ready", "has_pending": False, "receipt_count": 0},
 		])
 		self.assertTrue(result["_refresh_stale"])
 		log.assert_called_once()

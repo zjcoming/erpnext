@@ -14,6 +14,7 @@ from erpnext.stock.doctype.material_request.material_request import get_default_
 from process_simplification.api.utils import get_quantity_precision, normalize_purchase_qty
 from process_simplification.notifications import _user_matches_company
 from process_simplification.purchasing.query import document_page, item_search_codes
+from process_simplification.purchasing.receipt_quantities import accepted_stock_qty, rejected_stock_qty
 from process_simplification.purchasing.receipts import lock_material_requests
 from process_simplification.request_transaction import retry_request_transaction
 
@@ -48,29 +49,37 @@ def coverage(request, exclude_po=None):
 		as_dict=True,
 	)
 	receipts = frappe.db.sql(
-		"""select i.material_request_item, i.purchase_order_item, i.stock_qty
+		"""select i.material_request_item, i.purchase_order_item, i.stock_qty,
+		i.received_qty, i.rejected_qty, i.conversion_factor, i.return_qty_from_rejected_warehouse
 		from `tabPurchase Receipt Item` i join `tabPurchase Receipt` p on p.name=i.parent
 		where i.material_request=%s and p.docstatus=1 for update""",
 		request,
 		as_dict=True,
 	)
 	result = defaultdict(
-		lambda: frappe._dict(draft_qty=0.0, ordered_pending_qty=0.0, received_qty=0.0, occupied_qty=0.0)
+		lambda: frappe._dict(draft_qty=0.0, ordered_pending_qty=0.0, rejected_pending_qty=0.0, received_qty=0.0, occupied_qty=0.0)
 	)
 	po_received = defaultdict(float)
+	po_delivered, po_rejected = defaultdict(float), defaultdict(float)
 	for row in receipts:
-		result[row.material_request_item].received_qty += flt(row.stock_qty)
-		po_received[row.purchase_order_item] += flt(row.stock_qty)
+		accepted = accepted_stock_qty(row)
+		result[row.material_request_item].received_qty += accepted
+		po_received[row.purchase_order_item] += accepted
+		po_delivered[row.purchase_order_item] += flt(row.received_qty) * (flt(row.conversion_factor) or 1)
+		po_rejected[row.purchase_order_item] += rejected_stock_qty(row)
 	for row in orders:
 		if row.name == exclude_po or row.status in {"Closed", "Cancelled"}:
 			continue
 		key = "draft_qty" if row.docstatus == 0 else "ordered_pending_qty"
-		result[row.material_request_item][key] += max(flt(row.stock_qty) - po_received[row.row_name], 0)
+		result[row.material_request_item][key] += max(flt(row.stock_qty) - po_delivered[row.row_name], 0)
+		# Goods have arrived, but are held for a supplier decision. Do not call
+		# them pending delivery or release the same demand for duplicate buying.
+		result[row.material_request_item].rejected_pending_qty += max(po_rejected[row.row_name], 0)
 	for values in result.values():
-		for key in ("received_qty", "draft_qty", "ordered_pending_qty"):
+		for key in ("received_qty", "draft_qty", "ordered_pending_qty", "rejected_pending_qty"):
 			values[key] = normalize_purchase_qty(values[key])
 		values.occupied_qty = normalize_purchase_qty(
-			max(values.received_qty, 0) + values.draft_qty + values.ordered_pending_qty
+			max(values.received_qty, 0) + values.draft_qty + values.ordered_pending_qty + values.rejected_pending_qty
 		)
 	return result, orders, po_received
 
@@ -370,7 +379,7 @@ def _order_followup(doc, *, material_request=None, pending_only=True, search="",
 	returned = {
 		row.purchase_order_item: flt(row.returned_stock_qty)
 		for row in frappe.db.sql(
-			"""select i.purchase_order_item, -sum(i.stock_qty) as returned_stock_qty
+			"""select i.purchase_order_item, -sum(i.received_qty * i.conversion_factor) as returned_stock_qty
 			from `tabPurchase Receipt Item` i join `tabPurchase Receipt` p on p.name=i.parent
 			where i.purchase_order=%s and p.docstatus=1 and p.is_return=1
 			group by i.purchase_order_item""", doc.name, as_dict=True,

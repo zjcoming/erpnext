@@ -1,3 +1,13 @@
+function purchaseNoticeRejectionActionHtml(message, esc) {
+	const url = message.rejection_followup_url;
+	if (!message.can_rejection_followup || typeof url !== "string" || !url.startsWith("/desk/purchase-rejection-followup?receipt=")) return "";
+	return '<section class="purchase-card"><h4>继续处理拒收与补货</h4><p>查看拒收品是否已退回，再核对供应商补送或当前缺料。阅读通知不会完成退换货。</p>' +
+		'<a class="btn btn-primary" href="' + esc(url) + '">拒收与补货跟进</a></section>';
+}
+
+if (typeof module !== "undefined" && module.exports) module.exports = { purchaseNoticeRejectionActionHtml };
+
+if (typeof frappe !== "undefined") {
 frappe.pages["purchase-receipt-notice"].on_page_load = function (wrapper) {
 	const page = frappe.ui.make_app_page({ parent: wrapper, title: __("采购到货通知"), single_column: true });
 	const api = "process_simplification.purchasing.receipts.";
@@ -73,6 +83,7 @@ frappe.pages["purchase-receipt-notice"].on_page_load = function (wrapper) {
 		}
 		if (message.current_docstatus === 2) root.append('<div class="purchase-notice-warning">该收货单当前已撤销。以下保留当时记录，请以当前库存和生产工作台为准。</div>');
 		root.append(`<section class="purchase-card"><h4>${esc(message.subject)}</h4><p class="purchase-meta">${esc(message.company)} · ${esc(statusLabels[message.status] || message.status)}</p><div class="receipt-body">${message.description}</div></section>`);
+		root.append(purchaseNoticeRejectionActionHtml(message, esc));
 		if (message.can_open_receipt) $('<button class="btn btn-default">查看收货单</button>').appendTo(root).on("click", () => frappe.set_route("Form", "Purchase Receipt", message.receipt));
 		$('<button class="btn btn-default ml-2">检查生产齐套</button>').appendTo(root).on("click", () => frappe.set_route("production-workbench"));
 		if (message.can_retry) {
@@ -93,3 +104,4 @@ frappe.pages["purchase-receipt-notice"].on_page_load = function (wrapper) {
 	wrapper.load_receipt_notice = load;
 };
 frappe.pages["purchase-receipt-notice"].on_page_show = (wrapper) => { wrapper.load_receipt_notice().catch(() => {}); };
+}

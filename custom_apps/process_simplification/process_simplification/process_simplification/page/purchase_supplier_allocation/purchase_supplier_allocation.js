@@ -20,6 +20,7 @@ function purchaseOverview(model) {
 	const waiting = model.orders.filter((order) => ["待收货", "部分到货"].includes(purchaseOrderStage(order).label)).length;
 	const unallocated = model.items.filter((item) => item.available_qty > 0).length;
 	const received = model.items.filter((item) => item.stock_qty > 0 && item.received_qty >= item.stock_qty).length;
+	const rejected = model.items.filter((item) => Number(item.rejected_pending_qty) > 0).length;
 	let title, hint;
 	if (drafts) {
 		title = `${drafts} 张采购单待提交`;
@@ -31,6 +32,9 @@ function purchaseOverview(model) {
 		hint = model.can_create
 			? "先选供应商，再确认数量和单价。同一物料可拆给多个供应商。"
 			: "等待有采购单创建权限的负责人分配供应商。本页可查看申请与到货进度。";
+	} else if (rejected) {
+		title = `${rejected} 项物料拒收待处理`;
+		hint = "拒收部分已送达但未成为合格库存。先处理退货并确认供应商是否补送；如需另行采购，请核对最新缺口，避免重复采购。";
 	} else if (waiting) {
 		title = `${waiting} 张采购单待收货`;
 		hint = model.orders.some((order) => order.can_receive)
@@ -43,7 +47,7 @@ function purchaseOverview(model) {
 		title = "查看采购进度";
 		hint = "按物料查看分配、下单和到货数量。";
 	}
-	return { drafts, waiting, unallocated, received, title, hint };
+	return { drafts, waiting, unallocated, received, rejected, title, hint };
 }
 
 function supplierAllocationProgress(item, target, rows) {
@@ -177,6 +181,7 @@ frappe.pages["purchase-supplier-allocation"].on_page_load = function (wrapper) {
 		const summary = purchaseOverview(model);
 		root.append(`<header class="purchase-hero"><div><span class="purchase-eyebrow">采购执行台</span><h1>采购跟进</h1><p><a href="${href("material-request", model.material_request)}">${esc(model.material_request)}</a><span class="purchase-meta"> · ${esc(model.company)}</span></p></div><a class="btn btn-default" href="/desk/purchase-supplier-allocation">切换采购申请</a></header>`);
 		root.append(`<div class="purchase-next-action ${summary.drafts ? "is-warning" : ""}"><div><strong>${esc(summary.title)}</strong><p>${esc(summary.hint)}</p></div></div>`);
+		if (summary.rejected && frappe.model.can_read("Purchase Receipt")) root.append(`<p><a class="btn btn-primary" href="/desk/purchase-rejection-followup?${esc(new URLSearchParams({ company: model.company }))}">处理拒收物料</a></p>`);
 		root.append(`<div class="purchase-stats">${[[summary.unallocated, "待分配物料", "项"], [summary.drafts, "待提交采购单", "张"], [summary.waiting, "待收货采购单", "张"], [summary.received, "已到齐物料", "项"]].map(([value, label, unit]) => `<div><span>${label}</span><strong>${value}<small>${unit}</small></strong></div>`).join("")}</div>`);
 		if (!model.items.some((item) => item.stock_qty > 0)) root.append('<div class="purchase-notice-warning">此申请的采购数量为 0，不能分配供应商。请切换到有实际采购数量的申请。</div>');
 		if (model.orders.length) {
@@ -185,8 +190,8 @@ frappe.pages["purchase-supplier-allocation"].on_page_load = function (wrapper) {
 		}
 		if (model.can_create && summary.unallocated) renderEditors(root, openItems);
 		const section = $('<section class="purchase-section"><div class="purchase-section-heading"><h2>物料采购进度</h2><span class="purchase-meta">数量按各物料的库存单位显示</span></div></section>').appendTo(root);
-		section.append(`<table class="purchase-table purchase-item-table"><thead><tr><th>物料 / 单位</th><th>申请数量</th><th>待分配</th><th>草稿占用</th><th>待收货</th><th>已到货</th></tr></thead><tbody>${model.items.map((item) => `<tr><td><strong>${esc(item.item_name || item.item_code)}</strong><small>${esc(item.item_code)} · ${esc(item.stock_uom)}</small></td>${[["申请数量", item.stock_qty], ["待分配", item.available_qty], ["草稿占用", item.draft_qty], ["待收货", item.ordered_pending_qty], ["已到货", item.received_qty]].map(([label, value]) => `<td data-label="${label}" class="${value > 0 ? "has-quantity" : "is-zero"}">${number(value)}</td>`).join("")}</tr>`).join("")}</tbody></table>`);
-		section.append('<p class="purchase-footnote">草稿占用：已分配但未提交的采购单。已到货：合格收货扣除退货后的数量。</p>');
+		section.append(`<table class="purchase-table purchase-item-table"><thead><tr><th>物料 / 单位</th><th>申请数量</th><th>待分配</th><th>草稿占用</th><th>待收货</th><th>拒收待处理</th><th>合格已收</th></tr></thead><tbody>${model.items.map((item) => `<tr><td><strong>${esc(item.item_name || item.item_code)}</strong><small>${esc(item.item_code)} · ${esc(item.stock_uom)}</small></td>${[["申请数量", item.stock_qty], ["待分配", item.available_qty], ["草稿占用", item.draft_qty], ["待收货", item.ordered_pending_qty], ["拒收待处理", item.rejected_pending_qty], ["合格已收", item.received_qty]].map(([label, value]) => `<td data-label="${label}" class="${value > 0 ? "has-quantity" : "is-zero"}">${number(value)}</td>`).join("")}</tr>`).join("")}</tbody></table>`);
+		section.append('<p class="purchase-footnote">草稿占用：已分配但未提交的采购单。拒收待处理：已送达、待退换的数量，不是待送货数量。合格已收只扣除合格品退货；退拒收品不会再扣一次。其他采购申请的收货不会回填本申请，请按实际缺口安排补采。</p>');
 		if (model.can_create && summary.unallocated) page.set_primary_action(__("预览采购单"), preview);
 		else page.clear_primary_action();
 	}

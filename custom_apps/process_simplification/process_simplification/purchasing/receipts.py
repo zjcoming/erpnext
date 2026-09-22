@@ -7,6 +7,7 @@ import json
 from collections import defaultdict
 from datetime import datetime
 from functools import partial
+from urllib.parse import quote
 
 import frappe
 from frappe.desk.doctype.notification_settings.notification_settings import is_notifications_enabled
@@ -15,10 +16,16 @@ from frappe.utils import add_to_date, cint, escape_html, flt, get_datetime, now_
 from process_simplification.notifications import (
 	APP_NAME,
 	PURCHASE_RECEIPT_RESPONSIBILITY,
+	WAREHOUSE_RESPONSIBILITY,
 	_enabled_system_user,
 	_user_matches_company,
 	process_notifications_enabled,
 	responsibility_recipients,
+)
+from process_simplification.purchasing.receipt_quantities import (
+	accepted_stock_qty,
+	accepted_stock_qty_expression,
+	rejected_stock_qty,
 )
 
 EVENT = "Purchase Receipt Event"
@@ -76,7 +83,7 @@ def request_progress(names):
 		received = defaultdict(float)
 		# FOR UPDATE is intentional: a waiting concurrent receipt must see the latest commit.
 		for row in frappe.db.sql(
-			"""select i.material_request_item, i.stock_qty
+			f"""select i.material_request_item, {accepted_stock_qty_expression('i')} as stock_qty
 			from `tabPurchase Receipt Item` i join `tabPurchase Receipt` p on p.name=i.parent
 			where i.material_request=%s and p.docstatus=1 for update""",
 			name,
@@ -90,6 +97,20 @@ def request_progress(names):
 			{"material_request": name, "complete": all(r.remaining_qty == 0 for r in items), "items": items}
 		)
 	return result
+
+
+def _has_rejection(items):
+	return any(
+		flt(row.get("rejected_qty")) or cint(row.get("return_qty_from_rejected_warehouse"))
+		for row in items
+	)
+
+
+def _receipt_recipients(company, items):
+	recipients = set(responsibility_recipients(company, PURCHASE_RECEIPT_RESPONSIBILITY))
+	if _has_rejection(items):
+		recipients.update(responsibility_recipients(company, WAREHOUSE_RESPONSIBILITY))
+	return sorted(recipients)
 
 
 def record_receipt_event(doc, method=None):
@@ -124,6 +145,7 @@ def record_receipt_event(doc, method=None):
 					"conversion_factor",
 					"warehouse",
 					"rejected_warehouse",
+					"return_qty_from_rejected_warehouse",
 					"purchase_order",
 					"purchase_order_item",
 					"material_request",
@@ -136,7 +158,7 @@ def record_receipt_event(doc, method=None):
 	}
 	enabled = process_notifications_enabled()
 	recipients = (
-		sorted(set(responsibility_recipients(doc.company, PURCHASE_RECEIPT_RESPONSIBILITY)))
+		_receipt_recipients(doc.company, snapshot["items"])
 		if enabled
 		else []
 	)
@@ -210,7 +232,7 @@ def _notification_message(event):
 		if requests:
 			summary += " · 相关申请已全部到货" if all(row["complete"] for row in requests) else " · 相关申请尚未到齐"
 		if any(flt(row.get("rejected_qty")) for row in items):
-			summary += "（含拒收）"
+			summary += "（含拒收，请处理退换货）"
 	elif event.event_type == "Return":
 		summary = f"本批退货涉及 {count} 项物料，请核对缺料"
 	else:
@@ -239,6 +261,19 @@ def _message(event):
 	):
 		parts.append("注意：此收货随后已撤销，请以当前需求及库存为准。")
 	for row in snapshot["items"]:
+		if event.event_type in {"Return", "Return Cancelled"}:
+			conversion = flt(row.get("conversion_factor")) or 1
+			parts.append(
+				"{0}：退回合格 {1:g} {2}，退回拒收 {3:g} {2}；涉及合格库存 {4:g} {5}。".format(
+					escape_html(row["item_name"] or row["item_code"]),
+					abs(accepted_stock_qty(row)) / conversion,
+					escape_html(row["uom"]),
+					abs(rejected_stock_qty(row)) / conversion,
+					abs(accepted_stock_qty(row)),
+					escape_html(row["stock_uom"]),
+				)
+			)
+			continue
 		parts.append(
 			"{0}：送达 {1:g} {2}，合格 {3:g} {2}，拒收 {4:g} {2}；合格库存 {5:g} {6}。".format(
 				escape_html(row["item_name"] or row["item_code"]),
@@ -288,7 +323,7 @@ def deliver_event(event_name):
 	):
 		return
 	subject, description = _notification_message(event)
-	eligible = set(responsibility_recipients(event.company, PURCHASE_RECEIPT_RESPONSIBILITY))
+	eligible = set(_receipt_recipients(event.company, json.loads(event.snapshot).get("items", [])))
 	for row in event.deliveries:
 		if row.status not in {"Pending", "Retry"} or (
 			row.next_attempt and get_datetime(row.next_attempt) > now_datetime()
@@ -377,7 +412,7 @@ def _require_summary_access(event):
 		return
 	if not _enabled_system_user(user):
 		frappe.throw("当前用户不能查看到货信息。", frappe.PermissionError)
-	if user in responsibility_recipients(event.company, PURCHASE_RECEIPT_RESPONSIBILITY):
+	if user in _receipt_recipients(event.company, json.loads(event.snapshot).get("items", [])):
 		return
 	if _can_open_receipt(event.receipt):
 		return
@@ -400,7 +435,22 @@ def get_notice(name):
 		current_docstatus=frappe.db.get_value("Purchase Receipt", event.receipt, "docstatus"),
 		can_open_receipt=_can_open_receipt(event.receipt),
 		can_retry=_can_manage(event.company),
+		can_rejection_followup=False,
 	)
+	if _has_rejection(result["snapshot"].get("items", [])):
+		from process_simplification.management_access import (
+			CAPABILITY_WAREHOUSE_WORKBENCH,
+			user_has_capability,
+		)
+		source = result["snapshot"].get("return_against") or event.receipt
+		result["rejection_source_receipt"] = source
+		result["can_rejection_followup"] = bool(
+			user_has_capability(CAPABILITY_WAREHOUSE_WORKBENCH) and _can_open_receipt(source)
+		)
+		if result["can_rejection_followup"]:
+			result["rejection_followup_url"] = (
+				"/desk/purchase-rejection-followup?receipt=" + quote(source, safe="")
+			)
 	if result["can_retry"]:
 		result["deliveries"] = [
 			{key: row.get(key) for key in ("recipient", "status", "attempts", "last_error")}

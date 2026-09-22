@@ -1,10 +1,12 @@
+from copy import deepcopy
 from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import patch
 
 import frappe
 
-from process_simplification.purchasing import allocation
+from process_simplification import management_access, page_refresh
+from process_simplification.purchasing import allocation, rejections
 
 
 def request_doc(name="MR-1", *, ordered_qty=0, received_qty=0, stock_qty=10, company="Company A"):
@@ -69,3 +71,49 @@ class TestPurchaseActionPages(TestCase):
 		with patch.object(frappe, "has_permission", side_effect=lambda dt, ptype, doc=None, **kw: doc is None or doc.name == "READABLE"), patch.object(frappe, "get_list", return_value=["HIDDEN", "READABLE"]), patch.object(frappe, "get_doc", side_effect=lambda dt, name: request_doc(name)), patch.object(query, "_user_matches_company", return_value=True):
 			result = allocation.get_request_page(company="Company A", view="to_order")
 		self.assertEqual([row["name"] for row in result["rows"]], ["READABLE"])
+
+
+class TestRejectionShortageIsolation(TestCase):
+	def setUp(self):
+		self.project = {"name": "PR-1", "company": "Company A", "can_return": True,
+			"return_drafts": [], "items": [{"item_code": "RM-1", "warehouse": "W1", "pending_return_qty": 100}]}
+		self.enterContext(patch.object(rejections, "_receipt", return_value=object()))
+		self.enterContext(patch.object(rejections, "project_receipt", side_effect=lambda doc: deepcopy(self.project)))
+		self.enterContext(patch.object(management_access, "user_has_capability", return_value=True))
+		self.enterContext(patch.object(frappe, "has_permission", return_value=True))
+
+	def test_shortage_failure_preserves_physical_return_action(self):
+		with patch.object(page_refresh, "company_shortages", side_effect=RuntimeError("source unavailable")), patch.object(frappe, "log_error") as log:
+			result = rejections.get_context("PR-1")
+		self.assertTrue(result["can_return"])
+		self.assertEqual(result["items"][0]["pending_return_qty"], 100)
+		self.assertFalse(result["can_check_shortage"])
+		self.assertFalse(result["can_purchase"])
+		self.assertEqual(result["shortage_rows"], [])
+		self.assertIn("仍可处理拒收退货", result["shortage_error"])
+		log.assert_called_once()
+
+	def test_shortage_permission_failure_does_not_enable_procurement(self):
+		with patch.object(page_refresh, "company_shortages", side_effect=frappe.PermissionError), patch.object(frappe, "log_error") as log:
+			result = rejections.get_context("PR-1")
+		self.assertTrue(result["can_return"])
+		self.assertFalse(result["can_purchase"])
+		self.assertFalse(result["can_check_shortage"])
+		self.assertIn("无权", result["shortage_error"])
+		log.assert_not_called()
+
+	def test_stale_shortage_snapshot_cannot_authorize_repurchase(self):
+		for marker in ("_refresh_pending", "_refresh_stale"):
+			with self.subTest(marker=marker), patch.object(page_refresh, "company_shortages", return_value={marker: True, "shortages": [{"item_code": "RM-1", "warehouse": "W1", "shortage_qty": 100}]}):
+				result = rejections.get_context("PR-1")
+				self.assertTrue(result["can_return"])
+				self.assertFalse(result["can_purchase"])
+				self.assertEqual(result["shortage_rows"], [])
+				self.assertIn("正在更新", result["shortage_error"])
+
+	def test_no_shortage_capability_does_not_call_shortage_service(self):
+		with patch.object(management_access, "user_has_capability", return_value=False), patch.object(page_refresh, "company_shortages") as query:
+			result = rejections.get_context("PR-1")
+		self.assertTrue(result["can_return"])
+		self.assertFalse(result["can_purchase"])
+		query.assert_not_called()

@@ -295,6 +295,7 @@ MANAGED_DOCUMENT_PERMISSIONS = {
 }
 
 PAGE_CAPABILITIES = {
+	"purchase-rejection-followup": CAPABILITY_WAREHOUSE_WORKBENCH,
 	"warehouse-workbench": CAPABILITY_WAREHOUSE_WORKBENCH,
 	"executive-dashboard": CAPABILITY_EXECUTIVE_DASHBOARD,
 	"quick-sales-order": CAPABILITY_SALES_ORDER,
@@ -311,6 +312,7 @@ PAGE_CAPABILITIES = {
 }
 
 NATIVE_PAGE_ROLES = {
+	"purchase-rejection-followup": {"Stock User", "Stock Manager", SYSTEM_MANAGER_ROLE},
 	"quick-sales-order": {"Sales User", "Manufacturing User", SYSTEM_MANAGER_ROLE},
 	"order-workbench": {"Sales User", "Manufacturing User", "Stock User", SYSTEM_MANAGER_ROLE},
 	"production-workbench": {"Manufacturing User", "Stock User", SYSTEM_MANAGER_ROLE},
