@@ -2973,7 +2973,8 @@ label.review-filter-field {
 	margin-left: auto;
 }
 
-.production-work-order-heading .production-work-order-action + .production-assignment-action {
+.production-work-order-heading .production-work-order-action + .production-assignment-action,
+.production-work-order-heading .production-work-order-action + .production-work-order-action {
 	margin-left: 0;
 }
 

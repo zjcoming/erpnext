@@ -94,6 +94,31 @@ function workOrderAssignmentActionMeta(
 	return historyAction;
 }
 
+function workOrderPriorityIssueActionMeta(workOrder = {}, translate = (message) => message) {
+	if (!workOrder.name || ["Completed", "Stopped", "Closed", "Cancelled"].includes(workOrder.status)
+		|| Number(workOrder.docstatus) === 2 || workOrder.skip_transfer
+		|| ["draft_pending", "requestable", "received"].includes(workOrder.receipt_state?.code)
+		|| !["partially_ready", "waiting_material", "partially_issued"].includes(workOrder.issue_state?.code)) {
+		return null;
+	}
+	const hasPriorityConflict = (workOrder.required_items || []).some((item) =>
+		(item.allocation_conflict?.sources || []).some((source) =>
+			source.source_type === "priority_allocation" && Number(source.impact_qty || 0) > 0
+		)
+	);
+	if (!hasPriorityConflict) return null;
+	const hasReturnGap = (workOrder.required_items || []).some(
+		(item) => Number(item.returned_qty || 0) > 0 && Number(item.remaining_issue_qty || 0) > 0
+	);
+	return {
+		label: translate(hasReturnGap ? "调整优先级并申请补发" : "调整优先级并申请发料"),
+		action: "request_material_issue_override",
+		primary: false,
+		allowPartial: true,
+		overridePriority: true,
+	};
+}
+
 function workOrderNextActionMeta(workOrder = {}, translate = (message) => message) {
 	const terminalStatuses = new Set(["Completed", "Stopped", "Closed", "Cancelled"]);
 	if (!workOrder.name || terminalStatuses.has(workOrder.status) || Number(workOrder.docstatus) === 2) {
@@ -114,7 +139,7 @@ function workOrderNextActionMeta(workOrder = {}, translate = (message) => messag
 		const partialQty = Number(issue.additional_issueable_qty || 0);
 		if (partialQty <= 0) return null;
 		return {
-			label: translate("申请部分发料"),
+			label: translate(workOrderPriorityIssueActionMeta(workOrder) ? "按建议申请部分发料" : "申请部分发料"),
 			action: "request_material_issue",
 			primary: true,
 			allowPartial: true,
@@ -124,26 +149,8 @@ function workOrderNextActionMeta(workOrder = {}, translate = (message) => messag
 	if (issue.code === "ready" || (!issue.code && workOrder.readiness_status === "ready_now")) {
 		return { label: translate("申请发料"), action: "request_material_issue", primary: true };
 	}
-	const priorityAllocationConflicts = (workOrder.required_items || []).flatMap(
-		(item) => (item.allocation_conflict?.sources || []).filter(
-			(source) => source.source_type === "priority_allocation"
-		)
-	);
-	if (
-		new Set(["waiting_material", "partially_issued"]).has(issue.code)
-		&& priorityAllocationConflicts.length
-	) {
-		const hasReturnGap = (workOrder.required_items || []).some(
-			(item) => Number(item.returned_qty || 0) > 0 && Number(item.remaining_issue_qty || 0) > 0
-		);
-		return {
-			label: translate(hasReturnGap ? "调整优先级并申请补发" : "调整优先级并申请发料"),
-			action: "request_material_issue_override",
-			primary: false,
-			allowPartial: true,
-			overridePriority: true,
-		};
-	}
+	const priorityAction = workOrderPriorityIssueActionMeta(workOrder, translate);
+	if (priorityAction) return priorityAction;
 	const replenishmentItem = (workOrder.required_items || []).find(
 		(item) => item.replenishment_required && item.name
 	);
@@ -163,11 +170,11 @@ function workOrderActionConfirmation(action, workOrder = {}, translate = (messag
 		return translate("确认发起完工入库申请？本操作只创建入库待办，库存将在库房提交入库单后增加。");
 	}
 	if (action === "request_material_issue_override") {
-		return translate("当前物料已按交期优先分配给其他工单。继续会改变原分配并可能使高优先级工单缺料；硬预留仍不会被抢用。确认继续申请发料？");
+		return translate("确认优先为本工单申请当前可锁定的用料？这会调整按交期的建议分配，可能使其他工单缺料；已正式预留给其他单据的库存不会被占用。申请成功后正式预留本次用料，库房提交发料单后再扣库存。");
 	}
 	if (action === "request_material_issue") {
 		if (workOrder.issue_state?.code === "partially_ready") {
-			return translate("当前只能部分发料。确认创建部分发料待办？剩余缺料未补齐前不会允许正式派工。");
+			return translate("确认按建议数量申请部分发料？申请成功后正式预留本次用料，剩余缺料未补齐前不会允许正式派工。");
 		}
 		return translate("确认发起生产发料申请？提交前会重新检查实际库存和硬预留；库房完成发料前不会通知工人开工。");
 	}
@@ -178,6 +185,17 @@ function workOrderActionConfirmation(action, workOrder = {}, translate = (messag
 		return translate("确认撤回该库存申请？草稿会删除，关联的硬预留会立即释放；如仍需处理，必须重新发起申请。");
 	}
 	return "";
+}
+
+function workOrderPriorityIssueConfirmationHtml(workOrder, helpers) {
+	const t = helpers.translate;
+	const esc = helpers.escapeHtml;
+	const impacts = (workOrder.required_items || []).flatMap((item) =>
+		(item.allocation_conflict?.sources || [])
+			.filter((source) => source.source_type === "priority_allocation" && Number(source.impact_qty || 0) > 0)
+			.map((source) => `<li><strong>${esc(source.work_order || source.sales_order || t("其他工单"))}</strong>${source.delivery_date ? ` · ${esc(t("交期"))} ${esc(source.delivery_date)}` : ""}<br>${esc(item.item_name || item.item_code || "")} · ${esc(t("建议分配可能减少，最多"))} ${helpers.formatNumber(source.impact_qty)} ${esc(t(item.stock_uom || ""))}</li>`)
+	);
+	return `<p>${esc(workOrderActionConfirmation("request_material_issue_override", workOrder, t))}</p>${impacts.length ? `<p>${esc(t("可能受影响的工单"))}：</p><ul>${impacts.join("")}</ul>` : ""}<p class="text-muted">${esc(t("实际申请量以提交时的库存和预留复核为准；若只能覆盖部分用料，将创建部分发料申请。"))}</p>`;
 }
 
 function productionStatusMeta(status) {
@@ -471,7 +489,7 @@ function workOrderDirectMaterialsHtml(workOrder, helpers, hasProductionPlan) {
 				? `<button type="button" class="btn btn-xs btn-default production-work-order-action" data-action="create_replenishment" data-work-order="${esc(workOrder.name || "")}" data-work-order-item="${esc(item.name)}">${esc(t(hasPriorityAllocation ? "保留优先分配并生成补产任务" : "生成补产任务"))}</button>`
 				: "";
 			const allocationWarning = allocationSources.length
-				? `<div class="text-danger production-allocation-warning">${esc(t("优先分配影响"))}: ${allocationSources.map((source) => `${esc(source.work_order || source.sales_order || t("其他工单"))} ${number(source.impact_qty || 0)}`).join("、")}</div>`
+				? `<div class="text-danger production-allocation-warning">${esc(t("优先分配影响"))}: ${allocationSources.map((source) => `${esc(source.work_order || source.sales_order || t("其他工单"))} ${number(source.impact_qty || 0)} ${esc(t(item.stock_uom || ""))}`).join("、")}<br><span class="text-muted">${esc(t("按交期的建议安排，尚未预留部分可调整。"))}</span></div>`
 				: "";
 			return `<div class="production-work-order-material-row">
 				<div class="production-work-order-material-name">${productionWorkbenchItemIdentity.itemIdentityHtml(
@@ -480,11 +498,11 @@ function workOrderDirectMaterialsHtml(workOrder, helpers, hasProductionPlan) {
 					{ translate: t, escapeHtml: esc },
 					{ linkToItem: true }
 				)}</div>
-				<div data-label="${esc(t("需求"))}">${number(item.original_required_qty ?? item.required_qty)} ${esc(item.stock_uom || "")}</div>
+				<div data-label="${esc(t("需求"))}">${number(item.original_required_qty ?? item.required_qty)} ${esc(t(item.stock_uom || ""))}<br><small class="text-muted">${esc(t("待备料"))} ${number(item.required_qty)}</small></div>
 				<div data-label="${esc(completedLabel)}">${number(completedQty)}</div>
-				<div data-label="${esc(t("待备料"))}">${number(item.required_qty)}</div>
-				<div data-label="${esc(t("本次可用"))}">${number(item.available_qty)}<br><small class="text-muted">${esc(t("其中已预留"))} ${number(item.effective_reserved_qty || 0)}</small></div>
-				<div data-label="${esc(t("即时缺口"))}">${number(item.current_gap_qty)}</div>
+				<div data-label="${esc(t("仓库现存"))}">${item.actual_qty == null ? "—" : number(item.actual_qty)}<br><small class="text-muted">${esc(t("含已预留库存"))}</small></div>
+				<div data-label="${esc(t("按交期建议分配"))}">${number(item.available_qty)}<br><small class="text-muted">${esc(t("本单已预留"))} ${number(item.effective_reserved_qty || 0)}</small></div>
+				<div data-label="${esc(t("按建议仍缺"))}">${number(item.current_gap_qty)}</div>
 				<div data-label="${esc(t("供应方式"))}">${supply}${isManufactured && item.linked_pending_output_qty != null ? `<br><small class="text-muted">${esc(t("关联工单待入库"))} ${number(item.linked_pending_output_qty)} · ${esc(t("未覆盖缺口"))} ${number(item.uncovered_supply_qty || 0)}</small>` : ""}</div>
 				<div data-label="${esc(t("状态"))}"><span class="indicator-pill ${esc(status.indicator)}">${esc(status.label)}</span>${allocationWarning}${replenishmentAction}${supplyTasks}</div>
 			</div>`;
@@ -561,6 +579,10 @@ function workOrderCardHtml(workOrder, sequence, helpers, hasProductionPlan, expa
 	const nextAction = canRunNextAction && nextActionMeta
 		? `<button type="button" class="btn btn-xs ${nextActionMeta.primary ? "btn-primary" : "btn-default"} production-work-order-action" data-action="${esc(nextActionMeta.action)}" data-work-order="${esc(workOrder.name || "")}" data-work-order-item="${esc(nextActionMeta.workOrderItem || "")}" data-document="${esc(nextActionMeta.document || "")}" data-allow-partial="${nextActionMeta.allowPartial ? "1" : "0"}" data-override-priority="${nextActionMeta.overridePriority ? "1" : "0"}" data-qty="${esc(nextActionMeta.qty || "")}">${esc(nextActionMeta.label)}</button>`
 		: "";
+	const priorityActionMeta = workOrderPriorityIssueActionMeta(workOrder, t);
+	const priorityAction = helpers.canManageAssignments && priorityActionMeta && nextActionMeta?.action !== priorityActionMeta.action
+		? `<button type="button" class="btn btn-xs btn-default production-work-order-action" data-action="${esc(priorityActionMeta.action)}" data-work-order="${esc(workOrder.name)}" data-allow-partial="1" data-override-priority="1">${esc(priorityActionMeta.label)}</button>`
+		: "";
 	const withdrawalAction = helpers.canManageAssignments && nextActionMeta?.withdrawalDocument
 		? `<button type="button" class="btn btn-xs btn-default production-work-order-action" data-action="withdraw_stock_request" data-work-order="${esc(workOrder.name || "")}" data-document="${esc(nextActionMeta.withdrawalDocument)}">${esc(t("撤回申请"))}</button>`
 		: "";
@@ -574,7 +596,7 @@ function workOrderCardHtml(workOrder, sequence, helpers, hasProductionPlan, expa
 		.join("");
 	return `<details class="production-work-order-card" data-work-order-card="${esc(workOrder.name || "")}"${expanded ? " open" : ""}>
 		<summary>
-			<div class="production-work-order-heading"><span class="production-work-order-sequence">${esc(t("第"))} ${sequence} ${esc(t("步"))}</span><a href="/app/work-order/${encodeURIComponent(workOrder.name || "")}"><strong>${esc(workOrder.name || "")}</strong></a><span class="indicator-pill ${esc(readiness.indicator)}">${esc(readiness.label)}</span>${stateBadges}${nextAction}${withdrawalAction}${assignmentAction}</div>
+			<div class="production-work-order-heading"><span class="production-work-order-sequence">${esc(t("第"))} ${sequence} ${esc(t("步"))}</span><a href="/app/work-order/${encodeURIComponent(workOrder.name || "")}"><strong>${esc(workOrder.name || "")}</strong></a><span class="indicator-pill ${esc(readiness.indicator)}">${esc(readiness.label)}</span>${stateBadges}${nextAction}${priorityAction}${withdrawalAction}${assignmentAction}</div>
 			<strong class="production-work-order-product">${esc(workOrder.production_item_name || workOrder.production_item || "")}</strong>
 		</summary>
 		<div class="production-work-order-summary">
@@ -856,7 +878,9 @@ const productionWorkbenchApi = {
 	workOrderIssueMeta,
 	workOrderAssignmentActionMeta,
 	workOrderNextActionMeta,
+	workOrderPriorityIssueActionMeta,
 	workOrderActionConfirmation,
+	workOrderPriorityIssueConfirmationHtml,
 	productionStatusMeta,
 	productionSummary,
 	aggregatePurchasedMaterials,
@@ -1097,7 +1121,9 @@ if (typeof frappe !== "undefined") {
 			const target = (state.data.demands || [])
 				.flatMap((demand) => demand.work_orders || [])
 				.find((row) => row.name === workOrder) || {};
-			const message = workOrderActionConfirmation(action, target, __);
+			const message = action === "request_material_issue_override"
+				? workOrderPriorityIssueConfirmationHtml(target, helpers())
+				: workOrderActionConfirmation(action, target, __);
 			frappe.confirm(message, () => {
 				frappe.call({
 					method: methods[action],

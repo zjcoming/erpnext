@@ -13,7 +13,7 @@ web_include_css = ["/assets/process_simplification/css/hengsuan_branding.css?v=3
 required_apps = ["erpnext"]
 
 app_include_css = [
-	"/assets/process_simplification/css/process_simplification.css?v=20",
+	"/assets/process_simplification/css/process_simplification.css?v=21",
 	"/assets/process_simplification/css/process_ui.css?v=14",
 	"/assets/process_simplification/css/executive_dashboard.css?v=2",
 	"/assets/process_simplification/css/purchasing.css?v=6",

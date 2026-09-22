@@ -315,7 +315,7 @@ test("stock-only coverage displays reservation and does not claim a missing chil
 	}];
 	const html = productionWorkbench.productionDemandHtml(row, helpers);
 	assert.match(html, /库存覆盖，无需下级工单/);
-	assert.match(html, /其中已预留.*10\.00/);
+	assert.match(html, /本单已预留.*10\.00/);
 	assert.doesNotMatch(html, /缺少下级工单/);
 });
 
@@ -595,7 +595,7 @@ test("workflow confirmations explain when inventory and worker notifications cha
 	);
 	assert.match(
 		productionWorkbench.workOrderActionConfirmation("request_material_issue_override", {}, helpers.translate),
-		/硬预留仍不会被抢用/
+		/已正式预留给其他单据的库存不会被占用/
 	);
 	assert.match(
 		productionWorkbench.workOrderActionConfirmation("withdraw_stock_request", {}, helpers.translate),
@@ -643,6 +643,78 @@ test("returned material allocated to an urgent order exposes reissue and repleni
 	assert.match(html, />调整优先级并申请补发<\/button>/);
 	assert.match(html, /data-action="create_replenishment"/);
 	assert.match(html, />保留优先分配并生成补产任务<\/button>/);
+});
+
+function partiallyAllocatedWorkOrder() {
+	return {
+		name: "MFG-WO-2026-00024", status: "Not Started", docstatus: 1, qty: 100,
+		readiness_status: "purchase_shortage", can_dispatch: false,
+		issue_state: { code: "partially_ready", additional_issueable_qty: 70 },
+		required_items: [{
+			item_code: "204001002", item_name: "PA6 30%", stock_uom: "Gram",
+			original_required_qty: 1000, required_qty: 1000, remaining_issue_qty: 1000,
+			actual_qty: 1000, available_qty: 700, effective_reserved_qty: 0,
+			current_gap_qty: 300, status: "new_purchase_required", supply_type: "purchased",
+			allocation_conflict: { sources: [{
+				source_type: "priority_allocation", work_order: "MFG-WO-2026-00012",
+				delivery_date: "2026-09-25", impact_qty: 300,
+			}] },
+		}],
+	};
+}
+
+test("partial allocation keeps the recommended request and also exposes the existing priority override", () => {
+	const workOrder = partiallyAllocatedWorkOrder();
+	const row = demand("PARTIAL-ALLOCATION", { work_orders: [workOrder] });
+	const html = productionWorkbench.productionDemandHtml(row, { ...helpers, canManageAssignments: true });
+	assert.deepEqual(productionWorkbench.workOrderNextActionMeta(workOrder), {
+		label: "按建议申请部分发料", action: "request_material_issue", primary: true,
+		allowPartial: true, qty: 70,
+	});
+	assert.match(html, /data-action="request_material_issue"[^>]*data-override-priority="0"[^>]*data-qty="70"/);
+	assert.match(html, /data-action="request_material_issue_override"[^>]*data-allow-partial="1"[^>]*data-override-priority="1"/);
+	assert.match(html, />调整优先级并申请发料<\/button>/);
+	assert.doesNotMatch(html, /production-assignment-action/);
+	assert.match(html, /data-label="仓库现存">1000\.00/);
+	assert.match(html, /data-label="按交期建议分配">700\.00/);
+	assert.match(html, /本单已预留.*0\.00/);
+	assert.match(html, /data-label="按建议仍缺">300\.00/);
+	assert.doesNotMatch(html, /data-label="本次可用"/);
+	const readOnlyHtml = productionWorkbench.productionDemandHtml(row, { ...helpers, canReadStockEntries: true });
+	assert.doesNotMatch(readOnlyHtml, /data-action="request_material_issue(?:_override)?"/);
+});
+
+test("priority adjustment is unavailable for hard reservations alone, terminal work, or pending requests", () => {
+	for (const overrides of [
+		{ status: "Completed" }, { status: "Stopped" }, { status: "Closed" }, { status: "Cancelled" },
+		{ docstatus: 2 }, { skip_transfer: 1 },
+		{ issue_state: { code: "draft_pending", draft_entry: { name: "STE-1" } } },
+		{ issue_state: { code: "issued" } },
+		{ receipt_state: { code: "requestable" } },
+		{ receipt_state: { code: "draft_pending" } },
+		{ required_items: [{ allocation_conflict: { hard_reserved_impact_qty: 300, sources: [] } }] },
+	]) {
+		const workOrder = { ...partiallyAllocatedWorkOrder(), ...overrides };
+		assert.equal(productionWorkbench.workOrderPriorityIssueActionMeta(workOrder), null, JSON.stringify(overrides));
+		const html = productionWorkbench.productionDemandHtml(demand("BLOCKED", { work_orders: [workOrder] }), {
+			...helpers, canManageAssignments: true,
+		});
+		assert.doesNotMatch(html, /data-action="request_material_issue_override"/);
+	}
+});
+
+test("priority confirmation names the affected material and work order without treating suggestions as reservations", () => {
+	const workOrder = partiallyAllocatedWorkOrder();
+	const html = productionWorkbench.workOrderPriorityIssueConfirmationHtml(workOrder, helpers);
+	for (const text of ["MFG-WO-2026-00012", "2026-09-25", "PA6 30%", "300.00 Gram", "最多", "正式预留", "库房提交发料单", "提交时的库存和预留复核"]) {
+		assert.ok(html.includes(text), text);
+	}
+	workOrder.required_items[0].item_name = '<img src=x onerror="alert(1)">';
+	workOrder.required_items[0].allocation_conflict.sources[0].work_order = '<script>alert(1)</script>';
+	const escaped = productionWorkbench.workOrderPriorityIssueConfirmationHtml(workOrder, helpers);
+	assert.match(escaped, /&lt;img/);
+	assert.match(escaped, /&lt;script/);
+	assert.doesNotMatch(escaped, /<img|<script/);
 });
 
 test("terminal, blocked, missing-task, unknown, and legacy Work Orders expose no assignment action", () => {
