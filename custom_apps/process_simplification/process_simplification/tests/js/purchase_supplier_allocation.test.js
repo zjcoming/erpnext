@@ -2,6 +2,15 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { allocationStockTotal } = require("../../process_simplification/page/purchase_supplier_allocation/purchase_supplier_allocation.js");
 
+test("warehouse followup links preserve company and actionable scope on navigation and reload", () => {
+	const { purchaseListScope, purchaseListRoute } = require("../../process_simplification/page/purchase_supplier_allocation/purchase_supplier_allocation.js");
+	const link = purchaseListRoute("工厂 A & B", "to_order");
+	assert.deepEqual(purchaseListScope({}, link.split("?")[1]), { company: "工厂 A & B", view: "to_order" });
+	assert.deepEqual(purchaseListScope({ company: "Company B", view: "history" }, "?company=Company+A&view=to_order"), { company: "Company B", view: "history" });
+	assert.deepEqual(purchaseListScope({}, "?view=unknown"), { company: "", view: "pending" });
+	assert.equal(purchaseListRoute("", "pending"), "/desk/purchase-supplier-allocation");
+});
+
 test("mixed supplier purchase units are compared in the request stock unit", () => {
 	const item = { stock_uom: "Nos", uoms: [{ uom: "Box", conversion_factor: 10 }] };
 	assert.equal(allocationStockTotal(item, [{ uom: "Box", qty: 6 }, { uom: "Nos", qty: 40 }]), 100);

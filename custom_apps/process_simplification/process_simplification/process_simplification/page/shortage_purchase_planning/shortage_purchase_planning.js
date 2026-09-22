@@ -241,7 +241,7 @@ frappe.pages["shortage-purchase-planning"].on_page_load = function (wrapper) {
 	});
 
 	page.main.html(shortagePageHtml({ translate: __, escapeHtml: frappe.utils.escape_html }));
-	page.add_inner_button(__("已建采购申请／采购跟进"), () => frappe.set_route("purchase-supplier-allocation"));
+	page.add_inner_button(__("已建采购申请／采购跟进"), () => frappe.set_route("purchase-supplier-allocation", state.company ? { company: state.company } : {}));
 	page.add_inner_button(__("到货通知记录"), () => frappe.set_route("purchase-receipt-notice"));
 	const $root = page.main.find(".shortage-purchase-planning");
 	const canCreate = canCreateMaterialRequest(frappe.model);
@@ -251,7 +251,10 @@ frappe.pages["shortage-purchase-planning"].on_page_load = function (wrapper) {
 		search: "",
 		loading: false,
 		loaded: false,
+		company: "",
+		generation: 0,
 	};
+	$('<p class="text-muted shortage-company-scope" hidden></p>').appendTo($root.find(".shortage-hero > div"));
 
 	const scheduleDateField = frappe.ui.form.make_control({
 		parent: $root.find('[data-field="schedule_date"]'),
@@ -341,7 +344,8 @@ frappe.pages["shortage-purchase-planning"].on_page_load = function (wrapper) {
 
 	page.shortage_refresh = loadAllShortages;
 	function loadAllShortages(options = {}) {
-		if (state.loading) return Promise.resolve(false);
+		if (options.background && state.loading) return Promise.resolve(false);
+		const generation = ++state.generation;
 		state.loading = true;
 		if (!options.background) {
 			state.loaded = false;
@@ -352,6 +356,7 @@ frappe.pages["shortage-purchase-planning"].on_page_load = function (wrapper) {
 		$root.find('[data-action="refresh"]').prop("disabled", true);
 		return frappe.ps_read_page(page, {
 			method: "process_simplification.page_refresh.company_shortages",
+			args: { company: state.company || null },
 			background: options.background,
 			apply(response) {
 			state.rows = preparePurchaseRows((response && response.message && response.message.shortages) || []);
@@ -362,6 +367,7 @@ frappe.pages["shortage-purchase-planning"].on_page_load = function (wrapper) {
 			renderRows();
 			},
 		}).catch((error) => {
+			if (generation !== state.generation) return;
 			state.loading = false;
 			$root.find('[data-action="refresh"]').prop("disabled", false);
 			if (options.background) throw error;
@@ -369,7 +375,11 @@ frappe.pages["shortage-purchase-planning"].on_page_load = function (wrapper) {
 			$root.find(".shortage-table-wrap").hide();
 			renderStatus("error", error && (error.message || error.exc));
 			renderSummary();
-		}).finally(() => { state.loading = false; $root.find('[data-action="refresh"]').prop("disabled", false); });
+		}).finally(() => {
+			if (generation !== state.generation) return;
+			state.loading = false;
+			$root.find('[data-action="refresh"]').prop("disabled", false);
+		});
 	}
 
 	function createMaterialRequest() {
@@ -430,9 +440,27 @@ frappe.pages["shortage-purchase-planning"].on_page_load = function (wrapper) {
 	});
 	$root.on("click", '[data-action="refresh"]', loadAllShortages);
 
-	wrapper.shortage_purchase_planning = { state, loadAllShortages };
+	wrapper.shortage_purchase_planning = { state, loadAllShortages, show() {
+		const company = frappe.route_options?.company || new URLSearchParams(window.location.search).get("company") || "";
+		const companyChanged = company !== state.company;
+		if (companyChanged) {
+			state.search = "";
+			$root.find(".shortage-search").val("");
+		}
+		state.company = company;
+		if (frappe.route_options) delete frappe.route_options.company;
+		const query = new URLSearchParams();
+		if (state.company) query.set("company", state.company);
+		window.history.replaceState(window.history.state, "", "/desk/shortage-purchase-planning" + (query.size ? "?" + query : ""));
+		$root.find(".shortage-company-scope").text("公司：" + state.company).prop("hidden", !state.company);
+		// Returning to the same company must preserve quantities and selections.
+		// The shared refresh controller checks versions and protects edited inputs.
+		if (!companyChanged && state.loaded) return Promise.resolve(false);
+		return loadAllShortages();
+	} };
 	renderSummary();
-	loadAllShortages();
 };
+
+frappe.pages["shortage-purchase-planning"].on_page_show = (wrapper) => wrapper.shortage_purchase_planning.show();
 
 }

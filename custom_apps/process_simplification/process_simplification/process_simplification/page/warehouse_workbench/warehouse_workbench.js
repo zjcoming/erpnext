@@ -41,7 +41,56 @@ function warehouseDocumentHtml(row, queue, esc, number) {
 		'</p>' + openAction + '<ul class="warehouse-items">' + items.slice(0, 3).join("") + '</ul>' + detail + '</article>';
 }
 
-if (typeof module !== "undefined" && module.exports) module.exports = { warehouseDocumentHtml, warehouseBatchHtml, warehouseBatchNavigationHtml };
+function warehouseActionSummaryHtml(model, esc, number) {
+	if (model?.groups) {
+		const active = model.groups.filter((group) => (group.actions || []).some((action) =>
+			action.status !== "unavailable" && (action.status !== "ready" || action.has_pending || action._refresh_stale)));
+		if (!active.length) return warehouseActionSummaryHtml({ actions: model.groups.flatMap((group) => group.actions || []) }, esc, number);
+		return active.map((group) => '<section class="warehouse-company-actions"><h2>' + esc(group.company) + '</h2>' +
+			warehouseActionSummaryHtml(group, esc, number) + '</section>').join("");
+	}
+	const definitions = {
+		shortage: { title: "缺料待处理", route: "shortage-purchase-planning", action: "查看缺料并处理",
+			hint: "核对当前缺口并安排采购，已由库存或采购覆盖的数量会自动扣除。" },
+		purchase_followup: { title: "采购申请待跟进", route: "purchase-supplier-allocation", action: "继续采购跟进",
+			hint: "继续分配供应商，或跟进采购单提交。已下单部分可在“采购待收货”中处理。" },
+	};
+	const actions = (model?.actions || []).filter((action) => definitions[action.key] && action.status !== "unavailable");
+	if (!actions.length) return "";
+	const cards = actions.map((action) => {
+		const definition = definitions[action.key];
+		if (action.status !== "ready" || action._refresh_stale) {
+			const message = action.status === "pending" || action._refresh_stale ? "正在核对最新数据…" : "读取失败，请点击刷新重试。";
+			return '<article class="warehouse-action-card is-unresolved"><h3>' + definition.title + '</h3><p>' + message + '</p></article>';
+		}
+		if (!action.has_pending) return "";
+		const query = new URLSearchParams();
+		if (model.company) query.set("company", model.company);
+		if (action.key === "purchase_followup") query.set("view", "to_order");
+		const href = "/desk/" + definition.route + (query.size ? "?" + query.toString() : "");
+		const count = action.key === "shortage" ? number(action.material_count) + " 项物料" : number(action.request_count) + " 张申请";
+		const orders = action.key === "shortage" && action.sales_order_count > 0 ? " · 涉及 " + number(action.sales_order_count) + " 张销售订单" : "";
+		return '<article class="warehouse-action-card"><div><h3>' + definition.title + '</h3><p class="warehouse-action-count"><strong>' +
+			esc(count) + '</strong>' + esc(orders) + '</p><p class="warehouse-action-hint">' + definition.hint + '</p></div>' +
+			'<a class="btn btn-primary" href="' + esc(href) + '">' + definition.action + '</a></article>';
+	}).filter(Boolean).join("");
+	const clear = new Set(actions.map((action) => action.key)).size === 2 ? "当前没有缺料或待下单事项。" :
+		(actions[0].key === "shortage" ? "当前没有缺料待处理。" : "当前没有采购申请待下单 / 确认。");
+	return cards ? '<section class="warehouse-action-summary" aria-label="采购待办">' + cards + '</section>' :
+		'<p class="warehouse-actions-clear">' + clear + '</p>';
+}
+
+function warehouseWorkbenchRequests(state) {
+	return {
+		workbench: { method: "process_simplification.api.warehouse.get_workbench",
+			args: { company: state.company, queue: state.queue, search: state.search, start: state.cursors.at(-1) } },
+		actions: { method: "process_simplification.api.warehouse.get_action_summary", args: { company: state.company } },
+	};
+}
+
+if (typeof module !== "undefined" && module.exports) module.exports = {
+	warehouseDocumentHtml, warehouseBatchHtml, warehouseBatchNavigationHtml, warehouseActionSummaryHtml, warehouseWorkbenchRequests,
+};
 
 if (typeof frappe !== "undefined") {
 	frappe.pages["warehouse-workbench"].on_page_load = function (wrapper) {
@@ -53,9 +102,11 @@ if (typeof frappe !== "undefined") {
 				'<nav class="warehouse-shortcuts" aria-label="库存查询与记录"></nav>' +
 				'<div class="warehouse-batch-navigation"></div>' +
 			'<div class="warehouse-filters"><div><label for="warehouse-company">公司</label>' +
-			'<select id="warehouse-company" class="form-control"><option value="">全部可访问公司</option></select></div>' +
-			'<div><label for="warehouse-search">查找待办</label><input id="warehouse-search" class="form-control" ' +
-			'placeholder="单号、物料、供应商或客户" type="search"></div></div>' +
+				'<select id="warehouse-company" class="form-control"><option value="">全部可访问公司</option></select></div>' +
+				'<div><label for="warehouse-search">查找库存单据</label><input id="warehouse-search" class="form-control" ' +
+				'placeholder="单号、物料、供应商或客户" type="search"></div></div>' +
+			'<div class="warehouse-preparation" aria-live="polite"></div>' +
+			'<h2 class="warehouse-queue-heading">库存单据待办</h2>' +
 			'<nav class="warehouse-queues" aria-label="库房待办类型"></nav>' +
 			'<div class="warehouse-results" aria-live="polite"></div><div class="warehouse-pagination"></div></div>').appendTo(page.main);
 		const state = { company: "", companies: [], queue: null, search: "", cursors: [0], next: null, generation: 0 };
@@ -86,16 +137,17 @@ if (typeof frappe !== "undefined") {
 			root.attr("aria-busy", "true");
 			root.find(".warehouse-shortcuts button").prop("disabled", true);
 			if (!options.background) {
+				root.find(".warehouse-preparation").html('<p class="text-muted">正在核对采购待办…</p>');
 				root.find(".warehouse-results").html('<p class="text-muted warehouse-empty">正在读取库房待办…</p>');
 				root.find(".warehouse-pagination").empty();
 			}
 			try {
 				return await frappe.ps_read_page(page, {
-					method: "process_simplification.api.warehouse.get_workbench",
+					requests: warehouseWorkbenchRequests(state),
 					background: options.background,
-					args: { company: state.company, queue: state.queue, search: state.search, start: state.cursors.at(-1) },
 					apply(response) {
-					const model = response.message;
+					const model = response.message.workbench;
+					root.find(".warehouse-preparation").html(warehouseActionSummaryHtml(response.message.actions, esc, number));
 					root.find(".warehouse-batch-navigation").html(warehouseBatchNavigationHtml(model.batch_navigation, esc));
 				state.companies = model.companies;
 				if (model.companies.length === 1) state.company = model.companies[0];
@@ -126,8 +178,9 @@ if (typeof frappe !== "undefined") {
 					},
 				});
 			} catch (error) {
-				if (options.background) throw error;
 				if (generation !== state.generation) return;
+				root.find(".warehouse-preparation").html('<p class="warehouse-actions-error">采购待办未能更新，请点击刷新重试。</p>');
+				if (options.background) throw error;
 				root.find(".warehouse-results").html('<div class="warehouse-empty text-danger">待办读取失败，请检查权限或点击刷新重试。</div>');
 			} finally {
 				if (generation === state.generation) root.attr("aria-busy", "false");

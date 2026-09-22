@@ -95,6 +95,16 @@ class TestPageRefresh(TestCase):
 			after = refresh.versions_for("a", ["orders", "warehouse", "production", "purchase"])
 		self.assertTrue(all(before[topic] != after[topic] for topic in before))
 
+	def test_shortage_inputs_invalidate_warehouse_actions_without_notification_records(self):
+		for doctype in ("Sales Order", "Production Plan", "BOM", "Manufacturing Settings", "Purchase Allocation Batch"):
+			with self.subTest(doctype=doctype):
+				refresh.clear_changes()
+				before = refresh.versions_for("a", ["warehouse"])
+				refresh.document_changed(frappe._dict(doctype=doctype, name="PRIVATE-DOCUMENT", company="Factory A"))
+				self.assertIn(("company", "Factory A", "warehouse"), frappe.local.ps_page_changes)
+				refresh.flush_changes()
+				self.assertNotEqual(before, refresh.versions_for("a", ["warehouse"]))
+
 	def test_company_changes_do_not_invalidate_other_companies(self):
 		a = {**self.scope, "companies": ["Factory A"]}
 		b = {**self.scope, "companies": ["Factory B"]}

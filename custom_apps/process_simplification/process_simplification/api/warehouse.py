@@ -7,6 +7,7 @@ from frappe.utils import cint, flt, getdate, nowdate
 from process_simplification.api.utils import apply_current_item_names
 from process_simplification.batch_display import batch_navigation, document_batch_summary
 from process_simplification.management_access import (
+	CAPABILITY_SHORTAGE_PURCHASE,
 	CAPABILITY_WAREHOUSE_WORKBENCH,
 	user_company_scope,
 	user_has_capability,
@@ -52,6 +53,86 @@ def _companies(company=None):
 	if company and company not in companies:
 		frappe.throw(_("没有该公司的库房访问权限。"), frappe.PermissionError)
 	return companies
+
+
+def _shortage_action(companies):
+	from process_simplification.page_refresh import company_shortages
+
+	materials, orders = set(), set()
+	stale = False
+	for company in companies:
+		# Reuse the shortage page's permission-scoped snapshot and shared-supply
+		# calculation. Notification read state never represents business completion.
+		data = company_shortages(company=company)
+		if data.get("_refresh_pending"):
+			return {"status": "pending"}
+		stale = stale or bool(data.get("_refresh_stale"))
+		for row in data.get("shortages") or []:
+			if row.get("company") not in (None, "", company) or flt(row.get("shortage_qty")) <= 0:
+				continue
+			materials.add((company, row.get("item_code"), row.get("warehouse")))
+			orders.update(source["sales_order"] for source in row.get("sources") or [] if source.get("sales_order"))
+	result = {"status": "ready", "has_pending": bool(materials), "material_count": len(materials), "sales_order_count": len(orders)}
+	if stale:
+		result["_refresh_stale"] = True
+	return result
+
+
+def _purchase_followup_action(companies):
+	from process_simplification.purchasing.allocation import get_request_page
+
+	requests = set()
+	for company in companies:
+		start = 0
+		while start is not None:
+			data = get_request_page(company=company, view="to_order", start=start, page_length=50)
+			requests.update(row["name"] for row in data["rows"] if row.get("company") == company)
+			start = data["next_start"]
+	return {"status": "ready", "has_pending": bool(requests), "request_count": len(requests)}
+
+
+def _company_action_summary(company, can_purchase):
+	actions = []
+	for key, doctypes, callback in (
+		("shortage", ("Material Request", "Sales Order", "Work Order"), _shortage_action),
+		("purchase_followup", ("Material Request",), _purchase_followup_action),
+	):
+		action = {"key": key, "status": "unavailable"}
+		if can_purchase and all(frappe.has_permission(doctype, "read") for doctype in doctypes):
+			try:
+				action.update(callback([company]))
+			except frappe.PermissionError:
+				pass
+			except Exception:
+				action["status"] = "error"
+				frappe.log_error(title=f"Warehouse action summary: {key}")
+		actions.append(action)
+	result = {"company": company, "actions": actions}
+	if any(action.get("_refresh_stale") or action["status"] in {"pending", "error"} for action in actions):
+		# Let the shared loader display working sections and retry; a top-level
+		# _refresh_pending would suppress even unrelated stock document queues.
+		result["_refresh_stale"] = True
+	return result
+
+
+@frappe.whitelist()
+def get_action_summary(company=None):
+	"""Read next actions separately from stock-document queues; never create tasks.
+
+	Each section can fail without hiding the other or the standard document queues.
+	Unavailable/error/pending sections deliberately omit counts, so a failed read
+	can never appear as a confirmed zero or leak a hidden purchasing workload.
+	Company groups keep every action linked to the same scope as its target page.
+	"""
+	companies = _companies(company)
+	can_purchase = user_has_capability(CAPABILITY_SHORTAGE_PURCHASE)
+	groups = [_company_action_summary(name, can_purchase) for name in ([company] if company else companies)]
+	if len(groups) == 1:
+		return groups[0]
+	result = {"company": None, "groups": groups}
+	if any(group.get("_refresh_stale") for group in groups):
+		result["_refresh_stale"] = True
+	return result
 
 
 def _search_filters(doctype, search, item_codes=None):

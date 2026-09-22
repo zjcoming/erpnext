@@ -61,7 +61,21 @@ function purchaseFollowupHtml(orders, { esc, number }) {
 	}).join("");
 }
 
-if (typeof module !== "undefined" && module.exports) module.exports = { allocationStockTotal, purchaseOrderStage, purchaseOverview, supplierAllocationProgress, purchaseFollowupHtml };
+function purchaseListScope(options, search) {
+	const query = new URLSearchParams(search || "");
+	const view = options?.view || query.get("view") || "pending";
+	return { company: options?.company || query.get("company") || "",
+		view: ["to_order", "pending", "history", "all"].includes(view) ? view : "pending" };
+}
+
+function purchaseListRoute(company, view) {
+	const query = new URLSearchParams();
+	if (company) query.set("company", company);
+	if (view && view !== "pending") query.set("view", view);
+	return "/desk/purchase-supplier-allocation" + (query.size ? "?" + query : "");
+}
+
+if (typeof module !== "undefined" && module.exports) module.exports = { allocationStockTotal, purchaseOrderStage, purchaseOverview, supplierAllocationProgress, purchaseFollowupHtml, purchaseListScope, purchaseListRoute };
 
 if (typeof frappe !== "undefined") {
 frappe.pages["purchase-supplier-allocation"].on_page_load = function (wrapper) {
@@ -72,13 +86,29 @@ frappe.pages["purchase-supplier-allocation"].on_page_load = function (wrapper) {
 	const href = (doctype, name) => `/desk/${doctype}/${encodeURIComponent(name)}`;
 	const requestHref = (name) => `/desk/purchase-supplier-allocation?material_request=${encodeURIComponent(name)}`;
 	let model, selections, rows, requestKey, referenceOptions = {}, generation = 0;
-	const listState = { tab: "requests", view: "pending", search: "", overdue_only: false, start: 0, history: [] };
+	const listState = { tab: "requests", view: "pending", search: "", overdue_only: false, start: 0, history: [], company: "" };
 	const key = () => window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 	const call = async (method, args = {}, freeze = false) => (await frappe.call({ method: api + method, args, type: "POST", freeze })).message;
 	const field = (parent, label, fieldtype, value, change, options) => {
 		const holder = $('<div class="form-group">').appendTo(parent);
 		const id = "purchase-field-" + key();
 		$("<label>").attr("for", id).text(__(label)).appendTo(holder);
+		if (fieldtype === "Link" && options === "Supplier") {
+			// Frappe renders suggestions in the page; native datalist popups are
+			// not available in every embedded browser.
+			const control = frappe.ui.form.make_control({
+				parent: holder, only_input: true, render_input: true,
+				df: {
+					fieldname: id, fieldtype: "Link", options: "Supplier", label: __(label),
+					placeholder: __("点击选择或输入供应商名称"), only_select: true,
+					get_query: () => ({ filters: { disabled: 0 } }),
+					change() { requestKey = key(); change?.(this.get_value() || ""); },
+				},
+			});
+			control.$input.attr({ id, "aria-label": __(label) });
+			control.set_input(value || "");
+			return control;
+		}
 		let input;
 		if (fieldtype === "Select") {
 			input = $('<select class="form-control">');
@@ -225,13 +255,21 @@ frappe.pages["purchase-supplier-allocation"].on_page_load = function (wrapper) {
 	function renderRequests() {
 		page.main.html('<div class="process-simplification-page purchase-allocation"><header class="purchase-hero"><div><span class="purchase-eyebrow">采购执行台</span><h1>采购跟进</h1><p class="purchase-meta">选择采购申请，分配供应商并跟进每批到货。</p></div><a class="btn btn-default" href="/desk/shortage-purchase-planning">缺料采购</a></header><section class="purchase-section"><div class="purchase-section-heading"><h2>已建采购申请</h2><span class="purchase-request-count"></span></div><div class="purchase-request-search"></div><div class="purchase-request-list"></div></section></div>');
 		const labels = { Pending: "待下单", "Partially Ordered": "部分下单", Ordered: "已下单", "Partially Received": "部分到货", Received: "已到货", Transferred: "已转移", Issued: "已领用" };
+		if (listState.company) {
+			$('<p class="purchase-meta">').text("公司：" + listState.company).appendTo(page.main.find(".purchase-hero > div"));
+			page.main.find('.purchase-hero a[href="/desk/shortage-purchase-planning"]').attr("href", "/desk/shortage-purchase-planning?" + new URLSearchParams({ company: listState.company }));
+		}
 		const controls = page.main.find(".purchase-request-search").addClass("purchase-list-filters");
 		if (frappe.model.can_read("Purchase Order")) {
 			field(controls, "查看内容", "Select", listState.tab === "requests" ? "采购申请" : "供应商待收货", (value) => { listState.tab = value === "采购申请" ? "requests" : "suppliers"; listState.start = 0; listState.history = []; renderRequests(); }, "采购申请\n供应商待收货");
 		}
 		if (listState.tab === "requests") {
-			const views = { 待处理: "pending", 已处理历史: "history", 全部: "all" };
-			field(controls, "申请范围", "Select", Object.keys(views).find((key) => views[key] === listState.view), (value) => { listState.view = views[value]; reload(); }, Object.keys(views).join("\n"));
+			const views = { "待下单 / 确认": "to_order", 待处理: "pending", 已处理历史: "history", 全部: "all" };
+			field(controls, "申请范围", "Select", Object.keys(views).find((key) => views[key] === listState.view), (value) => {
+				listState.view = views[value];
+				window.history.replaceState(window.history.state, "", purchaseListRoute(listState.company, listState.view));
+				reload();
+			}, Object.keys(views).join("\n"));
 		} else {
 			field(controls, "到货范围", "Select", listState.overdue_only ? "仅逾期" : "全部待收", (value) => { listState.overdue_only = value === "仅逾期"; reload(); }, "全部待收\n仅逾期");
 		}
@@ -250,7 +288,7 @@ frappe.pages["purchase-supplier-allocation"].on_page_load = function (wrapper) {
 			try {
 				return await frappe.ps_read_page(page, {
 					method: api + (listState.tab === "requests" ? "get_request_page" : "get_supplier_followup"),
-					args: { start: listState.start, page_length: 20, search: listState.search, ...(listState.tab === "requests" ? { view: listState.view } : { overdue_only: Number(listState.overdue_only) }) },
+					args: { start: listState.start, page_length: 20, search: listState.search, company: listState.company || null, ...(listState.tab === "requests" ? { view: listState.view } : { overdue_only: Number(listState.overdue_only) }) },
 					background: options.background,
 					apply: ({ message: result }) => {
 				if (!controls.get(0).isConnected) return false;
@@ -274,7 +312,20 @@ frappe.pages["purchase-supplier-allocation"].on_page_load = function (wrapper) {
 	async function load() {
 		const route = frappe.get_route();
 		if (route[1]) return frappe.set_route("purchase-supplier-allocation", { material_request: route[1] });
-		const request = frappe.route_options?.material_request || new URLSearchParams(window.location.search).get("material_request");
+		const query = new URLSearchParams(window.location.search);
+		const request = frappe.route_options?.material_request || query.get("material_request");
+		if (!request) {
+			model = null;
+			const { company, view } = purchaseListScope(frappe.route_options, window.location.search);
+			if (company !== listState.company || view !== listState.view) {
+				Object.assign(listState, { company, view, start: 0, history: [], search: "", tab: "requests" });
+			}
+			window.history.replaceState(window.history.state, "", purchaseListRoute(company, view));
+		}
+		if (frappe.route_options) {
+			delete frappe.route_options.company;
+			delete frappe.route_options.view;
+		}
 		page.purchase_refresh = request ? load : null;
 		page.ps_refresh?.configure({ manual: Boolean(request), protectInputs: Boolean(request) });
 		page.ps_refresh?.resetDirty();
@@ -305,7 +356,7 @@ frappe.pages["purchase-supplier-allocation"].on_page_load = function (wrapper) {
 		frappe.model.open_mapped_doc({ method: "erpnext.buying.doctype.purchase_order.purchase_order.make_purchase_receipt", source_name: event.currentTarget.dataset.receivePurchaseOrder });
 	});
 	page.add_inner_button(__("采购申请列表"), () => frappe.set_route("purchase-supplier-allocation"));
-	page.add_inner_button(__("缺料采购"), () => frappe.set_route("shortage-purchase-planning"));
+	page.add_inner_button(__("缺料采购"), () => frappe.set_route("shortage-purchase-planning", (model?.company || listState.company) ? { company: model?.company || listState.company } : {}));
 	wrapper.load_purchase_allocation = load;
 };
 frappe.pages["purchase-supplier-allocation"].on_page_show = (wrapper) => wrapper.load_purchase_allocation();

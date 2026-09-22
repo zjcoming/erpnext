@@ -13,8 +13,8 @@ from frappe.utils import flt, getdate, nowdate
 from erpnext.stock.doctype.material_request.material_request import get_default_supplier_for_item
 from process_simplification.api.utils import get_quantity_precision, normalize_purchase_qty
 from process_simplification.notifications import _user_matches_company
-from process_simplification.purchasing.receipts import lock_material_requests
 from process_simplification.purchasing.query import document_page, item_search_codes
+from process_simplification.purchasing.receipts import lock_material_requests
 from process_simplification.request_transaction import retry_request_transaction
 
 BATCH = "Purchase Allocation Batch"
@@ -325,17 +325,28 @@ def get_allocation_context(material_request):
 
 
 @frappe.whitelist()
-def get_request_page(start=0, page_length=20, search="", view="pending"):
-	if view not in {"pending", "history", "all"}:
+def get_request_page(start=0, page_length=20, search="", view="pending", company=None):
+	if view not in {"pending", "history", "all", "to_order"}:
 		frappe.throw("无效的采购申请范围。")
+	if company and not _user_matches_company(frappe.session.user, company):
+		frappe.throw("无权查看其他公司的采购申请。", frappe.PermissionError)
 	search = str(search or "").strip().lower()
 	item_codes = item_search_codes(search)
 	finished = ["Received", "Transferred", "Issued"]
 	filters = {"docstatus": 1, "material_request_type": "Purchase"}
-	filters["status"] = ["in", finished] if view == "history" else ["not in", ["Stopped", "Cancelled"] + (finished if view == "pending" else [])]
+	if company:
+		filters["company"] = company
+	filters["status"] = ["in", finished] if view == "history" else ["not in", ["Stopped", "Cancelled"] + (finished if view in {"pending", "to_order"} else [])]
 	labels = {"Pending": "待下单", "Partially Ordered": "部分下单", "Ordered": "已下单", "Partially Received": "部分到货", "Received": "已到货"}
 	def project(doc):
 		if not any(flt(item.stock_qty) > 0 for item in doc.items):
+			return None
+		# Same stock-unit remainder as native Material Request's pending-purchase
+		# selector. Draft POs do not increment ordered_qty, so they still need
+		# confirmation; fully submitted orders move to the receiving queue.
+		if view == "to_order" and not any(
+			flt(item.stock_qty) > (flt(item.ordered_qty) or flt(item.received_qty)) for item in doc.items
+		):
 			return None
 		words = " ".join(str(doc.get(key) or "") for key in ("name", "company", "status")) + " " + labels.get(doc.status, "")
 		if search and search not in words.lower() and not any(item.item_code in item_codes for item in doc.items):
@@ -396,14 +407,19 @@ def _order_followup(doc, *, material_request=None, pending_only=True, search="",
 
 
 @frappe.whitelist()
-def get_supplier_followup(start=0, page_length=20, search="", overdue_only=0):
+def get_supplier_followup(start=0, page_length=20, search="", overdue_only=0, company=None):
+	if company and not _user_matches_company(frappe.session.user, company):
+		frappe.throw("无权查看其他公司的采购单。", frappe.PermissionError)
 	search = str(search or "").strip().lower()
 	item_codes = item_search_codes(search)
 	def project(doc):
 		row = _order_followup(doc, search=search, item_codes=item_codes, overdue_only=frappe.utils.cint(overdue_only))
 		return row if row["items"] else None
+	filters = {"docstatus": 1, "per_received": ["<", 100], "status": ["not in", ["Closed", "On Hold", "Completed", "Cancelled"]]}
+	if company:
+		filters["company"] = company
 	return document_page(
-		"Purchase Order", {"docstatus": 1, "per_received": ["<", 100], "status": ["not in", ["Closed", "On Hold", "Completed", "Cancelled"]]},
+		"Purchase Order", filters,
 		project, start=start, page_length=page_length, order_by="schedule_date asc, creation asc, name asc",
 	)
 
