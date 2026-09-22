@@ -30,6 +30,7 @@ class TestProductionPlanSubassemblyAdapter(UnitTestCase):
 		self.enterContext(patch.object(self._adapter(), "net_subassemblies",
 			side_effect=lambda plan: (plan.get_sub_assembly_items(), [])[1]))
 		self.commit_stock = self.enterContext(patch.object(self._adapter(), "commit_plan_stock"))
+		self.enterContext(patch.object(self._adapter().frappe, "get_cached_value", return_value="Kg"))
 
 	@patch(
 		"erpnext.manufacturing.doctype.production_plan.production_plan.get_items_for_material_requests"
@@ -221,6 +222,7 @@ class TestProductionPlanSubassemblyAdapter(UnitTestCase):
 		self.assertEqual(len(fake.po_items), 1)
 		po = fake.po_items[0]
 		self.assertEqual(po.item_code, "FG-001")
+		self.assertEqual(po.stock_uom, "Kg")
 		self.assertEqual(po.bom_no, "BOM-FG-001")
 		self.assertEqual(po.planned_qty, 30)
 		self.assertEqual(po.sales_order, "SO-001")
@@ -455,6 +457,9 @@ class TestProductionPlanSubassemblyAdapter(UnitTestCase):
 				self.name = name
 				self.fg_warehouse = fg_warehouse
 				self.source_warehouse = fg_warehouse
+
+			def get(self, fieldname):
+				return getattr(self, fieldname, None)
 
 			def set_required_items(self, *, reset_source_warehouse=False):
 				events.append(("required", self.name, reset_source_warehouse, self.source_warehouse))

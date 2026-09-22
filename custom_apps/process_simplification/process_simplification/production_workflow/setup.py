@@ -10,6 +10,14 @@ def ensure_production_workflow_fields():
 		{
 			"Company": [
 				{
+					"fieldname": "custom_default_semi_finished_warehouse",
+					"label": "默认半成品仓",
+					"fieldtype": "Link",
+					"options": "Warehouse",
+					"insert_after": "default_fg_warehouse",
+					"description": "可选。留空时半成品与原料共用来源仓；设置后，新建快捷生产计划的半成品完工入库和领用使用此仓。修改不改变已有工单。",
+				},
+				{
 					"fieldname": "custom_material_rework_warehouse",
 					"label": "待返工仓",
 					"fieldtype": "Link",
@@ -132,6 +140,16 @@ def ensure_production_workflow_fields():
 			],
 			"Work Order": [
 				{
+					"fieldname": "custom_semi_finished_warehouse",
+					"label": "计划半成品仓",
+					"fieldtype": "Link",
+					"options": "Warehouse",
+					"read_only": 1,
+					"no_copy": 1,
+					"insert_after": "fg_warehouse",
+					"description": "创建快捷生产计划时确定的半成品仓。留空配置时记录当次来源仓，后续公司配置变化不改变本工单。",
+				},
+				{
 					"fieldname": "custom_replenishes_work_order",
 					"label": "Replenishes Work Order",
 					"fieldtype": "Link",
@@ -154,5 +172,5 @@ def ensure_production_workflow_fields():
 		},
 		update=True,
 	)
-	for doctype in ("Stock Entry", "Material Request", "Work Order"):
+	for doctype in ("Company", "Stock Entry", "Material Request", "Work Order"):
 		frappe.clear_cache(doctype=doctype)

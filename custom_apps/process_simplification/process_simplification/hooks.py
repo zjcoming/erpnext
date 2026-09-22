@@ -23,6 +23,7 @@ app_include_css = [
 	"/assets/process_simplification/css/document_scan.css?v=7",
 ]
 app_include_js = [
+	"/assets/process_simplification/js/sidebar_setup_compat.js?v=1",
 	"/assets/process_simplification/js/role_landing.js?v=1",
 	"/assets/process_simplification/js/item_identity.js?v=4",
 	"/assets/process_simplification/js/batch_quick_entry.js?v=1",
@@ -43,6 +44,7 @@ after_request = ["process_simplification.page_refresh.after_request"]
 sales_order_draft_creation = "process_simplification.sales_order_creation.create_rest_draft"
 override_whitelisted_methods = {
 	"frappe.desk.form.save.savedocs": "process_simplification.sales_order_creation.savedocs",
+	"erpnext.stock.doctype.warehouse.warehouse.get_children": "process_simplification.warehouse_tree.get_children",
 	"erpnext.controllers.accounts_controller.get_missing_company_details": "process_simplification.print_localization.skip_automatic_company_details",
 	"erpnext.stock.doctype.batch.batch.get_batch_qty": "process_simplification.batch_permissions.get_batch_qty",
 	"erpnext.stock.doctype.serial_and_batch_bundle.serial_and_batch_bundle.get_auto_data": "process_simplification.batch_permissions.get_auto_data",
@@ -64,7 +66,12 @@ boot_session = [
 	"process_simplification.document_scan.boot_session",
 ]
 
-doctype_js = {"Material Request": "public/js/material_request_purchasing.js"}
+doctype_js = {
+	"Company": "public/js/company_manufacturing.js",
+	"Material Request": "public/js/material_request_purchasing.js",
+	"Warehouse": "public/js/warehouse_management.js",
+}
+doctype_tree_js = {"Warehouse": "public/js/warehouse_tree.js"}
 
 after_install = "process_simplification.install.after_install"
 after_migrate = "process_simplification.install.after_migrate"
@@ -85,6 +92,7 @@ extend_doctype_class = {
 }
 
 doc_events = {
+	"Company": {"validate": "process_simplification.defaults.validate_company_manufacturing_warehouses"},
 	"Workspace": {"on_update": "process_simplification.navigation.repair_workspace_sidebar"},
 	"Serial and Batch Bundle": {
 		"before_validate": "process_simplification.stock_permissions.validate_batch_bundle_scope",

@@ -668,7 +668,7 @@ def _evaluate_quick_order(payload):
 						_issue(
 							"RAW_MATERIAL_WAREHOUSE_MISSING",
 							"blocker",
-							"无法确定原料仓库，请先完善 BOM、公司或物料默认值。",
+							"无法确定物料来源仓库，请检查公司原料仓、半成品仓及物料配置。",
 							"line",
 							source.get("row"),
 						)

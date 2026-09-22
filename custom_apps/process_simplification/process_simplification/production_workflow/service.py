@@ -1282,6 +1282,27 @@ def _active_replenishment(work_order: str, work_order_items):
 
 
 def _replenishment_bom(parent_work_order, item_code: str):
+	if parent_work_order.get("custom_semi_finished_warehouse"):
+		from process_simplification.api.production_readiness import get_direct_sub_assembly_rows
+
+		rows = frappe.get_all(
+			"Production Plan Sub Assembly Item",
+			filters={"parent": parent_work_order.production_plan},
+			fields=[
+				"name", "idx", "production_plan_item", "parent_item_code", "production_item", "bom_level", "bom_no",
+			],
+			order_by="idx asc",
+			limit=0,
+		)
+		boms = {
+			row.bom_no for row in get_direct_sub_assembly_rows(parent_work_order, rows)
+			if row.production_item == item_code and row.bom_no
+		}
+		if len(boms) > 1:
+			_throw("该物料在当前工单分支关联多个 BOM，无法确定补产用料，请先核对生产计划。")
+		# An item merely having an active/default BOM does not make a purchased
+		# occurrence in this plan into a manufactured component.
+		return next(iter(boms), None)
 	bom = frappe.db.get_value(
 		"Work Order",
 		{
@@ -1371,7 +1392,9 @@ def _create_replenishment_work_order(work_order: str, work_order_item: str, qty:
 		material_request=mr.name,
 		company=parent.company,
 		source_warehouse=parent.source_warehouse or item.source_warehouse,
-		sub_assembly_warehouse=item.source_warehouse,
+		# Existing tasks keep their original routing even after Company defaults
+		# change. Pre-feature tasks retain their persisted component warehouse.
+		sub_assembly_warehouse=parent.get("custom_semi_finished_warehouse") or item.source_warehouse,
 		target_work_order=parent.name,
 		target_work_order_item=item.name,
 	)

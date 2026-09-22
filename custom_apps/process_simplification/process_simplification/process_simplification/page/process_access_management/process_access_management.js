@@ -51,21 +51,32 @@ class ProcessSimplificationAccessManagement {
 		).appendTo(this.page.main);
 	}
 
-	async load_user() {
+	async load_user({ force = false } = {}) {
 		const user = this.user_field.get_value();
+		// A toolbar Link can emit change again on blur after autocomplete selection.
+		// Keep that duplicate event from replacing unsaved scope selections.
+		if (!force && user && (this.current?.user.name === user || this.loading_user === user)) return;
+
+		const request_id = this.user_load_request_id = (this.user_load_request_id || 0) + 1;
+		this.loading_user = user || null;
 		this.current = null;
 		this.page.btn_primary.prop("disabled", true);
-		if (!user) {
-			this.root.find("[data-placeholder]").removeClass("hide");
-			this.root.find("[data-content]").addClass("hide");
-			return;
+		this.root.find("[data-content]").addClass("hide");
+		this.root.find("[data-placeholder]").removeClass("hide")
+			.text(user ? __("正在加载用户岗位与数据范围…") : __("请先选择一个系统用户"));
+		if (!user) return;
+
+		try {
+			const response = await frappe.call({
+				method: "process_simplification.api.access_management.get_user_access",
+				args: { user },
+			});
+			if (request_id !== this.user_load_request_id || this.user_field.get_value() !== user) return;
+			this.current = response.message;
+			this.render();
+		} finally {
+			if (request_id === this.user_load_request_id) this.loading_user = null;
 		}
-		const response = await frappe.call({
-			method: "process_simplification.api.access_management.get_user_access",
-			args: { user },
-		});
-		this.current = response.message;
-		this.render();
 	}
 
 	escape(value) {
@@ -167,7 +178,8 @@ class ProcessSimplificationAccessManagement {
 	}
 
 	async save() {
-		if (!this.current) return;
+		if (!this.current || this.current.user.name !== this.user_field.get_value()) return;
+		const user = this.current.user.name;
 		const employee = this.root.find("[data-employee]").val() || this.current.employee?.name || null;
 		await frappe.call({
 			method: "process_simplification.api.access_management.set_user_access",
@@ -175,7 +187,7 @@ class ProcessSimplificationAccessManagement {
 			freeze: true,
 			freeze_message: __("正在保存岗位与数据范围…"),
 			args: {
-				user: this.current.user.name,
+				user,
 				profiles: this.checked_values("profile"),
 				companies: this.checked_values("company-scope"),
 				warehouses: this.checked_values("warehouse-scope"),
@@ -183,7 +195,7 @@ class ProcessSimplificationAccessManagement {
 			},
 		});
 		frappe.show_alert({ message: __("岗位与数据范围已更新"), indicator: "green" });
-		await this.load_user();
+		if (this.user_field.get_value() === user) await this.load_user({ force: true });
 	}
 }
 

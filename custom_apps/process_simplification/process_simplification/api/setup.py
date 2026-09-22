@@ -5,7 +5,10 @@ from frappe import _
 from frappe.utils import cint, parse_json
 from erpnext import get_default_company
 
-from process_simplification.defaults import get_company_manufacturing_defaults
+from process_simplification.defaults import (
+	get_company_manufacturing_defaults,
+	semi_finished_warehouse_error_message,
+)
 from process_simplification.workbench_read import reuse_workbench_read
 
 
@@ -89,6 +92,18 @@ def validate_setup(company: str | None = None, item_codes: list[str] | str | Non
 
 	defaults = get_company_defaults(company)
 	messages = []
+	if defaults.get("semi_finished_warehouse_error"):
+		messages.append(
+			_message(
+				"error",
+				_("默认半成品仓无效"),
+				semi_finished_warehouse_error_message(
+					defaults.get("configured_semi_finished_warehouse"),
+					defaults.semi_finished_warehouse_error,
+				),
+				"custom_default_semi_finished_warehouse",
+			)
+		)
 
 	if not frappe.db.get_single_value("Stock Settings", "enable_stock_reservation"):
 		messages.append(

@@ -876,6 +876,10 @@ if (typeof module !== "undefined" && module.exports) {
 if (typeof frappe !== "undefined") {
 	frappe.pages["production-workbench"].on_page_load = function (wrapper) {
 		const page = frappe.ui.make_app_page({ parent: wrapper, title: __("生产计划中心"), single_column: true });
+		if (frappe.session.user === "Administrator" ||
+			["System Manager", "Process Simplification Owner"].some((role) => frappe.user.has_role(role))) {
+			page.add_inner_button(__("开用前检查"), () => frappe.set_route("Form", "Process Simplification Settings"));
+		}
 		page.main.html(`
 			<div class="process-simplification-page production-workbench">
 				<div class="production-kpis"></div>

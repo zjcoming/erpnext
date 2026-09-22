@@ -1,6 +1,15 @@
 frappe.ui.form.on("Process Simplification Settings", {
 	refresh(frm) {
 		if (!psCanConfigurePWA()) return;
+		frm.add_custom_button("重新检查", () => psRefreshInitialization(frm), "开用前检查");
+		frm.add_custom_button("选择公司", () => frappe.prompt({
+			fieldname: "company", fieldtype: "Link", options: "Company", label: "公司", reqd: 1,
+			default: frm.__psInitializationCompany,
+		}, ({ company }) => {
+			frm.__psInitializationCompany = company;
+			psRefreshInitialization(frm);
+		}, "检查哪家公司", "检查"), "开用前检查");
+		psRefreshInitialization(frm);
 		frm.add_custom_button("检查安装条件", () => psRefreshPWAStatus(frm), "手机应用");
 		frm.add_custom_button("查看安装引导", () => {
 			if (frm.is_dirty()) return frappe.msgprint("请先保存设置，再查看安装引导。");
@@ -9,7 +18,10 @@ frappe.ui.form.on("Process Simplification Settings", {
 		psRefreshPWAStatus(frm);
 	},
 	after_save(frm) {
-		if (psCanConfigurePWA()) psRefreshPWAStatus(frm);
+		if (psCanConfigurePWA()) {
+			psRefreshPWAStatus(frm);
+			psRefreshInitialization(frm);
+		}
 	},
 	setup(frm) {
 		frm.set_query("user", "notification_recipients", (doc, cdt, cdn) => {
@@ -31,6 +43,46 @@ frappe.ui.form.on("Process Simplification Settings", {
 		});
 	},
 });
+
+function psInitializationHtml(status, escape) {
+	const errors = (status.checks || []).filter((row) => row.status === "error").length;
+	const warnings = (status.checks || []).filter((row) => row.status === "warning").length;
+	const heading = errors ? `基础配置还有 ${errors} 项需要处理` : warnings ? `基础配置还有 ${warnings} 项需要核对` : "基础配置检查通过，继续核对资料并试跑第一单";
+	const badge = { error: "需要处理", warning: "需要核对", ok: "已核对", info: "按需设置" };
+	const link = (row) => `${row.can_open === false ? "" : `<button type="button" class="btn btn-default btn-xs" data-setup-doctype="${escape(row.doctype)}" data-setup-name="${escape(row.name || "")}">${row.can_configure === false ? "查看" : "打开"}${escape(row.label)}</button>`}${row.can_configure === false ? '<span class="text-muted ml-2">如需配置，请系统管理员处理。</span>' : ""}`;
+	return `<div class="ps-initialization-status">
+		<p><strong>${escape(heading)}</strong></p>
+		<p>当前公司：${escape(status.company || "未选择")}。这里只检查配置，不会自动更改设置或新增资料。</p>
+		${(status.checks || []).map((row) => `<div class="mb-3"><strong>${escape(row.label)} · ${escape(badge[row.status] || "待核对")}</strong><p class="mb-1">${escape(row.value || "")} · ${escape(row.detail || "")}</p>${link(row)}</div>`).join("")}
+		<hr><p><strong>接下来按顺序准备</strong></p>
+		${(status.next_steps || []).map((row) => `<div class="mb-3"><strong>${escape(row.label)}</strong><p class="mb-1">${escape(row.detail)}</p>${link(row)}</div>`).join("")}
+		<p class="text-muted">最后用销售、采购、库房、主管和工人账号完成一张小订单，核对收货、领料、报工、入库、发货及通知。基础配置检查通过不代表这些业务已验收。</p>
+	</div>`;
+}
+
+async function psRefreshInitialization(frm) {
+	const wrapper = frm.fields_dict.initialization_status?.$wrapper;
+	if (!wrapper) return;
+	const request = (frm.__psInitializationRequest || 0) + 1;
+	frm.__psInitializationRequest = request;
+	wrapper.html('<p class="text-muted">正在读取开用前配置…</p>');
+	try {
+		const { message } = await frappe.call({
+			method: "process_simplification.initialization.get_status", type: "GET",
+			args: { company: frm.__psInitializationCompany || null },
+		});
+		if (request !== frm.__psInitializationRequest) return;
+		frm.__psInitializationCompany = message.company;
+		wrapper.html(psInitializationHtml(message, frappe.utils.escape_html));
+		wrapper.off("click.ps-init").on("click.ps-init", "[data-setup-doctype]", (event) => {
+			const { setupDoctype, setupName } = event.currentTarget.dataset;
+			frappe.set_route(setupName ? ["Form", setupDoctype, setupName] : ["List", setupDoctype]);
+		});
+	} catch (_) {
+		if (request !== frm.__psInitializationRequest) return;
+		wrapper.html('<p class="text-danger">未能读取开用前配置，尚不能确认配置是否完整。请使用上方“开用前检查 → 重新检查”重试。</p>');
+	}
+}
 
 function psCanConfigurePWA() {
 	return frappe.session.user === "Administrator" ||

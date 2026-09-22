@@ -1691,6 +1691,9 @@ class TestQuickOrderV2(UnitTestCase):
 		create_via_pp,
 	):
 		from process_simplification.api.actions import create_work_order
+		self.enterContext(patch("process_simplification.api.actions.frappe.db.get_single_value", return_value=1))
+		self.enterContext(patch("process_simplification.api.actions.resolve_semi_finished_warehouse",
+			return_value=frappe._dict(warehouse="Stores - TC", can_use=True)))
 
 		has_permission.return_value = True
 		row_from_workbench.return_value = frappe._dict({"uncovered_qty": 4})

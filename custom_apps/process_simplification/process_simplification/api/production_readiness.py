@@ -470,21 +470,7 @@ def build_allocation_conflict(
 	)
 
 
-def build_work_order_graph(
-	plan,
-	work_orders,
-	required_items,
-	sub_assemblies,
-	active_bom_items=None,
-):
-	plan = frappe._dict(plan or {})
-	active_bom_items = set(active_bom_items or [])
-	required_by_work_order = defaultdict(list)
-	for item in required_items or []:
-		required_by_work_order[item.get("parent")].append(frappe._dict(item))
-
-	sub_assembly_rows = [frappe._dict(row) for row in sub_assemblies or []]
-	sub_assembly_by_name = {row.get("name"): row for row in sub_assembly_rows}
+def _sub_assembly_parent_rows(sub_assembly_rows):
 	# Native rows are in BOM preorder. Preserve the branch identity when the
 	# same parent item occurs twice at the same depth under one finished good.
 	parent_subrows = {}
@@ -501,6 +487,43 @@ def build_work_order_graph(
 		elif stack and stack[-1].get("production_item") == sub.get("parent_item_code"):
 			parent_subrows[sub.name] = stack[-1].name
 		stack.append(sub)
+	return parent_subrows
+
+
+def get_direct_sub_assembly_rows(work_order, sub_assemblies, *, parent_subrows=None):
+	"""Physical children of this exact persisted plan branch, including qty zero."""
+	rows = [frappe._dict(row) for row in sub_assemblies or []]
+	parent_subrows = parent_subrows if parent_subrows is not None else _sub_assembly_parent_rows(rows)
+	parent_subrow = work_order.get("production_plan_sub_assembly_item") or None
+	root = work_order.get("production_plan_item")
+	if not root and parent_subrow:
+		root = next((row.get("production_plan_item") for row in rows if row.name == parent_subrow), None)
+	if not root:
+		return []
+	return [
+		row for row in rows
+		if row.get("production_plan_item") == root
+		and row.name in parent_subrows
+		and parent_subrows[row.name] == parent_subrow
+	]
+
+
+def build_work_order_graph(
+	plan,
+	work_orders,
+	required_items,
+	sub_assemblies,
+	active_bom_items=None,
+):
+	plan = frappe._dict(plan or {})
+	active_bom_items = set(active_bom_items or [])
+	required_by_work_order = defaultdict(list)
+	for item in required_items or []:
+		required_by_work_order[item.get("parent")].append(frappe._dict(item))
+
+	sub_assembly_rows = [frappe._dict(row) for row in sub_assemblies or []]
+	sub_assembly_by_name = {row.get("name"): row for row in sub_assembly_rows}
+	parent_subrows = _sub_assembly_parent_rows(sub_assembly_rows)
 	plan_reservations = defaultdict(float)
 	for row in sub_assembly_rows:
 		item_code = row.get("production_item")
@@ -538,8 +561,15 @@ def build_work_order_graph(
 		row.child_work_orders = []
 		row.required_items = required_by_work_order.get(row.name, [])
 		row.is_finished_good = not bool(sub_assembly)
+		manufactured_items = active_bom_items
+		if row.get("custom_semi_finished_warehouse"):
+			manufactured_items = {
+				child.get("production_item") for child in get_direct_sub_assembly_rows(
+					row, sub_assembly_rows, parent_subrows=parent_subrows
+				)
+			}
 		for item in row.required_items:
-			item.is_manufactured = item.get("item_code") in active_bom_items
+			item.is_manufactured = item.get("item_code") in manufactured_items
 		work_orders_by_name[row.name] = row
 		work_orders_by_item[row.get("production_item")].append(row)
 
@@ -1341,6 +1371,7 @@ def get_production_plan_readiness(company=None, sales_order_items=None):
 			"creation",
 			"custom_replenishes_work_order",
 			"custom_replenishes_work_order_item",
+			"custom_semi_finished_warehouse",
 		],
 		limit=0,
 	)

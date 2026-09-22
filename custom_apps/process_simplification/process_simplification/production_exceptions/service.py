@@ -332,6 +332,21 @@ def _work_order_material_requirements(work_order: str, *, for_update: bool = Fal
 
 def material_warehouse_settings(work_order):
 	"""Use explicit WO overrides or company defaults, never warehouse-name guesses."""
+	# A mixed raw/semi-finished Work Order has several source warehouses. Keep
+	# exception stock outside every persisted source, including after Company
+	# defaults change; otherwise defective material becomes normal usable stock.
+	required_items = work_order.get("required_items")
+	if required_items is None and work_order.get("name"):
+		required_items = frappe.get_all(
+			"Work Order Item",
+			filters={"parent": work_order.name, "parenttype": "Work Order"},
+			fields=["source_warehouse"],
+		)
+	production_warehouses = {
+		work_order.get("wip_warehouse"),
+		work_order.get("source_warehouse"),
+		*(row.get("source_warehouse") for row in required_items or []),
+	}
 	company = frappe.db.get_value(
 		"Company", work_order.company,
 		["default_scrap_warehouse", "custom_material_quarantine_warehouse"], as_dict=True,
@@ -344,7 +359,7 @@ def material_warehouse_settings(work_order):
 	for field, label in (("scrap_warehouse", "报废仓"), ("quarantine_warehouse", "待检隔离仓")):
 		name = result[field]
 		warehouse = frappe.db.get_value("Warehouse", name, ["company", "is_group", "disabled"], as_dict=True) if name else None
-		if not warehouse or warehouse.company != work_order.company or warehouse.is_group or warehouse.disabled or name in {work_order.wip_warehouse, work_order.source_warehouse}:
+		if not warehouse or warehouse.company != work_order.company or warehouse.is_group or warehouse.disabled or name in production_warehouses:
 			result[field] = None
 			result.messages[field] = _("{0}未配置或不可用，请联系主管在公司设置中选择同公司的独立{0}；仅新建仓库不会自动关联。").format(label)
 	if result.quarantine_warehouse and result.quarantine_warehouse == result.scrap_warehouse:

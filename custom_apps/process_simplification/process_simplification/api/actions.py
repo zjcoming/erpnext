@@ -36,6 +36,7 @@ from process_simplification.api.workbench import (
 	get_order_workbench,
 	get_work_orders,
 )
+from process_simplification.defaults import resolve_semi_finished_warehouse
 from process_simplification.production_workflow.stock_reservation import (
 	allow_guided_stock_reservations_for,
 	locked_available_qty,
@@ -181,6 +182,8 @@ def _create_work_order(sales_order: str, sales_order_item: str, qty: float | Non
 	for doctype in ("Production Plan", "Work Order"):
 		for permission_type in ("create", "submit"):
 			frappe.has_permission(doctype, permission_type, throw=True)
+	if not frappe.db.get_single_value("Stock Settings", "enable_stock_reservation"):
+		throw_chinese("尚未完成开用前配置：请管理员在库存设置中开启“启用库存预留”，保存后再创建生产计划。")
 	if qty not in (None, "") and flt(qty) <= 0:
 		throw_chinese("本次生产数量不能超过当前尚未覆盖数量，且必须大于零。")
 	row = _row_from_workbench(sales_order, sales_order_item)
@@ -232,6 +235,11 @@ def _create_work_order(sales_order: str, sales_order_item: str, qty: float | Non
 	fg_warehouse = item.warehouse or defaults.fg_warehouse
 	if not resolved_source.can_use:
 		throw_chinese("原料仓不可用，请确认仓库存在、启用、非分组且属于订单公司。")
+	resolved_semi = resolve_semi_finished_warehouse(
+		so.company, resolved_source.warehouse, defaults=defaults
+	)
+	if not resolved_semi.can_use:
+		throw_chinese("默认半成品仓不可用，请在公司中选择启用、非分组、属于本公司的仓库，且不能使用在制品或异常处理仓。")
 	if not defaults.wip_warehouse:
 		throw_chinese("缺少 WIP 仓，请在 Company 中设置 Default WIP Warehouse。")
 	if not fg_warehouse:
@@ -259,7 +267,7 @@ def _create_work_order(sales_order: str, sales_order_item: str, qty: float | Non
 		bom_no=bom_no,
 		planned_qty=work_order_qty,
 		fg_warehouse=fg_warehouse,
-		sub_assembly_warehouse=resolved_source.warehouse,
+		sub_assembly_warehouse=resolved_semi.warehouse,
 		source_warehouse=resolved_source.warehouse,
 		delivery_date=item.delivery_date,
 	)

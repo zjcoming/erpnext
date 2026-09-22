@@ -7,6 +7,7 @@ import frappe
 from frappe.utils import add_days, nowdate, parse_json
 
 from erpnext.manufacturing.doctype.bom.bom import get_bom_items_as_dict
+from process_simplification.defaults import resolve_semi_finished_warehouse
 from process_simplification.api.setup import (
 	get_company_defaults,
 	get_default_bom,
@@ -536,8 +537,11 @@ def _direct_bom_items(bom_no: str, company: str, fact_cache) -> list:
 
 
 def _manufacturing_bom_for_item(item, fact_cache) -> str | None:
-	if item.get("bom_no"):
-		return item.get("bom_no")
+	# Native Production Plan expands only the BOM attached to this component.
+	# An explicitly empty BOM makes it a purchased leaf even if Item has a
+	# default BOM elsewhere; it must not move to the semi-finished warehouse.
+	if "bom_no" in item:
+		return item.get("bom_no") or None
 	item_code = item.get("item_code")
 	default_boms = fact_cache.setdefault("default_boms", {})
 	if item_code not in default_boms:
@@ -733,6 +737,10 @@ def calculate_multilevel_material_coverage(
 				"sales_order_item_warehouse"
 			),
 		)
+		resolved_semi_finished = (
+			resolve_semi_finished_warehouse(company, resolved_source.warehouse, defaults=defaults)
+			if defaults.get("configured_semi_finished_warehouse") else resolved_source
+		)
 		root_source = dict(demand.get("source") or {})
 		root_source.setdefault("production_qty", root_qty)
 		demand_need_by_date = root_source.get("delivery_date") or need_by_date
@@ -746,15 +754,17 @@ def calculate_multilevel_material_coverage(
 				if required_qty <= 0:
 					continue
 				item_code = bom_item.get("item_code")
-				warehouse = resolved_source.warehouse
+				child_bom = _manufacturing_bom_for_item(bom_item, fact_cache)
+				component_source = resolved_semi_finished if child_bom else resolved_source
+				warehouse = component_source.warehouse
 				key = (item_code, warehouse)
 				snapshot = _coverage_stock_snapshot(item_code, warehouse, company, fact_cache)
 				available_stock = remaining_stock.setdefault(
 					key, _snapshot_free_qty(snapshot)
 				)
-				allocated_stock = min(required_qty, available_stock)
+				can_use_stock = bool(component_source.can_use and snapshot.get("can_calculate"))
+				allocated_stock = min(required_qty, available_stock) if can_use_stock else 0
 				remaining_stock[key] = max(available_stock - allocated_stock, 0)
-				child_bom = _manufacturing_bom_for_item(bom_item, fact_cache)
 				source = deepcopy(root_source)
 				source.update(
 					{
@@ -780,9 +790,7 @@ def calculate_multilevel_material_coverage(
 						"open_purchase_order_qty": 0,
 						"shortage_qty": 0,
 						"supply_documents": [],
-						"blocked": not (
-							resolved_source.can_use and snapshot.get("can_calculate")
-						),
+						"blocked": not can_use_stock,
 						"supply_type": "manufactured" if child_bom else "purchased",
 						"bom_no": child_bom,
 						"parent_item_code": parent_item_code,

@@ -21,10 +21,11 @@ The delivery-priority net quantity is decided by the caller
 
 from __future__ import annotations
 
+from collections import defaultdict
 from contextlib import contextmanager
 
 import frappe
-from frappe.utils import now_datetime
+from frappe.utils import flt, now_datetime
 
 from process_simplification.production_workflow.planning_stock import commit_plan_stock, net_subassemblies
 from process_simplification.production_workflow.stock_reservation import (
@@ -88,24 +89,83 @@ def _submit_work_orders(work_orders: list[str]) -> None:
 			frappe.get_doc("Work Order", name).submit()
 
 
-def _apply_guided_source_warehouse(work_orders: list[str], source_warehouse: str | None) -> None:
+def _sub_assembly_rows_by_parent(plan) -> dict:
+	"""Index physical child outputs by their exact parent plan row.
+
+	The expanded rows include children covered entirely by stock (qty zero).
+	Using their stable plan-row identity avoids routing a purchased occurrence of
+	the same item through a manufacturing branch elsewhere in the BOM.
+	Phantom levels were already flattened by ``net_subassemblies``.
+	"""
+	children = defaultdict(list)
+	stacks = defaultdict(list)
+	for row in plan.sub_assembly_items or []:
+		stack = stacks[row.production_plan_item]
+		level = int(row.bom_level or 0)
+		while stack and stack[-1][0] >= level:
+			stack.pop()
+		parent = ("sub", stack[-1][1]) if stack else ("root", row.production_plan_item)
+		children[parent].append(row)
+		stack.append((level, row.name))
+	return children
+
+
+def _sub_assembly_sources(plan) -> dict:
+	return {
+		parent: {row.production_item: row.fg_warehouse for row in rows}
+		for parent, rows in _sub_assembly_rows_by_parent(plan).items()
+	}
+
+
+def _validate_distinct_component_sources(work_order, sub_assemblies, source_warehouse):
+	"""Native WO rows cannot split one merged component across two warehouses."""
+	manufactured_qty = defaultdict(float)
+	for row in sub_assemblies:
+		if row.fg_warehouse != source_warehouse:
+			manufactured_qty[row.production_item] += flt(row.required_qty)
+	for item_code, qty in manufactured_qty.items():
+		required = sum(flt(row.required_qty) for row in work_order.get("required_items") or []
+			if row.item_code == item_code)
+		if required > qty + 1e-6:
+			frappe.throw(
+				"物料 {0} 在同一工单中同时作为自制半成品和外购用料，"
+				"无法分别从原料仓和半成品仓领用。请统一该物料在此 BOM 中的供料方式，"
+				"或使用不同物料编码后重试。".format(item_code)
+			)
+
+
+def _apply_guided_source_warehouse(
+	work_orders: list[str], source_warehouse: str | None, *, plan=None
+) -> None:
 	"""Keep ERPNext v16 from falling back to the finished-goods warehouse.
 
 	Production Plan v16 derives a Work Order's source warehouse only from
 	``BOM.default_source_warehouse``.  When that optional field is empty it
 	falls back to the Work Order's finished-goods warehouse, which makes raw
 	material procurement target the finished-goods warehouse.  The simplified
-	flow already validated one guided source warehouse, so apply it to every
-	generated draft Work Order and rebuild its direct required-item rows before
-	submission.
+	flow already validated a raw source. Rebuild direct rows from it, then route
+	physical sub-assemblies to their own output warehouse. Persist this choice
+	before submission so later Company changes cannot move existing work.
 	"""
 	if not source_warehouse:
 		return
 
+	child_sources = _sub_assembly_sources(plan) if plan else {}
+	child_rows = _sub_assembly_rows_by_parent(plan) if plan else {}
 	for name in work_orders:
 		work_order = frappe.get_doc("Work Order", name)
 		work_order.source_warehouse = source_warehouse
 		work_order.set_required_items(reset_source_warehouse=True)
+		if plan:
+			work_order.custom_semi_finished_warehouse = plan.sub_assembly_warehouse or source_warehouse
+			parent = (
+				("sub", work_order.get("production_plan_sub_assembly_item"))
+				if work_order.get("production_plan_sub_assembly_item")
+				else ("root", work_order.get("production_plan_item"))
+			)
+			_validate_distinct_component_sources(work_order, child_rows.get(parent, []), source_warehouse)
+			for row in work_order.get("required_items") or []:
+				row.source_warehouse = child_sources.get(parent, {}).get(row.item_code) or source_warehouse
 		work_order.save()
 
 
@@ -160,6 +220,7 @@ def create_work_orders_via_production_plan(
 		"po_items",
 		{
 			"item_code": item_code,
+			"stock_uom": frappe.get_cached_value("Item", item_code, "stock_uom"),
 			"bom_no": bom_no,
 			"planned_qty": planned_qty,
 			"planned_start_date": now_datetime(),
@@ -186,7 +247,7 @@ def create_work_orders_via_production_plan(
 			plan.make_work_order()
 
 		work_orders = _work_orders_for_plan(plan.name)
-		_apply_guided_source_warehouse(work_orders, source_warehouse)
+		_apply_guided_source_warehouse(work_orders, source_warehouse, plan=plan)
 		_submit_work_orders(work_orders)
 		commit_plan_stock(plan, work_orders, commitments)
 	except frappe.QueryDeadlockError:
@@ -250,7 +311,7 @@ def create_replenishment_work_orders_via_production_plan(
 			plan.make_work_order()
 
 		work_orders = _work_orders_for_plan(plan.name)
-		_apply_guided_source_warehouse(work_orders, source_warehouse)
+		_apply_guided_source_warehouse(work_orders, source_warehouse, plan=plan)
 		replenishment_work_orders = []
 		for name in work_orders:
 			work_order = frappe.get_doc("Work Order", name)
