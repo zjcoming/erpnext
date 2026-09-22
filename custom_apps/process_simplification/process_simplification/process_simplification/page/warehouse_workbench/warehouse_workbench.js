@@ -1,8 +1,8 @@
-function warehouseBatchHtml(item, esc, number) {
+function warehouseBatchHtml(item, esc, number, translate = (value) => value) {
 	if (!item.has_batch_no) return "";
 	const groups = [["批次", item.batches], ["拒收批次", item.rejected_batches]];
 	const details = groups.flatMap(([label, lots]) => (lots || []).map((lot) =>
-		'<small>' + label + '：' + esc(lot.batch_no) + ' · ' + number(lot.qty) + ' ' + esc(lot.stock_uom || "") + '</small>'
+		'<small>' + label + '：' + esc(lot.batch_no) + ' · ' + number(lot.qty) + ' ' + esc(translate(lot.stock_uom || "")) + '</small>'
 	)).join("");
 	return '<div class="warehouse-batches"><small>按批次管理 · 在原单核对实际批次</small>' + details + '</div>';
 }
@@ -17,14 +17,14 @@ function warehouseBatchNavigationHtml(model, esc) {
 	return reports + configuration;
 }
 
-function warehouseDocumentHtml(row, queue, esc, number) {
+function warehouseDocumentHtml(row, queue, esc, number, translate = (value) => value) {
 	const slug = row.doctype.toLowerCase().replaceAll(" ", "-");
 	const href = "/desk/" + slug + "/" + encodeURIComponent(row.name);
 	const items = (row.items || []).map((item) => {
 		const warehouses = item.warehouse || [item.source_warehouse, item.target_warehouse].filter(Boolean).join(" → ");
 		return '<li><div><strong>' + esc(item.item_name) + '</strong><small>' + esc(item.item_code) +
-			(warehouses ? " · " + esc(warehouses) : "") + '</small>' + warehouseBatchHtml(item, esc, number) + '</div><span>' +
-			(queue === "purchase" ? "待收 " : "") + number(item.qty) + " " + esc(item.uom || "") + '</span></li>';
+			(warehouses ? " · " + esc(warehouses) : "") + '</small>' + warehouseBatchHtml(item, esc, number, translate) + '</div><span>' +
+			(queue === "purchase" ? "待收 " : "") + number(item.qty) + " " + esc(translate(item.uom || "")) + '</span></li>';
 	});
 	const detail = items.length > 3 ? '<details><summary>另外 ' + (items.length - 3) +
 		' 项物料</summary><ul class="warehouse-items">' + items.slice(3).join("") + '</ul></details>' : "";
@@ -167,7 +167,7 @@ if (typeof frappe !== "undefined") {
 					'">' + (category.has_pending ? "有待办" : "暂无待办") + '</span></button>'
 				).join(""));
 				root.find(".warehouse-results").html(model.rows.length ?
-					model.rows.map((row) => warehouseDocumentHtml(row, model.queue, esc, number)).join("") :
+					model.rows.map((row) => warehouseDocumentHtml(row, model.queue, esc, number, __)).join("") :
 					'<div class="warehouse-empty">' + (state.search ? "没有匹配的待办，请调整关键词或待办类型。" :
 						"此类暂无待处理单据。已提交记录可从上方查询入口查看。") + '</div>');
 				root.find(".warehouse-pagination").html(
