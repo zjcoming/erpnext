@@ -6,6 +6,8 @@ from frappe.tests import IntegrationTestCase
 
 from process_simplification.api.executive_dashboard import (
 	_companies,
+	_delivery_orders,
+	_order_health,
 	_resolve_company,
 	classify_stock,
 	owner_company_scope,
@@ -55,3 +57,54 @@ class TestExecutiveDashboardHelpers(IntegrationTestCase):
 				"Company B",
 				[frappe._dict(name="Company A", default_currency="CNY")],
 			)
+
+
+class TestExecutiveDashboardDeliveries(IntegrationTestCase):
+	def setUp(self):
+		super().setUp()
+		self.company = f"_Test Dashboard {frappe.generate_hash(length=10)}"
+		self.reference_date = date(2026, 9, 27)
+
+	def add_order(self, key, delivery_date, *, company=None, docstatus=1, status="To Deliver", progress=0):
+		# Minimal transaction-scoped rows exercise the actual SQL, including order
+		# eligibility, without invoking unrelated sales/manufacturing workflows.
+		name = f"{self.company}-{key}"
+		frappe.db.sql(
+			"""insert into `tabSales Order`
+			(name, company, docstatus, status, delivery_date, per_delivered, creation,
+			 base_net_total, base_grand_total, disable_rounded_total)
+			values (%s, %s, %s, %s, %s, %s, %s, 100, 100, 1)""",
+			(name, company or self.company, docstatus, status, delivery_date, progress, "2026-09-01 12:00:00"),
+		)
+		return name
+
+	def test_overdue_today_and_seventh_day_share_the_summary_scope(self):
+		seventh = self.add_order("seventh", "2026-10-04")
+		self.add_order("eighth", "2026-10-05")
+		today_order = self.add_order("today", "2026-09-27")
+		overdue = self.add_order("overdue", "2026-09-25", progress=40)
+		self.add_order("draft", "2026-09-20", docstatus=0)
+		self.add_order("cancelled", "2026-09-20", docstatus=2)
+		self.add_order("closed", "2026-09-20", status="Closed")
+		self.add_order("completed", "2026-09-20", status="Completed")
+		self.add_order("delivered", "2026-09-20", progress=100)
+		self.add_order("foreign", "2026-09-20", company="Another Company")
+		self.add_order("undated", None)
+		rows = _delivery_orders(self.company, self.reference_date)
+		self.assertEqual([row.name for row in rows], [overdue, today_order, seventh])
+		health = _order_health(self.company, self.reference_date)
+		self.assertEqual(health["overdue_orders"], 1)
+		self.assertEqual(health["due_within_7_days"], 2)
+		self.assertEqual(health["other_open_orders"], 2)
+
+	def test_five_row_limit_prioritizes_overdue_and_breaks_date_ties_stably(self):
+		self.add_order("upcoming", "2026-09-28")
+		expected = sorted(self.add_order(f"overdue-{key}", "2026-09-25") for key in range(6))
+		self.assertEqual(
+			[row.name for row in _delivery_orders(self.company, self.reference_date)], expected[:5]
+		)
+
+	def test_upcoming_orders_are_returned_without_any_overdue_orders(self):
+		expected = self.add_order("upcoming", "2026-09-30")
+		self.assertEqual([row.name for row in _delivery_orders(self.company, self.reference_date)], [expected])
+		self.assertEqual(_delivery_orders("No Such Company", self.reference_date), [])

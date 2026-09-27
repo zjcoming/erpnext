@@ -346,17 +346,18 @@ def _order_health(company, reference_date):
 	}
 
 
-def _overdue_orders(company, reference_date, limit=5):
+def _delivery_orders(company, reference_date, limit=5):
+	"""Show overdue orders first, then outstanding deliveries through day seven."""
 	return frappe.db.sql(
 		f"""
 		select name, customer, customer_name, delivery_date, per_delivered,
 		       order_amount, pending_amount
 		from ({_pending_orders_sql()}) pending_orders
-		where delivery_date < %(today)s
-		order by delivery_date asc, creation asc
+		where delivery_date <= %(within_7_days)s
+		order by delivery_date asc, creation asc, name asc
 		limit %(limit)s
 		""",
-		{"company": company, "today": reference_date, "limit": int(limit)},
+		{"company": company, "within_7_days": getdate(add_days(reference_date, 7)), "limit": int(limit)},
 		as_dict=True,
 	)
 
@@ -368,6 +369,9 @@ def get_dashboard(company=None, from_date=None, to_date=None):
 	companies = _companies()
 	company = _resolve_company(company, companies)
 	company_row = next(row for row in companies if row.name == company)
+	checked_at = now_datetime()
+	reference_date = getdate(checked_at)
+	delivery_orders = _delivery_orders(company, reference_date)
 
 	current_orders = _order_totals(company, period_from, period_to)
 	previous_from, previous_to = previous_period(period_from, period_to)
@@ -384,7 +388,7 @@ def get_dashboard(company=None, from_date=None, to_date=None):
 	)
 
 	return {
-		"checked_at": now_datetime(),
+		"checked_at": checked_at,
 		"company": company,
 		"currency": company_row.default_currency,
 		"companies": [dict(row) for row in companies],
@@ -393,7 +397,9 @@ def get_dashboard(company=None, from_date=None, to_date=None):
 		"order_trend": _order_trend(company, period_to),
 		"gross_profit": _gross_profit(company, period_from, period_to),
 		"inventory": _inventory_summary(company),
-		"stock_ageing": _stock_ageing(company, getdate(today())),
-		"order_health": _order_health(company, getdate(today())),
-		"overdue_orders": _overdue_orders(company, getdate(today())),
+		"stock_ageing": _stock_ageing(company, reference_date),
+		"order_health": _order_health(company, reference_date),
+		"delivery_orders": delivery_orders,
+		# Keep already-open dashboards working until they load the new page script.
+		"overdue_orders": [row for row in delivery_orders if getdate(row.delivery_date) < reference_date],
 	}

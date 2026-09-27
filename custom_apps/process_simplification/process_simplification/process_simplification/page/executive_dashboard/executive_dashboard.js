@@ -85,6 +85,26 @@ function psExecutiveOverdueDays(deliveryDate, checkedAt) {
 		? Math.max(0, Math.floor((reference - due) / 86400000)) : 0;
 }
 
+function psExecutiveDeliveryTiming(deliveryDate, checkedAt) {
+	const due = Date.parse(String(deliveryDate || "").slice(0, 10));
+	const reference = Date.parse(String(checkedAt || "").slice(0, 10));
+	if (!Number.isFinite(due) || !Number.isFinite(reference)) return { label: "交期待确认", tone: "muted" };
+	const days = Math.round((due - reference) / 86400000);
+	if (days < 0) return { label: `逾期 ${-days} 天`, tone: "overdue" };
+	return { label: days === 0 ? "今天交付" : `${days} 天后交付`, tone: "upcoming" };
+}
+
+function psExecutiveDeliveryListUrl(company, checkedAt) {
+	const deadline = new Date(String(checkedAt).slice(0, 10));
+	deadline.setUTCDate(deadline.getUTCDate() + 7);
+	const filters = new URLSearchParams({
+		company, docstatus: "1", status: JSON.stringify(["not in", ["Closed", "Completed"]]),
+		per_delivered: JSON.stringify(["<", 100]),
+		delivery_date: JSON.stringify(["<=", deadline.toISOString().slice(0, 10)]),
+	});
+	return `/desk/sales-order?${filters}`;
+}
+
 class ProcessSimplificationExecutiveDashboard {
 	constructor(wrapper) {
 		this.wrapper = wrapper;
@@ -120,11 +140,14 @@ class ProcessSimplificationExecutiveDashboard {
 			<div class="ps-exec-error hide" data-error role="alert"></div>
 			<div class="ps-exec-content hide" data-content>
 				<section class="ps-exec-metrics" data-kpis aria-label="${__("经营关键指标")}"></section>
-				<div class="ps-exec-attention" data-attention></div>
 				<section class="ps-exec-delivery-grid">
-					<article class="ps-exec-section ps-exec-overdue-section">
-						<div class="ps-exec-section-head"><div><h3>${__("先盯这些逾期订单")}</h3><p data-overdue-note></p></div></div>
-						<div data-overdue-list></div>
+					<article class="ps-exec-section ps-exec-delivery-section">
+						<div class="ps-exec-section-head ps-exec-delivery-head">
+							<div><h3>${__("交付关注")}</h3><p data-delivery-note></p></div>
+							<a class="ps-exec-view-all" data-delivery-all>${__("查看全部")} →</a>
+						</div>
+						<div class="ps-exec-delivery-summary" data-delivery-summary></div>
+						<div data-delivery-list></div>
 					</article>
 					<article class="ps-exec-section">
 						<div class="ps-exec-section-head"><h3>${__("待交付概况")}</h3></div>
@@ -279,17 +302,12 @@ class ProcessSimplificationExecutiveDashboard {
 			this.metric({
 				label: __("90 天以上库存"),
 				...(ageing.available ? { amount: ageing.stock_value } : { value: "—" }),
-				detail: ageing.available ? `${psExecutiveFormatInteger(ageing.item_count)} ${__("个物料")}` : ageing.message || __("暂时无法计算"),
+				detail: ageing.available ? `${psExecutiveFormatInteger(ageing.item_count)} ${__("种物料")}` : ageing.message || __("暂时无法计算"),
 				tone: ageing.available && ageing.stock_value > 0 ? "warning" : "",
 			}),
 		].join(""));
-		const overdueCount = Number(health.overdue_orders || 0);
-		this.root.find("[data-attention]").html(overdueCount
-			? `<strong>${overdueCount} ${__("单已逾期，需要跟进交付")}</strong><span>${__("逾期待交付")} ${this.money(health.overdue_amount)}</span>`
-			: `<strong>${__("当前没有逾期订单")}</strong><span>${__("7 天内到期")} ${psExecutiveFormatInteger(health.due_within_7_days)} ${__("单")}</span>`
-		).toggleClass("is-clear", !overdueCount);
 		this.render_order_health();
-		this.render_overdue_orders();
+		this.render_delivery_orders();
 		this.render_inventory();
 		this.render_charts();
 	}
@@ -311,23 +329,28 @@ class ProcessSimplificationExecutiveDashboard {
 		</div>`).join("")}`);
 	}
 
-	render_overdue_orders() {
-		const orders = this.data.overdue_orders || [];
-		const count = Number(this.data.order_health.overdue_orders || 0);
-		this.root.find("[data-overdue-note]").text(count
-			? `${__("按交期从早到晚")} · ${__("显示")} ${orders.length} / ${count} ${__("单")} · ${__("点订单查看交付进展")}`
-			: __("继续关注即将到期的交付"));
+	render_delivery_orders() {
+		const orders = this.data.delivery_orders || this.data.overdue_orders || [];
+		const health = this.data.order_health || {};
+		const overdue = Number(health.overdue_orders || 0);
+		const upcoming = Number(health.due_within_7_days || 0);
+		const count = overdue + upcoming;
+		this.root.find("[data-delivery-note]").text(`${__("逾期优先 · 含今天及未来 7 天待交付")} · ${__("显示")} ${orders.length} / ${count} ${__("单")}`);
+		this.root.find("[data-delivery-summary]").html(count
+			? `<span class="ps-exec-summary-${overdue ? "overdue" : "clear"}">${overdue ? `${psExecutiveFormatInteger(overdue)} ${__("单已逾期，需跟进")}` : __("当前没有逾期订单")}</span><span>${psExecutiveFormatInteger(upcoming)} ${__("单近期到期")}</span>`
+			: "");
+		this.root.find("[data-delivery-all]").attr("href", psExecutiveDeliveryListUrl(this.data.company, this.data.checked_at)).toggleClass("hide", !count);
 		if (!orders.length) {
-			this.root.find("[data-overdue-list]").html(`<div class="ps-exec-empty">${__("当前没有逾期未交付订单")}</div>`);
+			this.root.find("[data-delivery-list]").html(`<div class="ps-exec-empty">${__("当前没有逾期或未来 7 天待交付订单")}</div>`);
 			return;
 		}
-		this.root.find("[data-overdue-list]").html(orders.map((row) => {
+		this.root.find("[data-delivery-list]").html(orders.map((row) => {
 			const progress = psExecutiveProgress(row.per_delivered);
-			const days = psExecutiveOverdueDays(row.delivery_date, this.data.checked_at);
+			const timing = psExecutiveDeliveryTiming(row.delivery_date, this.data.checked_at);
 			const href = `/desk/order-workbench?sales_order=${encodeURIComponent(row.name)}`;
 			return `<a class="ps-exec-order" href="${psExecutiveEscape(href)}">
 				<div class="ps-exec-order-identity"><strong>${psExecutiveEscape(row.customer_name || row.customer)}</strong><span>${psExecutiveEscape(row.name)}</span></div>
-				<div class="ps-exec-order-due"><strong>${__("逾期")} ${days} ${__("天")}</strong><span>${psExecutiveEscape(row.delivery_date)} ${__("交付")}</span></div>
+				<div class="ps-exec-order-due ps-exec-due-${timing.tone}"><strong>${psExecutiveEscape(__(timing.label))}</strong><span>${psExecutiveEscape(row.delivery_date)} ${__("交付")}</span></div>
 				<div class="ps-exec-order-amount"><small>${__("待交付金额")}</small><strong>${this.money(row.pending_amount)}</strong></div>
 				<div class="ps-exec-delivered">
 					<span>${progress === 0 ? __("尚未交付") : `${__("已交付")} ${progress.toFixed(1).replace(/\.0$/, "")}%`}</span>
@@ -347,7 +370,7 @@ class ProcessSimplificationExecutiveDashboard {
 			const color = /^#[0-9a-f]{6}$/i.test(row.color) ? row.color : "#64748b";
 			return `<div class="ps-exec-inventory-row">
 				<div class="ps-exec-inventory-heading"><span><i style="background:${color}"></i>${psExecutiveEscape(row.label)}</span><strong>${this.money(row.stock_value)}</strong></div>
-				<div class="ps-exec-inventory-meta"><span>${psExecutiveFormatInteger(row.item_count)} ${__("个物料")}</span><span>${hasNegative ? "" : `${percentage.toFixed(1)}%`}</span></div>
+				<div class="ps-exec-inventory-meta"><span>${psExecutiveFormatInteger(row.item_count)} ${__("种物料")}</span><span>${hasNegative ? "" : `${percentage.toFixed(1)}%`}</span></div>
 				${hasNegative ? "" : `<div class="ps-exec-inventory-track"><i style="background:${color};width:${percentage}%"></i></div>`}
 			</div>`;
 		}).join("") + (hasNegative ? `<p class="ps-exec-scope">${__("存在负库存价值，仅展示金额，不计算占比。")}</p>` : ""));
@@ -396,6 +419,7 @@ if (typeof module !== "undefined" && module.exports) {
 		psExecutiveFormatCurrency, psExecutiveFormatInteger, psExecutiveDestroyCharts,
 		psExecutiveChartOptions, psExecutiveCompactAmount, psExecutivePeriod,
 		psExecutivePeriodPreset, psExecutiveProgress, psExecutiveOverdueDays,
+		psExecutiveDeliveryTiming, psExecutiveDeliveryListUrl,
 		ProcessSimplificationExecutiveDashboard,
 	};
 }

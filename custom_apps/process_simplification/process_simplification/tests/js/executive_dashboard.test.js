@@ -14,6 +14,8 @@ const {
 	psExecutivePeriodPreset,
 	psExecutiveProgress,
 	psExecutiveOverdueDays,
+	psExecutiveDeliveryTiming,
+	psExecutiveDeliveryListUrl,
 	ProcessSimplificationExecutiveDashboard,
 } = require("../../process_simplification/page/executive_dashboard/executive_dashboard.js");
 
@@ -109,6 +111,8 @@ function dashboardHarness() {
 		attr() { return this; },
 		find(selector) {
 			return {
+				attr(name, value) { outputs[`${selector}:${name}`] = value; return this; },
+				toggleClass() { return this; },
 				prop() { return this; }, addClass() { return this; }, removeClass() { return this; },
 				text(value) { outputs[selector] = value; return this; },
 				html(value) { outputs[selector] = value; return this; },
@@ -174,6 +178,8 @@ test("inventory includes other and zero balances, escapes labels and avoids nega
 		assert.match(outputs["[data-inventory-list]"], /&lt;其他&gt;/);
 		assert.match(outputs["[data-inventory-list]"], /半成品/);
 		assert.match(outputs["[data-inventory-list]"], /100\.00 元/);
+		assert.match(outputs["[data-inventory-list]"], /1 种物料/);
+		assert.match(outputs["[data-inventory-list]"], /0 种物料/);
 		dashboard.data.inventory.categories[0].stock_value = -100;
 		dashboard.render_inventory();
 		assert.match(outputs["[data-inventory-list]"], /-100\.00 元/);
@@ -186,23 +192,63 @@ test("overdue rows distinguish quantity progress from money and safely link to a
 	global.__ = (text) => text;
 	const { dashboard, outputs } = dashboardHarness();
 	dashboard.data = {
-		currency: "CNY", checked_at: "2026-09-11 19:19:47",
+		company: "公司 A", currency: "CNY", checked_at: "2026-09-11 19:19:47",
 		order_health: { overdue_orders: 2 },
-		overdue_orders: [
+		delivery_orders: [
 			{ name: "SO/001", customer_name: "<客户>", delivery_date: "2026-09-02", per_delivered: 37.5, pending_amount: 900 },
 			{ name: "SO-002", customer_name: "客户 B", delivery_date: "2026-09-05", per_delivered: 0, pending_amount: 100 },
 		],
 	};
 	try {
-		dashboard.render_overdue_orders();
-		assert.match(outputs["[data-overdue-list]"], /sales_order=SO%2F001/);
-		assert.match(outputs["[data-overdue-list]"], /&lt;客户&gt;/);
-		assert.match(outputs["[data-overdue-list]"], /已交付 37\.5%/);
-		assert.match(outputs["[data-overdue-list]"], /尚未交付/);
-		assert.match(outputs["[data-overdue-list]"], /逾期 9 天/);
-		assert.match(outputs["[data-overdue-list]"], /900\.00 元/);
-		dashboard.data.overdue_orders = [];
-		dashboard.render_overdue_orders();
-		assert.match(outputs["[data-overdue-list]"], /当前没有逾期未交付订单/);
+		dashboard.render_delivery_orders();
+		assert.match(outputs["[data-delivery-list]"], /sales_order=SO%2F001/);
+		assert.match(outputs["[data-delivery-list]"], /&lt;客户&gt;/);
+		assert.match(outputs["[data-delivery-list]"], /已交付 37\.5%/);
+		assert.match(outputs["[data-delivery-list]"], /尚未交付/);
+		assert.match(outputs["[data-delivery-list]"], /逾期 9 天/);
+		assert.match(outputs["[data-delivery-list]"], /900\.00 元/);
+		dashboard.data.delivery_orders = [];
+		dashboard.data.order_health.overdue_orders = 0;
+		dashboard.render_delivery_orders();
+		assert.match(outputs["[data-delivery-list]"], /当前没有逾期或未来 7 天待交付订单/);
 	} finally { delete global.__; }
+});
+
+test("delivery timing distinguishes overdue, today and upcoming across calendar boundaries", () => {
+	assert.deepEqual(psExecutiveDeliveryTiming("2026-09-25", "2026-09-27 00:01:00"), { label: "逾期 2 天", tone: "overdue" });
+	assert.deepEqual(psExecutiveDeliveryTiming("2026-09-27", "2026-09-27 23:59:59"), { label: "今天交付", tone: "upcoming" });
+	assert.deepEqual(psExecutiveDeliveryTiming("2026-10-04", "2026-09-27"), { label: "7 天后交付", tone: "upcoming" });
+	assert.equal(psExecutiveDeliveryTiming("2027-01-01", "2026-12-31").label, "1 天后交付");
+	assert.equal(psExecutiveDeliveryTiming(null, "2026-09-27").label, "交期待确认");
+});
+
+test("upcoming orders are visible even when no order is overdue and counts show truncation", () => {
+	global.__ = (text) => text;
+	const { dashboard, outputs } = dashboardHarness();
+	dashboard.data = {
+		company: "公司 A", currency: "CNY", checked_at: "2026-09-27 12:00:00",
+		order_health: { overdue_orders: 0, due_within_7_days: 7 },
+		delivery_orders: [
+			{ name: "TODAY", delivery_date: "2026-09-27", per_delivered: 0, pending_amount: 100 },
+			{ name: "NEXT", delivery_date: "2026-09-30", per_delivered: 50, pending_amount: 200 },
+		],
+	};
+	try {
+		dashboard.render_delivery_orders();
+		assert.match(outputs["[data-delivery-note]"], /显示 2 \/ 7 单/);
+		assert.match(outputs["[data-delivery-list]"], /今天交付/);
+		assert.match(outputs["[data-delivery-list]"], /3 天后交付/);
+		assert.doesNotMatch(outputs["[data-delivery-list]"], /逾期 0 天|ps-exec-due-overdue/);
+		assert.match(outputs["[data-delivery-summary]"], /当前没有逾期订单/);
+	} finally { delete global.__; }
+});
+
+test("view all preserves company and the delivery scope including the seventh day", () => {
+	const url = new URL(psExecutiveDeliveryListUrl("公司 A & B", "2026-12-28 12:00:00"), "https://example.test");
+	assert.equal(url.pathname, "/desk/sales-order");
+	assert.equal(url.searchParams.get("company"), "公司 A & B");
+	assert.equal(url.searchParams.get("docstatus"), "1");
+	assert.deepEqual(JSON.parse(url.searchParams.get("delivery_date")), ["<=", "2027-01-04"]);
+	assert.deepEqual(JSON.parse(url.searchParams.get("per_delivered")), ["<", 100]);
+	assert.deepEqual(JSON.parse(url.searchParams.get("status")), ["not in", ["Closed", "Completed"]]);
 });
