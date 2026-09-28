@@ -10,7 +10,7 @@
 
 ## 验证
 
-在本地隔离演示站点 `returns-demo.localhost`（端口 18090）完成，未部署到线上。
+以下为发布前在本地隔离演示站点 `returns-demo.localhost`（端口 18090）完成的验证。生产发布与线上复核见下文。
 
 | 检查 | 结果 |
 | --- | --- |
@@ -33,3 +33,35 @@ git diff --check
 ```
 
 20 项测试通过。隔离 Bench 的 `bench build --app process_simplification` 与站点 `clear-cache` 完成。发布时需同步新增 JS/CSS 与 hooks、构建资源并清理站点缓存；hooks 中已更新资源版本号。
+
+## 生产发布
+
+2026-09-28 15:41:45（北京时间）完成部署，站点为 `https://erp.hengsuankeji.com`。
+
+- 分支：`rc/develop-v16`；应用提交：`6ed984be3ddb347fd0450294954a791ed21ab682`。
+- 基础镜像：`hengsuan/erpnext:v16.33.0-hs.20260928.1`，包含当日老板权限修复。
+- 发布镜像：`hengsuan/erpnext:v16.33.0-hs.20260928.2`。
+- 镜像 ID：`sha256:72d287dd5303b1b139b3fd7c5971240c6368c178752788b924cda74db19d3ea0`。
+- 完整应用源码指纹：374 个文件，`651a2416f6dcd516e6b83b5bccfef8fbae41af794d3b77d24746c835748f2422`，与固定 Git 提交一致。
+
+基于已验证生产镜像构建新镜像，覆盖上述提交中的 hooks、两份 CSS、新增 JS 及其测试。五个文件下载后逐一校验 SHA-256；镜像内静态资源链接指向应用 public 目录，直接提供本次未打包的 CSS/JS。同步刷新 `assets/assets.json` 的修改时间，使 Frappe 页面缓存随构建版本失效；清理站点缓存后重建六个应用服务，未执行数据库迁移。Frappe 16.32.0、ERPNext 16.33.0、已有补丁与 3×4 Web 并发保持不变。
+
+## 生产验证
+
+- 候选镜像在无网络环境运行相关 JavaScript 测试，20 项全部通过。
+- 六个应用服务使用同一新镜像，backend/frontend 健康；维护模式、开发模式、测试开关均关闭。
+- 公网 HTTPS ping 返回 200 / `pong`；服务恢复后再连续检查三次本机 ping 均正常。
+- 浏览器实际加载 `process_ui.css?v=17`、`mobile_desk.css?v=3`、`mobile_desk.js?v=2`，三个公网资源的 SHA-256 均与提交一致。
+- 线上库存流水在 390px 视口下页面宽度为 390px，默认筛选区高 280px；实际展开、收起均正常。
+- 线上缺料采购显示现有 10 种物料，390px 与 320px 均无页面横向溢出，主操作按钮完整可见；390px 下首张卡片高约 350px。
+- 现有采购订单 `PUR-ORD-2026-00005` 在 320px 视口下页面没有横向溢出；菜单宽 240px、高 612px，内部内容高 1003px，实际滚动至底部通过。
+
+以上为 Chrome 手机尺寸模拟，未做手机实机验收；生产浏览器验证未生成采购申请或修改业务单据。
+
+## 备份与回退
+
+维护期间停止前端、队列和调度器，保存数据库、公开附件、私有附件及站点配置，压缩包完整性和四份文件的 SHA-256 校验通过。在业务服务停止期间，切换代码及清理缓存前后，28 张业务、账号与权限表的逐行摘要完全一致。`.env` 仅替换镜像标签，Compose 文件保持一致。
+
+服务器受限证据目录：`/opt/hengsuan-erp/releases/20260928.2-mobile/`。其中 `backup/`、`backup-sha256.txt`、`data-before.json`、`data-after.json`、`candidate-gate.txt`、`source-gate.txt`、`js-tests.txt`、`image-id.txt`、`deploy.log`、`completed.txt` 及原配置均已保留，未提交 Git。
+
+部署脚本包含失败时恢复上一版 `.env`、清理旧版缓存、退出维护并重启服务的回退逻辑。本次未触发回退，未恢复数据库，也未执行异地备份复制或恢复演练。刷新已有页面即可加载新版布局。
