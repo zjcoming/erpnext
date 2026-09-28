@@ -68,7 +68,7 @@ ROLE_DEFINITIONS = (
 		"role": SALES_OPERATOR_ROLE,
 		"profile": "流程简化 - 销售",
 		"label": "销售人员",
-		"description": "使用快速开单和订单工作台；仍需相应的 ERPNext 销售单据权限。",
+		"description": "使用快速开单和订单工作台，包含所需销售单据权限；须配置公司范围。",
 		"sensitive": False,
 		"capabilities": (CAPABILITY_SALES_ORDER, CAPABILITY_ORDER_WORKBENCH),
 	},
@@ -263,12 +263,20 @@ PRODUCTION_MANAGER_PERMISSIONS = {
 	"Sales Order": {"read", "select"},
 	"Production Plan": {"read", "select", "create", "write", "submit"},
 	"Work Order": {"read", "select", "create", "write", "submit"},
-	"Job Card": {"read", "select"},
+	"Job Card": {"read", "select", "print"},
 	"Stock Reservation Entry": {"read", "select"},
 	"Stock Entry": {"read", "select"},
 	"Delivery Note": {"read", "select"},
 	"Material Request": {"read", "select"},
 	"Purchase Order": {"read", "select"},
+}
+
+
+WAGE_MANAGER_PERMISSIONS = {
+	# Native wage-rate Link fields need selection rights without exposing or
+	# allowing edits to company configuration and operation master data.
+	"Company": {"select"},
+	"Operation": {"select"},
 }
 
 
@@ -284,6 +292,7 @@ OWNER_PERMISSIONS = _merge_permissions(
 	SALES_OPERATOR_PERMISSIONS,
 	WAREHOUSE_OPERATOR_PERMISSIONS,
 	PRODUCTION_MANAGER_PERMISSIONS,
+	WAGE_MANAGER_PERMISSIONS,
 	{
 		# Owners must be able to add parties from native Link quick entry without
 		# relying on legacy Sales/Purchase Master Manager or System Manager roles.
@@ -300,6 +309,7 @@ MANAGED_DOCUMENT_PERMISSIONS = {
 	SALES_OPERATOR_ROLE: SALES_OPERATOR_PERMISSIONS,
 	WAREHOUSE_OPERATOR_ROLE: WAREHOUSE_OPERATOR_PERMISSIONS,
 	PRODUCTION_MANAGER_ROLE: PRODUCTION_MANAGER_PERMISSIONS,
+	WAGE_MANAGER_ROLE: WAGE_MANAGER_PERMISSIONS,
 }
 
 PAGE_CAPABILITIES = {

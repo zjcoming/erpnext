@@ -1086,8 +1086,11 @@ class TestWorkerReporting(IntegrationTestCase):
 		from erpnext.stock.doctype.stock_entry.stock_entry_utils import make_stock_entry
 		job_card, assignment = self._setup_flow(qty=qty)
 		with self.set_user("Administrator"):
+			# Seed stock before today's transfer even if native new-doc defaults
+			# retain an earlier posting time during the same test request.
 			make_stock_entry(item_code=self.TEST_RAW_MATERIAL, to_warehouse=self.source_warehouse,
-				company=self.TEST_COMPANY, qty=qty, basic_rate=1)
+				company=self.TEST_COMPANY, qty=qty, basic_rate=1,
+				posting_date=add_days(nowdate(), -1), posting_time="12:00:00")
 			frappe.db.set_value("Work Order", job_card.work_order, {
 				"skip_transfer": 0, "source_warehouse": self.source_warehouse,
 				"wip_warehouse": self.wip_warehouse, "scrap_warehouse": self.scrap_warehouse,
@@ -2555,6 +2558,31 @@ class TestWorkerReporting(IntegrationTestCase):
 			)
 			self.assertFalse(frappe.has_permission("Job Card", "write", doc=job_card))
 			self.assertTrue(frappe.has_permission("Job Card", "read", doc=unassigned_job_card))
+
+	def test_owner_and_production_manager_can_print_company_task_sheet(self):
+		from process_simplification.management_access import OWNER_ROLE, ensure_management_access
+		from process_simplification.printing import ensure_factory_job_print_format
+
+		ensure_management_access()
+		ensure_factory_job_print_format()
+		job_card = self._make_job_card(qty=10)
+		owner = self._make_user(OWNER_ROLE)
+		self._grant_company(owner, self.TEST_COMPANY)
+		for user in (owner, self.supervisor):
+			with self.subTest(user=user), self.set_user(user):
+				self.assertNotIn("System Manager", frappe.get_roles())
+				job_card.check_permission("print")
+				with self.change_settings("Print Settings", {"allow_print_for_draft": 1}):
+					html = frappe.get_print("Job Card", job_card.name, print_format="工厂生产任务单")
+				self.assertIn(job_card.name, html)
+				self.assertIn("生产任务单", html)
+				self.assertFalse(frappe.has_permission("Job Card", "write", doc=job_card))
+				foreign = frappe.copy_doc(job_card)
+				foreign.company = self.OTHER_COMPANY
+				self.assertFalse(frappe.has_permission("Job Card", "print", doc=foreign))
+		with self.set_user(self.worker_user):
+			self.assertFalse(frappe.has_permission("Job Card", "print", doc=job_card))
+			self.assertFalse(frappe.has_permission("Job Card", "read", doc=job_card))
 
 	def test_production_manager_custom_records_are_company_scoped(self):
 		from process_simplification.production_exceptions import permissions as exception_permissions
