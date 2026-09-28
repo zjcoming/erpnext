@@ -284,7 +284,15 @@ OWNER_PERMISSIONS = _merge_permissions(
 	SALES_OPERATOR_PERMISSIONS,
 	WAREHOUSE_OPERATOR_PERMISSIONS,
 	PRODUCTION_MANAGER_PERMISSIONS,
-	{"Purchase Order": {"read", "select", "create", "write", "submit"}},
+	{
+		# Owners must be able to add parties from native Link quick entry without
+		# relying on legacy Sales/Purchase Master Manager or System Manager roles.
+		"Customer": {"create", "write"},
+		"Supplier": {"create", "write"},
+		"Customer Group": {"read", "select"},
+		"Territory": {"read", "select"},
+		"Purchase Order": {"read", "select", "create", "write", "submit", "print"},
+	},
 )
 
 MANAGED_DOCUMENT_PERMISSIONS = {

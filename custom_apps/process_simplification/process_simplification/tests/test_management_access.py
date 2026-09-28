@@ -617,6 +617,98 @@ class TestManagementAccess(IntegrationTestCase):
 		owner_purchase = permission("Purchase Order", OWNER_ROLE)
 		self.assertTrue(owner_purchase.read and owner_purchase.create and owner_purchase.write and owner_purchase.submit)
 
+	def test_owner_can_quick_create_parties_with_contact_and_address(self):
+		from frappe.client import insert
+
+		owner = self._make_user(OWNER_ROLE)
+		self._set_access(owner, [OWNER_ROLE])
+		customer_group = frappe.get_doc({
+			"doctype": "Customer Group", "customer_group_name": "Owner Quick Entry " + random_string(10),
+			"parent_customer_group": "All Customer Groups", "is_group": 0,
+		}).insert().name
+		frappe.set_user(owner)
+		self.assertNotIn("System Manager", frappe.get_roles())
+		user_permissions = frappe.get_user()
+		user_permissions.build_permissions()
+		for doctype in ("Customer", "Supplier"):
+			with self.subTest(doctype=doctype):
+				self.assertIn(doctype, user_permissions.can_create + user_permissions.in_create)
+				party = doctype.lower()
+				name = f"Owner Quick Entry {random_string(10)}"
+				values = {
+					"doctype": doctype,
+					f"{party}_name": name,
+					f"{party}_type": "Company",
+					f"{party}_group": f"All {doctype} Groups",
+					"first_name": "Owner Test Contact",
+					"email_id": f"owner-party-{random_string(10).lower()}@example.com",
+					"mobile_no": "13800000000",
+					"address_line1": "Owner Quick Entry Test Address",
+					"city": "Chongqing",
+					"country": "China",
+				}
+				if doctype == "Customer":
+					values["customer_group"] = customer_group
+					values["territory"] = "All Territories"
+				for reference in (f"{doctype} Group", "Territory", "Country"):
+					self.assertTrue(frappe.has_permission(reference, "select"), reference)
+				created = insert(values)
+				doc = frappe.get_doc(doctype, created["name"])
+				self.assertEqual(doc.owner, owner)
+				self.assertTrue(doc.get(f"{party}_primary_contact"))
+				self.assertTrue(doc.get(f"{party}_primary_address"))
+				doc.check_permission("read")
+				doc.set(f"{party}_name", name + " Updated")
+				doc.save()
+				self.assertEqual(frappe.db.get_value(doctype, doc.name, f"{party}_name"), name + " Updated")
+
+	def test_owner_can_print_purchase_order_with_company_scope(self):
+		from erpnext.buying.doctype.purchase_order.test_purchase_order import create_purchase_order
+
+		owner = self._make_user(OWNER_ROLE)
+		self._set_access(owner, [OWNER_ROLE])
+		supplier = frappe.get_doc({
+			"doctype": "Supplier", "supplier_name": "Owner Print " + random_string(10),
+			"supplier_group": "All Supplier Groups", "supplier_type": "Company",
+		}).insert()
+		item = frappe.get_doc({
+			"doctype": "Item", "item_code": "Owner Print " + random_string(10),
+			"item_group": "All Item Groups", "stock_uom": "Nos", "is_stock_item": 0,
+		}).insert()
+		order = create_purchase_order(
+			company=self.company, supplier=supplier.name, item_code=item.name,
+			warehouse=self.warehouse, qty=1, rate=12,
+		)
+		frappe.set_user(owner)
+		user_permissions = frappe.get_user()
+		user_permissions.build_permissions()
+		self.assertIn("Purchase Order", user_permissions.can_print)
+		order.check_permission("print")
+		html = frappe.get_print("Purchase Order", order.name, print_format="工厂采购订单")
+		self.assertIn(order.name, html)
+		self.assertIn(supplier.supplier_name, html)
+		self.assertIn("采购订单", html)
+
+		# A print grant must still respect the company's native User Permission.
+		other_order = frappe.copy_doc(order)
+		other_order.company = "Other Company " + random_string(10)
+		self.assertFalse(frappe.has_permission("Purchase Order", "read", doc=other_order))
+		self.assertFalse(frappe.has_permission("Purchase Order", "print", doc=other_order))
+
+	def test_owner_party_and_print_grants_do_not_expand_operator_or_system_rights(self):
+		for role in (OWNER_ROLE, SALES_OPERATOR_ROLE, WAREHOUSE_OPERATOR_ROLE, PRODUCTION_MANAGER_ROLE):
+			with self.subTest(role=role):
+				frappe.set_user("Administrator")
+				user = self._make_user(role)
+				self._set_access(user, [role])
+				frappe.set_user(user)
+				for doctype in ("Customer", "Supplier"):
+					self.assertEqual(bool(frappe.has_permission(doctype, "create")), role == OWNER_ROLE)
+					self.assertEqual(bool(frappe.has_permission(doctype, "write")), role == OWNER_ROLE)
+					self.assertFalse(frappe.has_permission(doctype, "delete"))
+				self.assertEqual(bool(frappe.has_permission("Purchase Order", "print")), role == OWNER_ROLE)
+				self.assertFalse(frappe.has_permission("System Settings", "write"))
+
 	def test_warehouse_operator_can_open_stock_balance_and_read_material_transfer_type(self):
 		from frappe.desk.query_report import get_report_doc
 
