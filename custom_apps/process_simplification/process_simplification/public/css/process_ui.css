@@ -837,18 +837,43 @@
 	.shortage-hero p { margin: 6px 0 0; font-size: 14px; }
 	.shortage-hero .shortage-eyebrow { display: none; }
 	.shortage-summary { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 10px; }
-	.shortage-summary > div { display: flex; align-items: baseline; gap: 6px; padding: 0; border: 0; background: transparent; box-shadow: none; }
+	.shortage-summary > div { display: flex; align-items: baseline; gap: 6px; padding: 0; border: 0; background: transparent; box-shadow: none; overflow: visible; }
+	.shortage-summary > div::before { display: none; }
+	.shortage-summary span { margin: 0; }
 	.shortage-summary strong { margin: 0; font-size: 18px; }
 	.shortage-summary > div:nth-child(n+3) { display: none; }
-	.shortage-toolbar { grid-template-columns: 1fr 1fr; gap: 8px; padding: 12px; }
+	.shortage-toolbar { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding: 12px; }
+	.shortage-toolbar > * { min-width: 0; }
 	.shortage-search-wrap { grid-column: 1 / -1; }
-	.shortage-select-all-wrap { justify-content: flex-end; align-self: end; margin: 0; }
-	.process-simplification-page .shortage-table tbody td::before { font-size: 14px; }
-	.process-simplification-page .shortage-table .shortage-purchase-cell { grid-row: 2; }
+	.shortage-select-all-wrap { justify-content: center; align-self: end; margin: 0; padding: 8px; white-space: normal; }
+	.shortage-select-all-wrap input { flex-shrink: 0; }
+	.shortage-table-wrap { padding: 8px; }
+	.shortage-table tbody { gap: 8px; }
+	.shortage-table tbody tr, .shortage-table tbody tr.is-selected {
+		grid-template-columns: 32px minmax(0, 1fr);
+		gap: 8px;
+		padding: 12px;
+	}
+	.process-simplification-page .shortage-table tbody td { grid-column: 1 / -1; gap: 4px; }
+	.process-simplification-page .shortage-table .shortage-check-cell { grid-row: 1; grid-column: 1; }
+	.process-simplification-page .shortage-table .shortage-material-cell { grid-row: 1; grid-column: 2; }
+	.shortage-check { min-height: 40px; align-items: center; }
+	.shortage-uom { justify-self: start; margin-top: 2px; padding: 2px 7px; }
+	.process-simplification-page .shortage-table tbody td::before { font-size: 12px; }
+	.process-simplification-page .shortage-table .shortage-purchase-cell { grid-row: 2; padding-top: 8px; }
 	.process-simplification-page .shortage-table .shortage-coverage-cell { grid-row: 3; }
-	.shortage-coverage-grid small { font-size: 14px; }
+	.shortage-purchase-cell { grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); align-items: center; }
+	.shortage-purchase-cell > small { grid-column: 1 / -1; margin: 0; font-size: 12px; }
+	.shortage-qty-editor .purchase-qty { width: 100%; max-width: none; font-size: 16px; }
+	.shortage-gap-summary { flex-wrap: wrap; gap: 4px 8px; }
+	.shortage-gap-summary strong { overflow-wrap: anywhere; }
+	.shortage-coverage-grid small { font-size: 12px; white-space: normal; }
+	.shortage-coverage-grid strong { overflow-wrap: anywhere; }
+	.process-simplification-page .shortage-table .shortage-warehouse-cell { grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 8px; }
+	.shortage-warehouse { justify-self: start; }
 	.shortage-material-cell::before, .shortage-coverage-cell::before, .shortage-sources-cell::before { display: none; }
-	.shortage-table :is(summary, .shortage-uom) { font-size: 14px; }
+	.shortage-table summary { font-size: 14px; }
+	.shortage-table .shortage-uom { font-size: 12px; }
 	.review-hero-copy { display: none; }
 	.review-hero { padding: 10px; }
 	.review-kpi-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
@@ -929,6 +954,10 @@
 		align-items: center;
 		min-width: 34px;
 	}
+}
+
+@media (max-width: 359px) {
+	.shortage-purchase-cell { grid-template-columns: minmax(0, 1fr); }
 }
 
 .quick-material-risk > .quick-material-risk-heading {

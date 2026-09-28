@@ -1,0 +1,201 @@
+/* Keep these overrides in the custom app; desktop Desk retains its native layout. */
+.ps-report-filter-toggle {
+	display: none;
+}
+
+@media (max-width: 767px) {
+	body {
+		--page-head-height: 104px;
+	}
+
+	.page-head .page-head-content {
+		flex-wrap: wrap !important;
+		height: auto;
+		min-height: var(--page-head-height);
+		gap: 6px;
+		padding-block: 8px;
+		padding-inline: 12px;
+	}
+
+	.page-head .page-title {
+		flex: 1 1 100%;
+		width: 100%;
+		min-width: 0;
+		min-height: 36px;
+		padding-inline: 0;
+	}
+
+	.page-head .title-area {
+		flex: 1;
+		min-width: 0;
+	}
+
+	.page-head .navbar-breadcrumbs,
+	body[data-route^="Form"] .page-head .navbar-breadcrumbs {
+		flex: 1;
+		width: auto;
+		max-width: none;
+	}
+
+	.page-head .standard-items-section {
+		flex: 1 1 100%;
+		min-width: 0;
+		gap: 6px;
+	}
+
+	.page-head .standard-items-section .search-bar {
+		flex: 0 0 40px;
+		width: 40px;
+		min-width: 40px;
+		height: 40px;
+		margin: 0;
+	}
+
+	.page-head .page-actions {
+		flex: 1;
+		min-width: 0;
+		padding: 0;
+		gap: 6px;
+	}
+
+	.page-head .standard-actions {
+		flex: 1;
+		min-width: 0;
+		flex-wrap: wrap;
+		justify-content: flex-end;
+		gap: 6px;
+	}
+
+	.page-head .page-actions .btn {
+		min-height: 40px;
+		height: auto;
+		margin: 0;
+		line-height: 1.35;
+	}
+
+	.page-head .page-actions .icon-btn {
+		width: 40px;
+		min-width: 40px;
+		padding: 8px;
+		justify-content: center;
+	}
+
+	.page-head .ps-document-scan-entry span {
+		display: none;
+	}
+
+	.page-head .standard-actions > .primary-action {
+		flex: 1 1 0;
+		min-width: 0;
+		max-width: 100%;
+		justify-content: center;
+		white-space: normal;
+		overflow-wrap: anywhere;
+	}
+
+	.page-head .page-actions :is(.btn-secondary, .actions-btn-group) {
+		min-width: 0;
+		max-width: 100%;
+	}
+
+	.page-head .page-actions :is(.btn-secondary, .actions-btn-group .btn) {
+		white-space: normal;
+	}
+
+	/* Native dropdown positioning stays intact; long menus scroll within the phone. */
+	.page-head .page-actions .dropdown-menu {
+		min-width: min(240px, calc(100vw - 32px));
+		max-width: calc(100vw - 32px);
+		max-height: calc(100vh - var(--page-head-height) - 24px);
+		max-height: calc(100dvh - var(--page-head-height) - 24px);
+		overflow-y: auto;
+		overscroll-behavior: contain;
+	}
+
+	.page-head .page-actions .dropdown-item {
+		min-height: 44px;
+		white-space: normal;
+		overflow-wrap: anywhere;
+	}
+
+	.page-head .menu-item-shortcut {
+		display: none;
+	}
+
+	/* Let tables own horizontal scrolling instead of widening the entire page. */
+	.layout-main-section-wrapper,
+	body[data-route^="Form"] .layout-main-section-wrapper {
+		min-width: 0;
+	}
+
+	body[data-route^="Form"] .form-layout .form-section {
+		padding: 12px;
+	}
+
+	body[data-route^="Form"] .form-layout .form-group {
+		margin-bottom: 16px;
+	}
+
+	#page-query-report .page-form.ps-report-filters {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 10px;
+		padding: 12px;
+	}
+
+	#page-query-report .ps-report-filters .frappe-control {
+		width: 100%;
+		max-width: 100%;
+		min-width: 0;
+		padding: 0;
+		margin: 0;
+	}
+
+	#page-query-report .ps-report-filters .form-control {
+		min-height: 40px;
+		font-size: 16px;
+	}
+
+	#page-query-report .ps-report-filters .ps-report-filter-wide,
+	#page-query-report .ps-report-filters .check-filter-area,
+	#page-query-report .ps-report-filters .ps-report-filter-toggle {
+		grid-column: 1 / -1;
+	}
+
+	#page-query-report .ps-report-filters .frappe-control:not([data-fieldtype="Check"])::before {
+		content: attr(data-ps-filter-label);
+		display: block;
+		margin-bottom: 4px;
+		color: var(--text-muted);
+		font-size: 12px;
+	}
+
+	#page-query-report .ps-report-filters .frappe-control > :is(.select-icon, .placeholder) {
+		top: auto;
+		bottom: 10px;
+	}
+
+	#page-query-report .ps-report-filters-collapsed .ps-report-filter-extra {
+		display: none;
+	}
+
+	#page-query-report .ps-report-filter-toggle:not([hidden]) {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 6px;
+		min-height: 40px;
+		margin: 0;
+	}
+
+	#page-query-report .ps-report-filters .awesomplete > ul,
+	#page-query-report .ps-report-filters .multiselect-list .dropdown-menu {
+		min-width: 100%;
+		max-width: calc(100vw - 48px);
+	}
+
+	#page-query-report .report-wrapper {
+		min-width: 0;
+		padding-inline: 12px;
+	}
+}

@@ -14,13 +14,14 @@ required_apps = ["erpnext"]
 
 app_include_css = [
 	"/assets/process_simplification/css/process_simplification.css?v=21",
-	"/assets/process_simplification/css/process_ui.css?v=14",
+	"/assets/process_simplification/css/process_ui.css?v=17",
 	"/assets/process_simplification/css/executive_dashboard.css?v=3",
 	"/assets/process_simplification/css/purchasing.css?v=6",
 	"/assets/process_simplification/css/warehouse.css?v=4",
 	"/assets/process_simplification/css/process_pwa.css?v=1",
 	"/assets/process_simplification/css/hengsuan_branding.css?v=3",
 	"/assets/process_simplification/css/document_scan.css?v=7",
+	"/assets/process_simplification/css/mobile_desk.css?v=3",
 ]
 app_include_js = [
 	"/assets/process_simplification/js/sidebar_setup_compat.js?v=1",
@@ -36,6 +37,7 @@ app_include_js = [
 	"/assets/process_simplification/js/process_pwa.js?v=1",
 	"/assets/process_simplification/js/hengsuan_branding.js?v=3",
 	"/assets/process_simplification/js/page_refresh.js?v=9",
+	"/assets/process_simplification/js/mobile_desk.js?v=2",
 ]
 
 after_request = ["process_simplification.page_refresh.after_request"]
