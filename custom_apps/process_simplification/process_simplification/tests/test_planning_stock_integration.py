@@ -13,14 +13,6 @@ from process_simplification.tests.test_replenishment_chain_integration import Ma
 
 
 class TestPlanningStockIntegration(ManufacturingStockFixture):
-	def setUp(self):
-		if (
-			self._testMethodName
-			== "test_existing_production_role_can_confirm_with_derived_stock_reservations"
-		):
-			self.fixture_company = "恒算科技"
-		super().setUp()
-
 	def test_stock_pool_lock_serializes_independent_database_sessions(self):
 		from concurrent.futures import ThreadPoolExecutor
 		from contextvars import Context
@@ -212,11 +204,21 @@ class TestPlanningStockIntegration(ManufacturingStockFixture):
 		entry.cancel()
 		self.assertEqual(self._reservations(entry), [])
 
-	def test_existing_production_role_can_confirm_with_derived_stock_reservations(self):
+	def test_production_role_can_confirm_with_derived_stock_reservations(self):
+		from process_simplification.api.access_management import set_user_access
+		from process_simplification.management_access import PRODUCTION_MANAGER_ROLE, ensure_management_access
+
+		ensure_management_access()
+		user = frappe.get_doc({
+			"doctype": "User", "email": f"planning-{frappe.generate_hash(length=10)}@example.com",
+			"first_name": "Planning Role Test", "send_welcome_email": 0,
+			"roles": [{"role": PRODUCTION_MANAGER_ROLE}],
+		}).insert().name
+		set_user_access(user=user, roles=[PRODUCTION_MANAGER_ROLE], companies=[self.company])
 		self._stock(self.items[4], 1)
 		self._stock(self.items[3], 1)
 		order = self._sales_order()
-		frappe.set_user("qa.production@ps.test")
+		frappe.set_user(user)
 		self.addCleanup(frappe.set_user, "Administrator")
 		self.assertFalse(frappe.has_permission("Stock Reservation Entry", "create"))
 		with (

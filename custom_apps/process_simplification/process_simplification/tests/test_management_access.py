@@ -475,6 +475,39 @@ class TestManagementAccess(IntegrationTestCase):
 		self.assertIn(OWNER_ROLE, ADMIN_REVIEW_ROLES)
 		self.assertIn(OWNER_ROLE, WAGE_ROLES)
 
+	def test_wage_roles_can_select_native_rate_references_without_master_write(self):
+		from frappe.desk.search import search_link
+
+		for role in (OWNER_ROLE, WAGE_MANAGER_ROLE):
+			with self.subTest(role=role):
+				frappe.set_user("Administrator")
+				user = self._make_user(role)
+				self._set_access(user, [role])
+				operation = frappe.get_doc({
+					"doctype": "Operation", "name": "Wage Link " + random_string(10),
+				}).insert().name
+				frappe.set_user(user)
+				for doctype, name, fieldname in (
+					("Company", self.company, "company"),
+					("Operation", operation, "operation"),
+				):
+					choices = search_link(
+						doctype=doctype, txt=name, reference_doctype="Operation Wage Rate",
+						link_fieldname=fieldname,
+					)
+					self.assertIn(name, [row["value"] for row in choices])
+					self.assertFalse(frappe.has_permission(doctype, "write"))
+				rate = frappe.get_doc({
+					"doctype": "Operation Wage Rate", "company": self.company,
+					"operation": operation, "enable_piecework": 1, "piecework_rate": 2,
+					"enable_time": 0, "valid_from": "2026-01-01", "enabled": 1,
+				}).insert()
+				rate.check_permission("read")
+				self.assertEqual(rate.piecework_rate, 2)
+				company_choices = search_link(doctype="Company", txt="", page_length=1000,
+					reference_doctype="Operation Wage Rate", link_fieldname="company")
+				self.assertEqual({row["value"] for row in company_choices}, {self.company})
+
 	def test_managed_document_permissions_are_least_privilege(self):
 		def permission(doctype, role):
 			return frappe.db.get_value(
