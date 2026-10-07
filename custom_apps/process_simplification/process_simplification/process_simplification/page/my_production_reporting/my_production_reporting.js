@@ -20,8 +20,8 @@ if (typeof frappe !== "undefined") {
 				})}
 				<div class="worker-reporting-summary"></div>
 				<div class="worker-active-shortcut"></div>
+				<div class="worker-task-notices" aria-live="polite"></div>
 				<section class="worker-current-assignments">
-					<h4>${__("待开始的任务")}</h4>
 					<div class="worker-assignment-list"></div>
 				</section>
 			</div>`);
@@ -29,6 +29,10 @@ if (typeof frappe !== "undefined") {
 			page,
 			root: page.main.find(".worker-reporting-page"),
 			mode: "queue",
+		});
+		window.process_simplification.worker_prearrangement?.mountWorkerPrearrangement({
+			page,
+			root: page.main.find(".worker-reporting-page"),
 		});
 	};
 

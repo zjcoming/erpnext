@@ -118,18 +118,33 @@ function fulfillmentStatusColor(statusCode) {
 	}[statusCode] || "gray";
 }
 
-function orderNextActionLabel(order, translate = (message) => message) {
-	for (const row of order?.rows || []) {
-		const action = (row.next_actions || []).find((item) => item.enabled);
-		if (!action?.label) continue;
-		if (
-			action.action === "open_production_workbench" &&
-			Number(row.unplanned_production_qty || row.uncovered_qty || 0) <= 0 &&
-			Number(row.active_work_order_qty || 0) > 0
-		) return translate("查看生产进度");
-		return translate(action.label);
+function fulfillmentDisplayLabel(value, translate = (message) => message) {
+	const labels = { "已安排生产": "已建计划", "待安排生产": "未建计划", "未安排生产": "未建计划", "已安排": "已建计划", "未安排": "未建计划" };
+	return translate(labels[value] || value || "");
+}
+
+function fulfillmentActionLabel(action, row, translate = (message) => message) {
+	if (action.action === "open_production_workbench") {
+		return translate(Number(row.unplanned_production_qty ?? row.uncovered_qty ?? 0) > 0 ? "建生产计划" : "查看生产进度");
 	}
-	return translate(order?.status_label || "查看详情");
+	return translate(action.label || "查看详情");
+}
+
+function orderNextAction(order) {
+	let viewFallback = null;
+	for (const row of order?.rows || []) {
+		for (const action of row.next_actions || []) {
+			if (!action.enabled) continue;
+			if (action.action !== "view_sales_order") return { action, row };
+			viewFallback ||= { action, row };
+		}
+	}
+	return viewFallback;
+}
+
+function orderNextActionLabel(order, translate = (message) => message) {
+	const next = orderNextAction(order);
+	return next ? fulfillmentActionLabel(next.action, next.row, translate) : translate("查看销售订单");
 }
 
 function fulfillmentCsv(orders) {
@@ -139,7 +154,7 @@ function fulfillmentCsv(orders) {
 		return `"${safeText.replaceAll('"', '""')}"`;
 	};
 	const lines = [
-		["销售订单", "客户", "最早交期", "订购", "已发", "待交", "有效预留", "成品覆盖", "需生产", "已安排", "未安排", "风险"],
+		["销售订单", "客户", "最早交期", "订购", "已发", "待交", "有效预留", "成品覆盖", "需生产", "已建计划", "未建计划", "风险"],
 		...(orders || []).map((order) => [
 			order.name,
 			order.customer_name || order.customer,
@@ -152,7 +167,7 @@ function fulfillmentCsv(orders) {
 			order.production_required_qty,
 			order.active_work_order_qty,
 			order.unplanned_production_qty ?? order.uncovered_qty,
-			order.risk_label,
+			fulfillmentDisplayLabel(order.risk_label),
 		]),
 	].map((row) => row.map(quote).join(","));
 	return { filename: "订单履约总览.csv", content: "\uFEFF" + lines.join("\r\n") };
@@ -163,79 +178,37 @@ function orderOverviewHtml(order, helpers) {
 	const esc = helpers.escapeHtml;
 	const number = helpers.formatNumber;
 	const date = helpers.formatDate;
-	const actions = (row) =>
-		(row.next_actions || [])
-			.map(
-				(action) =>
-					`<button class="btn btn-xs btn-default row-action" data-action="${esc(action.action)}" data-sales-order="${esc(order.name)}" data-row="${esc(row.sales_order_item)}" ${action.enabled ? "" : "disabled"}>${esc(t(action.label))}</button>`
-			)
-			.join(" ");
-	const itemRows = (order.rows || [])
-		.map((row) => {
-			const productionPlans = (row.production_plans || []).length
-				? `<div class="fulfillment-production-plans">${(row.production_plans || [])
-						.map(
-							(plan) => `<a href="/app/production-plan/${encodeURIComponent(plan.name || "")}"><strong>${esc(plan.name || "")}</strong></a> · ${esc(t("计划开始"))} ${esc(date(plan.planned_date)) || esc(t("未设置"))} · ${esc(t("物料优先依据"))} ${esc(date(plan.material_priority_date)) || esc(t("未设置"))} · ${Number(plan.work_order_count || 0)} ${esc(t("个工单"))}`
-						)
-						.join("<br>")}</div>`
-				: `<div class="text-muted fulfillment-production-plans">${esc(t("未关联生产计划"))}</div>`;
-			return `
-				<tr class="${row.unsupported ? "text-muted" : ""}">
-					<td data-label="${esc(t("产品"))}">${orderWorkbenchItemIdentity.itemIdentityHtml(
-						row.item_code,
-						row.item_name,
-						{ translate: t, escapeHtml: esc },
-						{ linkToItem: true, codeLabel: t("产品编码") }
-					)}${productionPlans}</td>
-					<td data-label="${esc(t("交期"))}">${esc(date(row.delivery_date)) || esc(t("未设置"))}</td>
-					<td class="fulfillment-number" data-label="${esc(t("待交"))}">${number(row.pending_qty)}</td>
-					<td class="fulfillment-number" data-label="${esc(t("有效预留"))}">${number(row.reserved_qty)}</td>
-					<td class="fulfillment-number" data-label="${esc(t("优先获配成品"))}">${number(row.available_to_reserve)}</td>
-					<td class="fulfillment-number" data-label="${esc(t("成品覆盖"))}">${number(row.finished_stock_coverage_qty)}</td>
-					<td class="fulfillment-number" data-label="${esc(t("需生产"))}">${number(row.production_required_qty)}</td>
-					<td class="fulfillment-number" data-label="${esc(t("已安排"))}">${number(row.active_work_order_qty)}</td>
-					<td class="fulfillment-number" data-label="${esc(t("未安排"))}">${number(row.unplanned_production_qty ?? row.uncovered_qty)}</td>
-					<td data-label="${esc(t("状态"))}"><span class="indicator-pill gray">${esc(row.status || "")}</span>${row.unsupported_reason ? `<br><small>${esc(row.unsupported_reason)}</small>` : ""}</td>
-					<td class="fulfillment-item-actions" data-label="${esc(t("下一步"))}">${actions(row)}</td>
-				</tr>`;
-		})
-		.join("");
-	const statusLabel = order.status_label || "";
-	const riskLabel = order.risk_label || "";
-	const statusPill = statusLabel
-		? `<span class="indicator-pill ${esc(fulfillmentStatusColor(order.status_code))} fulfillment-order-status">${esc(statusLabel)}</span>`
-		: "";
-	const riskPill = riskLabel && riskLabel !== statusLabel
-		? `<span class="indicator-pill ${esc(order.risk_level || "gray")} fulfillment-order-risk-pill">${esc(riskLabel)}</span>`
-		: "";
-	const nextActionLabel = orderNextActionLabel(order, t);
-	return `
-		<details class="fulfillment-order fulfillment-risk-${esc(order.risk_level || "gray")}" data-sales-order="${esc(order.name)}">
-			<summary>
-				<div class="fulfillment-order-primary">
-					<strong>${esc(order.name)}</strong>
-					<span>${esc(order.customer_name || order.customer || "")}</span>
-				</div>
-				<div class="fulfillment-order-fact"><span>${esc(t("最早交期"))}</span><strong>${esc(date(order.delivery_date)) || esc(t("未设置"))}</strong>${order.has_multiple_delivery_dates ? ` <span class="indicator-pill gray">${esc(t("多交期"))}</span>` : ""}</div>
-				<div class="fulfillment-order-fact fulfillment-number"><span>${esc(t("已发 / 订购"))}</span><strong>${number(order.delivered_qty)} / ${number(order.order_qty)}</strong></div>
-				<div class="fulfillment-order-fact fulfillment-number"><span>${esc(t("成品覆盖 / 待交"))}</span><strong>${number(order.finished_stock_coverage_qty ?? order.reserved_qty)} / ${number(order.pending_qty)}</strong></div>
-				<div class="fulfillment-order-fact fulfillment-number"><span>${esc(t("已安排 / 未安排"))}</span><strong>${number(order.active_work_order_qty)} / ${number(order.unplanned_production_qty ?? order.uncovered_qty)}</strong></div>
-				<div class="fulfillment-order-risk">${statusPill}${statusPill && riskPill ? " " : ""}${riskPill}</div>
-				<span class="fulfillment-next-action"><small>${esc(t("下一步"))}</small><strong>${esc(nextActionLabel)}</strong><span class="workbench-expand-label"><span class="when-closed">${esc(t("展开处理"))} ▾</span><span class="when-open">${esc(t("收起"))} ▴</span></span></span>
-			</summary>
-			<div class="fulfillment-order-details">
-				<div class="fulfillment-order-actions" aria-label="${esc(t("订单操作"))}">
-					<strong class="fulfillment-order-actions-title">${esc(t("订单操作"))}</strong>
-					<button class="btn btn-default btn-sm row-action" data-action="view_sales_order" data-sales-order="${esc(order.name)}">${esc(t("查看销售订单"))}</button>
-				</div>
-				<div class="fulfillment-item-table-wrap">
-					<table class="table table-bordered fulfillment-item-table">
-						<thead><tr><th>${esc(t("产品"))}</th><th>${esc(t("交期"))}</th><th>${esc(t("待交"))}</th><th>${esc(t("有效预留"))}</th><th>${esc(t("优先获配成品"))}</th><th>${esc(t("成品覆盖"))}</th><th>${esc(t("需生产"))}</th><th>${esc(t("已安排"))}</th><th>${esc(t("未安排"))}</th><th>${esc(t("状态"))}</th><th>${esc(t("下一步"))}</th></tr></thead>
-						<tbody>${itemRows}</tbody>
-					</table>
-				</div>
-			</div>
-		</details>`;
+	const rows = order.rows || [];
+	const button = (action, row, primary = false) => `<button type="button" class="btn ${primary ? "btn-primary" : "btn-default"} row-action" data-action="${esc(action.action)}" data-sales-order="${esc(order.name)}" data-row="${esc(row?.sales_order_item || "")}" ${action.enabled ? "" : "disabled"}>${esc(fulfillmentActionLabel(action, row || {}, t))}</button>`;
+	const fact = (label, value, className = "") => `<div class="fulfillment-order-fact ${className}" data-label="${esc(t(label))}"><span>${esc(t(label))}</span><strong>${value}</strong></div>`;
+	const itemRows = rows.map((row) => {
+		const plans = (row.production_plans || []).length
+			? (row.production_plans || []).map((plan) => `<div><a href="/app/production-plan/${encodeURIComponent(plan.name || "")}"><strong>${esc(plan.name || "")}</strong></a> · ${esc(t("计划开始"))} ${esc(date(plan.planned_date)) || esc(t("未设置"))} · ${esc(t("物料优先依据"))} ${esc(date(plan.material_priority_date)) || esc(t("未设置"))} · ${Number(plan.work_order_count || 0)} ${esc(t("个工单"))}</div>`).join("")
+			: esc(t("未关联生产计划"));
+		return `<section class="fulfillment-product-card ${row.unsupported ? "is-unsupported" : ""}">
+			<div class="fulfillment-product-heading"><div data-label="${esc(t("产品"))}">${orderWorkbenchItemIdentity.itemIdentityHtml(row.item_code, row.item_name, { translate: t, escapeHtml: esc }, { linkToItem: true, codeLabel: t("产品编码") })}</div><span data-label="${esc(t("状态"))}" class="indicator-pill gray">${esc(fulfillmentDisplayLabel(row.status, t))}</span></div>
+			${row.unsupported_reason ? `<p class="fulfillment-product-warning">${esc(row.unsupported_reason)}</p>` : ""}
+			<div class="fulfillment-product-facts">${fact("交期", esc(date(row.delivery_date)) || esc(t("未设置")))}${fact("待交", number(row.pending_qty))}${fact("已建计划", number(row.active_work_order_qty))}${fact("未建计划", number(row.unplanned_production_qty ?? row.uncovered_qty))}</div>
+			<div class="fulfillment-product-actions" data-label="${esc(t("下一步"))}">${(row.next_actions || []).map((action) => button(action, row)).join("")}</div>
+			<details class="fulfillment-stock-details"><summary>${esc(t("库存分配与生产单据"))}</summary><div class="fulfillment-stock-facts">${fact("有效预留", number(row.reserved_qty))}${fact("优先获配成品", number(row.available_to_reserve))}${fact("成品覆盖", number(row.finished_stock_coverage_qty))}${fact("需生产", number(row.production_required_qty))}</div><div class="fulfillment-production-plans">${plans}</div></details>
+		</section>`;
+	}).join("");
+	const statusLabel = fulfillmentDisplayLabel(order.status_label, t);
+	const riskLabel = fulfillmentDisplayLabel(order.risk_label, t);
+	const statusPill = statusLabel ? `<span class="indicator-pill ${esc(fulfillmentStatusColor(order.status_code))} fulfillment-order-status">${esc(statusLabel)}</span>` : "";
+	const riskPill = riskLabel && riskLabel !== statusLabel ? `<span class="indicator-pill ${esc(order.risk_level || "gray")} fulfillment-order-risk-pill">${esc(riskLabel)}</span>` : "";
+	const productNames = rows.map((row) => row.item_name || row.item_code).filter(Boolean);
+	const productTitle = productNames.slice(0, 2).join(" / ") || t("销售订单");
+	const moreProducts = productNames.length > 2 ? ` · ${t("等")} ${productNames.length} ${t("项产品")}` : "";
+	const next = orderNextAction(order);
+	const primaryButton = next ? button(next.action, next.row, true) : button({ action: "view_sales_order", label: "查看销售订单", enabled: true }, null);
+	const actionContext = next && rows.length > 1 ? `${t("先处理")} ${next.row.item_name || next.row.item_code || t("当前产品")}` : t("下一步");
+	return `<article class="fulfillment-order-card fulfillment-risk-${esc(order.risk_level || "gray")}">
+		<header class="fulfillment-card-heading"><div class="fulfillment-order-primary"><strong>${esc(productTitle)}${esc(moreProducts)}</strong><span>${esc(order.customer_name || order.customer || "")} · ${esc(order.name)}</span></div><div class="fulfillment-order-risk">${statusPill}${riskPill}</div></header>
+		<div class="fulfillment-card-facts">${fact("最早交期", `${esc(date(order.delivery_date)) || esc(t("未设置"))}${order.has_multiple_delivery_dates ? ` <span class="indicator-pill gray">${esc(t("多交期"))}</span>` : ""}`)}${fact("已发 / 订购", `${number(order.delivered_qty)} / ${number(order.order_qty)}`)}${fact("成品覆盖 / 待交", `${number(order.finished_stock_coverage_qty ?? order.reserved_qty)} / ${number(order.pending_qty)}`)}${fact("已建计划 / 未建计划", `${number(order.active_work_order_qty)} / ${number(order.unplanned_production_qty ?? order.uncovered_qty)}`)}</div>
+		<div class="fulfillment-card-action"><span>${esc(actionContext)}</span>${primaryButton}</div>
+		<details class="fulfillment-order" data-sales-order="${esc(order.name)}"><summary><span>${esc(t("产品明细与库存分配"))}</span><span class="workbench-expand-label"><span class="when-closed">${esc(t("展开"))} ▾</span><span class="when-open">${esc(t("收起"))} ▴</span></span></summary><div class="fulfillment-order-details"><div class="fulfillment-order-actions" aria-label="${esc(t("订单操作"))}"><strong class="fulfillment-order-actions-title">${esc(t("订单操作"))}</strong><button type="button" class="btn btn-default row-action" data-action="view_sales_order" data-sales-order="${esc(order.name)}">${esc(t("查看销售订单"))}</button></div>${itemRows}</div></details>
+	</article>`;
 }
 
 function refreshFulfillmentOverview(page, salesOrder) {
@@ -257,6 +230,9 @@ const fulfillmentOverviewApi = {
 	overviewSummary,
 	fulfillmentCsv,
 	orderNextActionLabel,
+	orderNextAction,
+	fulfillmentDisplayLabel,
+	fulfillmentActionLabel,
 	workbenchPaginationHtml: workbenchPaginationHtmlSafe,
 	orderOverviewHtml,
 	refreshFulfillmentOverview,
@@ -278,11 +254,11 @@ if (typeof frappe !== "undefined") {
 		});
 		page.main.html(`
 			<div class="process-simplification-page order-workbench fulfillment-overview">
+				<div class="fulfillment-page-heading"><div><h2>${__("订单与交付")}</h2><p>${__("先看产品与交期，按下一步处理订单。")}</p></div><input class="form-control fulfillment-search" data-filter="search" aria-label="${__("查找订单")}" placeholder="${__("搜索订单、客户或产品")}"></div>
 				<div class="fulfillment-kpis"></div>
-				<details class="workbench-filter-panel" open>
-					<summary><span>${__("筛选与导出")}</span><small>${__("按交期、状态、客户或风险缩小范围")}</small></summary>
+				<details class="workbench-filter-panel">
+					<summary><span>${__("更多筛选与导出")}</span><small>${__("按交期、状态、客户或风险缩小范围")}</small></summary>
 				<div class="fulfillment-filter-bar">
-					<input class="form-control fulfillment-search" data-filter="search" placeholder="${__("搜索销售订单、客户或产品")}">
 					<select class="form-control" data-filter="deliveryWindow">
 						<option value="">${__("全部交期")}</option>
 						<option value="overdue">${__("已逾期")}</option>
@@ -467,11 +443,14 @@ if (typeof frappe !== "undefined") {
 			setTimeout(() => URL.revokeObjectURL(url), 0);
 		}
 
+		let searchTimer;
 		$root.on("input change", "[data-filter]", (event) => {
 			const $input = $(event.currentTarget);
 			state.filters[$input.data("filter")] = $input.is(":checkbox") ? $input.prop("checked") : $input.val();
 			state.pagination.page = 1;
-			loadOverview();
+			clearTimeout(searchTimer);
+			if ($input.data("filter") === "search" && event.type === "input") searchTimer = setTimeout(loadOverview, 300);
+			else loadOverview();
 		});
 		$root.on("click", ".workbench-page-action", (event) => {
 			state.pagination.page = Number($(event.currentTarget).data("page") || 1);

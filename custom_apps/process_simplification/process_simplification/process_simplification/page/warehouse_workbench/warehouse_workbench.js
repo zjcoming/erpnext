@@ -29,9 +29,11 @@ function warehouseDocumentHtml(row, queue, esc, number, translate = (value) => v
 	const detail = items.length > 3 ? '<details><summary>另外 ' + (items.length - 3) +
 		' 项物料</summary><ul class="warehouse-items">' + items.slice(3).join("") + '</ul></details>' : "";
 	const title = row.party || row.work_order || row.purpose || row.name;
-	const actionLabels = { purchase: "核对采购收货", receipt: "核对收货入库", issue: "核对生产发料", manufacture: "核对完工入库", delivery: "核对客户发货" };
-	const action = row.can_write ? (row.is_return ? "核对退货" : actionLabels[queue] || "核对单据并提交") : "查看单据";
-	const openAction = '<div class="warehouse-document-action"><a class="btn btn-primary" href="' + href + '">' + action + '</a></div>';
+	const actionLabels = { purchase: "打开采购单，核对收货", receipt: "打开收货单核对", issue: "打开领料单核对", manufacture: "打开入库单核对", delivery: "打开发货单核对" };
+	const action = row.can_write ? (row.is_return ? "打开退货单核对" : actionLabels[queue] || "打开单据核对") : "查看单据";
+	const actionHint = queue === "purchase" ? (row.can_write ? "从采购订单创建收货单，核对实收数量和仓库后提交收货单。" : "查看收货进度和关联收货单。") :
+		"进入单据后核对实际数量、仓库" + (row.can_write ? "，确认提交后才记账。" : "及处理记录。");
+	const openAction = '<div class="warehouse-document-action"><a class="btn btn-primary" href="' + href + '">' + action + '</a><small>' + actionHint + '</small></div>';
 	return '<article class="warehouse-document"><div class="warehouse-document-heading"><div><h3>' +
 		esc(title) + '</h3><a href="' + href + '">' + esc(row.name) + '</a></div><span class="warehouse-stage">' +
 		(row.is_return ? "退货草稿" : queue === "purchase" ? "待收货" : "待核对提交") +
@@ -99,21 +101,44 @@ if (typeof module !== "undefined" && module.exports) module.exports = {
 if (typeof frappe !== "undefined") {
 	frappe.pages["warehouse-workbench"].on_page_load = function (wrapper) {
 		const page = frappe.ui.make_app_page({ parent: wrapper, title: __("库房工作台"), single_column: true });
+		page.main.addClass("warehouse-center-shell");
 		const esc = (value) => frappe.utils.escape_html(String(value ?? ""));
 		const number = (value) => Number(value || 0).toLocaleString("zh-CN", { maximumFractionDigits: 6 });
 		const root = $('<div class="warehouse-workbench">' +
-			'<p class="text-muted">先处理待办，也可以直接查询库存和收发记录。</p>' +
-				'<nav class="warehouse-shortcuts" aria-label="库存查询与记录"></nav>' +
-				'<div class="warehouse-batch-navigation"></div>' +
+			'<header class="warehouse-heading"><div><h2>库房待办</h2><p>先选待办类型，再核对本次实物与单据。</p></div><button type="button" class="btn btn-default warehouse-open-queries">库存与记录</button></header>' +
 			'<div class="warehouse-filters"><div><label for="warehouse-company">公司</label>' +
 				'<select id="warehouse-company" class="form-control"><option value="">全部可访问公司</option></select></div>' +
 				'<div><label for="warehouse-search">查找库存单据</label><input id="warehouse-search" class="form-control" ' +
 				'placeholder="单号、物料、供应商或客户" type="search"></div></div>' +
-			'<div class="warehouse-preparation" aria-live="polite"></div>' +
-			'<h2 class="warehouse-queue-heading">库存单据待办</h2>' +
 			'<nav class="warehouse-queues" aria-label="库房待办类型"></nav>' +
-			'<div class="warehouse-results" aria-live="polite"></div><div class="warehouse-pagination"></div></div>').appendTo(page.main);
+			'<div class="warehouse-results" aria-live="polite"></div><div class="warehouse-pagination"></div>' +
+			'<div class="warehouse-preparation" aria-live="polite"></div>' +
+			'<details class="warehouse-query-panel"><summary>库存查询与历史记录</summary><nav class="warehouse-shortcuts" aria-label="库存查询与记录"></nav><div class="warehouse-batch-navigation"></div></details></div>').appendTo(page.main);
 		const state = { company: "", companies: [], queue: null, search: "", cursors: [0], next: null, generation: 0 };
+		let materialView = false;
+		let materialWorkbench = null;
+		if (frappe.boot.enable_production_materials && window.process_simplification?.production_materials?.mount) {
+			const switcher = $('<nav class="ps-work-area-nav" aria-label="库房操作入口"><button type="button" class="ps-work-area is-active" data-warehouse-view="tasks" aria-pressed="true"><strong>库房待办</strong><small>核对收货、入库和发货</small></button><button type="button" class="ps-work-area" data-warehouse-view="materials" aria-pressed="false"><strong>集中领料出库</strong><small>批量核对领料申请</small></button></nav>').insertBefore(root);
+			const host = $('<div hidden class="production-material-view">').insertAfter(root);
+			materialWorkbench = window.process_simplification.production_materials.mount(host, { ownerRoute: "warehouse-workbench", preferredView: "confirm" });
+			switcher.on("click", "[data-warehouse-view]", (event) => {
+				if (materialWorkbench.controller.state.running) {
+					frappe.msgprint(__("当前操作尚未结束，请等待处理完成后再切换。"));
+					return;
+				}
+				materialView = event.currentTarget.dataset.warehouseView === "materials";
+				root.prop("hidden", materialView); host.prop("hidden", !materialView);
+				switcher.find("button").each((_, button) => {
+					const selected = (button.dataset.warehouseView === "materials") === materialView;
+					$(button).toggleClass("is-active", selected).attr("aria-pressed", String(selected));
+				});
+				if (materialView) materialWorkbench.activate();
+				else { materialWorkbench.deactivate(); load(true); }
+			});
+		}
+		root.on("click", ".warehouse-open-queries", () => {
+			root.find(".warehouse-query-panel").prop("open", true).get(0)?.scrollIntoView({ block: "nearest" });
+		});
 		let searchTimer;
 		const shortcuts = [
 			["库存余额", "query-report", "Stock Balance"],
@@ -136,6 +161,7 @@ if (typeof frappe !== "undefined") {
 				});
 		});
 		async function load(reset = false, options = {}) {
+			if (materialView && materialWorkbench) return materialWorkbench.refresh(options);
 			if (reset) state.cursors = [0];
 			const generation = ++state.generation;
 			root.attr("aria-busy", "true");
@@ -173,7 +199,7 @@ if (typeof frappe !== "undefined") {
 				root.find(".warehouse-results").html(model.rows.length ?
 					model.rows.map((row) => warehouseDocumentHtml(row, model.queue, esc, number, __)).join("") :
 					'<div class="warehouse-empty">' + (state.search ? "没有匹配的待办，请调整关键词或待办类型。" :
-						"此类暂无待处理单据。已提交记录可从上方查询入口查看。") + '</div>');
+						"此类暂无待处理单据。已提交记录可从“库存与记录”查看。") + '</div>');
 				root.find(".warehouse-pagination").html(
 					'<button type="button" class="btn btn-default" data-page="previous"' +
 					(state.cursors.length === 1 ? " disabled" : "") + '>上一页</button><span>第 ' + state.cursors.length +
@@ -205,7 +231,10 @@ if (typeof frappe !== "undefined") {
 			load();
 		});
 		page.add_inner_button(__("刷新"), () => load(true));
-		page.warehouseWorkbench = { refresh: () => load(true), backgroundRefresh: (options) => load(false, options) };
+		page.warehouseWorkbench = {
+			refresh: () => materialView && materialWorkbench ? materialWorkbench.activate() : load(true),
+			backgroundRefresh: (options) => load(false, options),
+		};
 	};
 	frappe.pages["warehouse-workbench"].refresh = (wrapper) => wrapper.page.warehouseWorkbench.refresh();
 }

@@ -1,0 +1,76 @@
+{
+ "doctype": "DocType",
+ "name": "Operation Worker Default",
+ "module": "Process Simplification",
+ "engine": "InnoDB",
+ "autoname": "hash",
+ "allow_rename": 0,
+ "fields": [
+  {
+   "fieldname": "default_key",
+   "fieldtype": "Data",
+   "label": "默认人员唯一键",
+   "read_only": 1,
+   "unique": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "公司",
+   "read_only": 1,
+   "options": "Company",
+   "reqd": 1
+  },
+  {
+   "fieldname": "operation",
+   "fieldtype": "Link",
+   "label": "工序",
+   "read_only": 1,
+   "options": "Operation",
+   "reqd": 1
+  },
+  {
+   "fieldname": "supervisor",
+   "fieldtype": "Link",
+   "label": "审核主管",
+   "read_only": 1,
+   "options": "User",
+   "reqd": 1
+  },
+  {
+   "fieldname": "revision",
+   "fieldtype": "Int",
+   "label": "配置版本",
+   "read_only": 1,
+   "reqd": 1,
+   "default": "1"
+  },
+  {
+   "fieldname": "workers_json",
+   "fieldtype": "Long Text",
+   "label": "默认人员列表",
+   "read_only": 1
+  }
+ ],
+ "field_order": [
+  "default_key",
+  "company",
+  "operation",
+  "supervisor",
+  "revision",
+  "workers_json"
+ ],
+ "permissions": [],
+ "track_changes": 1,
+ "istable": 0,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "actions": [],
+ "links": [],
+ "states": [],
+ "creation": "2026-09-30 00:00:00.000000",
+ "modified": "2026-09-30 00:00:00.000000",
+ "modified_by": "Administrator",
+ "owner": "Administrator"
+}

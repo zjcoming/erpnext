@@ -546,8 +546,50 @@ function productionNextTask(demand, helpers) {
 function productionTaskButtonHtml(task, helpers) {
 	if (!task) return "";
 	const esc = helpers.escapeHtml;
+	if (task.action === "assign" && helpers.canArrange && !Number(task.workOrder.worker_assignment_history_count || 0)) {
+		return `<button type="button" class="btn btn-primary production-open-view" data-open-view="operations" data-search="${esc(task.workOrder.name)}">${esc(helpers.translate("安排人员"))}</button>`;
+	}
 	if (task.action === "assign") return `<button type="button" class="btn btn-primary production-assignment-action" data-work-order="${esc(task.workOrder.name)}" data-assignment-mode="assign">${esc(task.label)}</button>`;
 	return `<button type="button" class="btn btn-primary production-work-order-action" data-action="${esc(task.action)}" data-work-order="${esc(task.workOrder.name)}" data-work-order-item="${esc(task.workOrderItem || "")}" data-document="${esc(task.document || "")}" data-allow-partial="${task.allowPartial ? "1" : "0"}" data-override-priority="${task.overridePriority ? "1" : "0"}" data-qty="${esc(task.qty || "")}">${esc(task.label)}</button>`;
+}
+
+function productionCenterNavigationHtml({ canArrange, canIssue, canReview }, helpers) {
+	const esc = helpers.escapeHtml;
+	const t = helpers.translate;
+	const icons = {
+		orders: '<rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 8h6M9 12h6M9 16h4"/>',
+		operations: '<circle cx="9" cy="8" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3M16 5a3 3 0 0 1 0 6M18 15a5 5 0 0 1 3 4v2"/>',
+		materials: '<path d="m3 7 9-4 9 4-9 4-9-4Zm0 0v10l9 4 9-4V7M12 11v10M7.5 5l9 4"/>',
+	};
+	const views = [
+		["orders", "订单与进度", "创建计划，跟进交期和完工"],
+		...(canArrange ? [["operations", "安排人员", "按工序选人，可提前一次安排"]] : []),
+		...(canIssue ? [["materials", "领料出库", "集中申请领料，跟进库房出库"]] : []),
+	];
+	return `<header class="production-center-header"><div><span class="production-center-eyebrow">${esc(t("车间管理"))}</span><h2>${esc(t("生产安排与进度"))}</h2><p>${esc(t("先把人员和物料安排好，再跟进报工与完工。"))}</p></div>${canReview ? `<div class="production-center-links"><a class="btn btn-default" href="/desk/production-report-review">${esc(t("报工审核"))}<span aria-hidden="true">↗</span></a><a href="/desk/production-exception-review">${esc(t("处理生产异常"))}</a></div>` : ""}</header>
+		<nav class="production-view-switch" aria-label="${esc(t("生产工作分区"))}">${views.map(([view, label, description]) => `<button type="button" class="production-view-card${view === "orders" ? " is-active" : ""}" data-production-view="${view}" aria-pressed="${view === "orders"}" aria-label="${esc(t(label))}"><span class="production-view-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[view]}</svg></span><span class="production-view-copy"><strong>${esc(t(label))}</strong><small>${esc(t(description))}</small></span><span class="production-view-arrow" aria-hidden="true">→</span></button>`).join("")}</nav>`;
+}
+
+function productionOrderShortcutsHtml(demand, helpers, currentTask, primaryAction) {
+	if (!helpers.canManageAssignments || (!helpers.canArrange && !helpers.canIssue)) return "";
+	const t = helpers.translate;
+	const esc = helpers.escapeHtml;
+	const active = (demand.production_plans || []).length && (demand.work_orders || []).some((row) =>
+		!["Completed", "Stopped", "Closed", "Cancelled"].includes(row.status) && Number(row.docstatus) !== 2);
+	const buttons = [];
+	const canArrange = active && demand.sales_order && helpers.canArrange && (demand.work_orders || []).some((row) =>
+		!["Completed", "Stopped", "Closed", "Cancelled"].includes(row.status) && Number(row.docstatus) !== 2
+		&& !["completed", "not_applicable"].includes(row.operation_state?.code) && !["requestable", "draft_pending", "received"].includes(row.receipt_state?.code));
+	const taskIsArrangement = currentTask?.action === "assign" && canArrange && !Number(currentTask.workOrder.worker_assignment_history_count || 0);
+	if (currentTask && !taskIsArrangement) buttons.push(productionTaskButtonHtml(currentTask, helpers));
+	else if (!currentTask && primaryAction) buttons.push(`<button type="button" class="btn btn-primary production-action" data-action="${esc(primaryAction.action)}" data-sales-order="${esc(demand.sales_order)}" data-row="${esc(demand.sales_order_item)}">${esc(t(primaryAction.label))}</button>`);
+	if (canArrange) buttons.push(`<button type="button" class="btn ${buttons.length ? "btn-default" : "btn-primary"} production-open-view" data-open-view="operations" data-search="${esc(demand.sales_order)}">${esc(t("安排人员"))}<span aria-hidden="true"> →</span></button>`);
+	if (active && demand.sales_order && helpers.canIssue && (demand.work_orders || []).some((row) =>
+		!["Completed", "Stopped", "Closed", "Cancelled"].includes(row.status) && Number(row.docstatus) !== 2
+		&& !["issued", "not_required"].includes(row.issue_state?.code))) {
+		buttons.push(`<button type="button" class="btn btn-default production-open-view" data-open-view="materials" data-search="${esc(demand.sales_order)}">${esc(t("集中领料"))}</button>`);
+	}
+	return buttons.length ? `<div class="production-order-shortcuts"><span>${esc(t("处理这张订单"))}</span><div>${buttons.join("")}</div></div>` : "";
 }
 
 function workOrderCardHtml(workOrder, sequence, helpers, hasProductionPlan, expanded = false) {
@@ -569,7 +611,9 @@ function workOrderCardHtml(workOrder, sequence, helpers, hasProductionPlan, expa
 		? `${esc(t("供给上级工单"))}: <a href="/app/work-order/${encodeURIComponent(targetWorkOrder)}"><strong>${esc(targetWorkOrder)}</strong></a>${workOrder.parent_item_code ? ` · ${esc(productionWorkbenchItemIdentity.itemIdentityText(workOrder.parent_item_code, workOrder.parent_item_name, t))}` : ""}`
 		: esc(t("最终成品工单"));
 	const assignmentMeta = workOrderAssignmentActionMeta(workOrder, hasProductionPlan, t);
-	const assignmentAction = helpers.canManageAssignments && assignmentMeta
+	const assignmentAction = helpers.canManageAssignments && assignmentMeta?.mode === "assign" && helpers.canArrange && !Number(workOrder.worker_assignment_history_count || 0)
+		? productionTaskButtonHtml({ action: "assign", workOrder }, helpers)
+		: helpers.canManageAssignments && assignmentMeta
 		? `<button type="button" class="btn btn-xs ${assignmentMeta.primary ? "btn-primary" : "btn-default"} production-assignment-action" data-work-order="${esc(workOrder.name || "")}" data-assignment-mode="${esc(assignmentMeta.mode || "assign")}">${esc(assignmentMeta.label)}</button>`
 		: "";
 	const nextActionMeta = workOrderNextActionMeta(workOrder, t);
@@ -793,24 +837,29 @@ function productionDemandHtml(demand, helpers) {
 	const primaryAction = (demand.next_actions || []).find(
 		(row) => row.enabled !== false && !["view_sales_order", "check_materials"].includes(row.action)
 	);
-	const nextActionLabel = (currentTask ? `${currentTask.workOrder.production_item_name || currentTask.workOrder.production_item} · ${currentTask.label}` : null)
+	const taskLabel = currentTask?.action === "assign" && helpers.canArrange && !Number(currentTask.workOrder.worker_assignment_history_count || 0)
+		? t("安排人员") : currentTask?.label;
+	const nextActionLabel = (currentTask ? `${currentTask.workOrder.production_item_name || currentTask.workOrder.production_item} · ${taskLabel}` : null)
 		|| primaryAction?.label
 		|| productionStatusMeta(demand.status_code).label
 		|| demand.status_label
 		|| t("查看详情");
 	return `
+		<article class="production-order">
 		<details class="production-demand production-risk-${esc(demand.risk_level || "gray")}" data-demand-key="${esc(demand.demand_key)}">
 			<summary>
-				<div class="production-demand-source"><strong>${esc(demand.sales_order || "")}</strong><span>${esc(demand.customer_name || demand.customer || "")}</span></div>
+				<div class="production-order-identity">
 				<div class="production-demand-product">${productionWorkbenchItemIdentity.itemIdentityHtml(
 					demand.item_code,
 					demand.item_name,
 					{ translate: t, escapeHtml: esc },
 					{ linkToItem: true, codeLabel: t("产品编码") }
 				)}</div>
+				<div class="production-demand-source"><span>${esc(demand.customer_name || demand.customer || "")}</span><span>${esc(demand.sales_order || "")}</span></div>
+				</div>
 				<div class="production-demand-fact"><span>${esc(t("客户交期"))}</span><strong>${esc(date(demand.delivery_date)) || esc(t("未设置"))}</strong></div>
 				<div class="production-demand-fact ps-plan-start"><span>${esc(t("计划开工"))}</span><strong>${esc(date(plannedStart)) || esc(t("未安排"))}</strong></div>
-				<div class="production-demand-fact ps-production-quantity"><span>${esc(t("需生产 / 未安排"))}</span><strong>${number(demand.production_required_qty)} / ${number(demand.unplanned_production_qty)}</strong></div>
+				<div class="production-demand-fact ps-production-quantity"><span>${esc(t("需生产 / 未建计划"))}</span><strong>${number(demand.production_required_qty)} / ${number(demand.unplanned_production_qty)}</strong></div>
 				<div class="production-demand-risk"><span class="indicator-pill ${esc(demand.risk_level || "gray")}">${esc(demand.risk_label || "")}</span><span class="indicator-pill ${esc(productionStatusMeta(demand.status_code).indicator)}">${esc(t(productionStatusMeta(demand.status_code).label || demand.status_label || ""))}</span></div>
 				<span class="production-demand-next-action"><small>${esc(t("下一步"))}</small><strong>${esc(t(nextActionLabel))}</strong><span class="workbench-expand-label"><span class="when-closed">${esc(t("展开处理"))} ▾</span><span class="when-open">${esc(t("收起"))} ▴</span></span></span>
 			</summary>
@@ -823,7 +872,9 @@ function productionDemandHtml(demand, helpers) {
 					.join("")}</div><p class="text-muted">${esc(t("现货、原料与在途供应统一按订单行交付日期分配；计划开始仅用于生产排程。"))}</p><div class="production-plan-list">${productionPlans}</div></details>
 				<details class="production-purchase-summary production-secondary-details"><summary>${esc(t("底层采购物料汇总"))}</summary><p class="text-muted">${esc(t("只汇总采购件；半成品在上方生产执行链中由下级工单供应。采购动作提交前会再次复核。"))}</p>${purchaseMaterials}</details>
 			</div>
-		</details>`;
+		</details>
+		${productionOrderShortcutsHtml(demand, helpers, currentTask, primaryAction)}
+		</article>`;
 }
 
 function clearProductionFilters(state) {
@@ -852,13 +903,19 @@ function productionActiveFiltersHtml(labels, totalCount, helpers) {
 	</div>`;
 }
 
-function refreshProductionOverview(page, demandKey) {
+function refreshProductionOverview(page, demandKey, requestedView) {
 	if (!page || !page.production_workbench) return;
 	const { state, loadOverview } = page.production_workbench;
+	if (!demandKey && ["orders", "operations", "materials"].includes(requestedView) && page.production_workbench.openView) {
+		const result = page.production_workbench.openView(requestedView, { search: "" });
+		if (result !== false) return result;
+	}
+	if (demandKey) page.production_workbench.showOrderView?.();
 	clearProductionFilters(state);
 	if (demandKey) state.filters.demandKey = demandKey;
 	if (demandKey) state.expandedDemands.add(demandKey);
-	return loadOverview();
+	return page.production_workbench.restoreActiveView
+		? page.production_workbench.restoreActiveView() : loadOverview();
 }
 
 function runProductionWorkbenchToolbarLoad(loadOverview) {
@@ -866,6 +923,8 @@ function runProductionWorkbenchToolbarLoad(loadOverview) {
 }
 
 const productionWorkbenchApi = {
+	productionCenterNavigationHtml,
+	productionOrderShortcutsHtml,
 	productionNextTask,
 	productionExecutionChainHtml,
 	replenishmentProgressMeta,
@@ -900,17 +959,18 @@ if (typeof module !== "undefined" && module.exports) {
 if (typeof frappe !== "undefined") {
 	frappe.pages["production-workbench"].on_page_load = function (wrapper) {
 		const page = frappe.ui.make_app_page({ parent: wrapper, title: __("生产计划中心"), single_column: true });
+		page.main.addClass("production-center-shell");
 		if (frappe.session.user === "Administrator" ||
 			["System Manager", "Process Simplification Owner"].some((role) => frappe.user.has_role(role))) {
 			page.add_inner_button(__("开用前检查"), () => frappe.set_route("Form", "Process Simplification Settings"));
 		}
 		page.main.html(`
 			<div class="process-simplification-page production-workbench">
+				<div class="production-orders-heading"><div><h3>${__("订单生产进度")}</h3><p>${__("找到订单后，可直接安排人员、办理领料或查看工单。")}</p></div><label class="production-order-search"><span>${__("查找订单")}</span><input class="form-control production-search" data-filter="search" placeholder="${__("订单、客户、产品或工单")}" aria-label="${__("查找订单")}"></label></div>
 				<div class="production-kpis"></div>
-				<details class="workbench-filter-panel" open>
-					<summary><span>${__("筛选生产需求")} <span class="production-filter-count" hidden></span></span><small>${__("按交期、状态、风险或客户缩小范围")}</small></summary>
+				<details class="workbench-filter-panel">
+					<summary><span>${__("更多筛选")} <span class="production-filter-count" hidden></span></span><small>${__("交期 · 状态 · 客户")}</small></summary>
 				<div class="production-filter-bar">
-					<input class="form-control production-search" data-filter="search" placeholder="${__("搜索订单、客户、产品或工单")}">
 					<select class="form-control" data-filter="deliveryWindow"><option value="">${__("全部交期")}</option><option value="overdue">${__("已逾期")}</option><option value="today">${__("今日交期")}</option><option value="within_7_days">${__("7 天内交期")}</option><option value="later">${__("稍后交期")}</option><option value="missing">${__("缺少交期")}</option></select>
 					<select class="form-control" data-filter="status"><option value="">${__("全部状态")}</option><option value="master_data_blocked">${__("基础资料异常")}</option><option value="batch_reservation_blocked">${__("批次预留需核对")}</option><option value="planning_required">${__("待创建生产计划")}</option><option value="legacy_work_order">${__("旧工单未纳入计划")}</option><option value="material_shortage">${__("缺底层原材料")}</option><option value="awaiting_supply">${__("等待到料")}</option><option value="waiting_subassembly">${__("等待半成品")}</option><option value="awaiting_receipt">${__("待完工入库")}</option><option value="awaiting_issue">${__("待生产发料")}</option><option value="ready_to_start">${__("可开工")}</option><option value="in_production">${__("生产中")}</option><option value="partially_completed">${__("部分完工")}</option><option value="awaiting_order_reservation">${__("待回补订单")}</option><option value="overplanned">${__("超计划生产")}</option></select>
 					<select class="form-control" data-filter="risk"><option value="">${__("全部风险")}</option><option value="red">${__("高风险")}</option><option value="orange">${__("需关注")}</option><option value="blue">${__("处理中")}</option><option value="green">${__("正常")}</option></select>
@@ -919,16 +979,73 @@ if (typeof frappe !== "undefined") {
 					<label><input type="checkbox" data-filter="unplannedOnly"> ${__("只看未纳入计划")}</label>
 					<label><input type="checkbox" data-filter="showOther"> ${__("其他生产")}</label>
 				</div>
+				<p class="text-muted production-sort-note">${__("物料按订单交期优先分配；相同交期按订单创建时间和明细顺序。")}</p>
 				</details>
 				<div class="production-active-filters" role="status" aria-live="polite" aria-atomic="true"></div>
 				<div class="production-update-time text-muted"></div>
-				<p class="text-muted production-sort-note">${__("客户物料分配优先级：订单行交付日期；同交期按订单创建时间和订单行顺序。")}</p>
 				<div class="production-demand-list"></div>
 				<div class="production-pagination"></div>
 				<div class="production-other-section"></div>
 			</div>`);
 
 		const $root = page.main.find(".production-workbench");
+		const canArrange = Boolean(frappe.boot.enable_operation_dispatch_pool && window.process_simplification?.mount_production_prearrangement);
+		const canIssue = Boolean(frappe.boot.enable_production_materials && window.process_simplification?.production_materials?.mount);
+		const canReview = Boolean(window.process_simplification?.can_manage_worker_assignments?.());
+		$root.before(productionCenterNavigationHtml({ canArrange, canIssue, canReview }, { translate: __, escapeHtml: frappe.utils.escape_html }));
+		let operationPool = null;
+		let materials = null;
+		let activeView = "orders";
+		const $viewSwitch = page.main.find(".production-view-switch");
+		let $operationHost = null;
+		let $materialHost = null;
+		function showView(view) {
+			if (activeView !== view) {
+				if (activeView === "operations") operationPool?.deactivate();
+				if (activeView === "materials") materials?.deactivate();
+			}
+			activeView = view;
+			$root.prop("hidden", view !== "orders");
+			$operationHost?.prop("hidden", view !== "operations");
+			$materialHost?.prop("hidden", view !== "materials");
+			$viewSwitch.find("[data-production-view]").each((_, button) => {
+				$(button).toggleClass("is-active", button.dataset.productionView === view)
+					.attr("aria-pressed", String(button.dataset.productionView === view));
+			});
+		}
+		function showOrderView() { showView("orders"); }
+		function openProductionView(view, options = {}) {
+			if (!["orders", "operations", "materials"].includes(view) || (view === "operations" && !canArrange) || (view === "materials" && !canIssue)) return false;
+			if (operationPool?.controller.state.running || materials?.controller.state.running) {
+				frappe.msgprint(__("当前操作尚未结束，请等待处理完成后再切换。"));
+				return;
+			}
+			showView(view);
+			if (window.matchMedia("(max-width: 767px)").matches) {
+				$viewSwitch.get(0)?.scrollIntoView({ block: "start" });
+			}
+			if (view === "orders") return loadOverview();
+			if (view === "operations") return operationPool.activate(options);
+			if (view === "materials") return materials.activate(options);
+		}
+		if (canArrange || canIssue) {
+			if (canArrange) {
+				$operationHost = $('<div hidden class="production-operation-view">').insertAfter($root);
+				operationPool = window.process_simplification.mount_production_prearrangement({
+					host: $operationHost,
+					openAssignment: (workOrder, onSuccess) => window.process_simplification.open_worker_assignment_dialog({ work_order: workOrder, on_success: onSuccess }),
+				});
+			}
+			if (canIssue) {
+				$materialHost = $('<div hidden class="production-material-view">').insertAfter($root);
+				materials = window.process_simplification.production_materials.mount($materialHost, { ownerRoute: "production-workbench" });
+			}
+			$viewSwitch.on("click", "[data-production-view]", (event) => {
+				const view = event.currentTarget.dataset.productionView;
+				if (view === activeView) return;
+				openProductionView(view);
+			});
+		}
 		if (window.matchMedia("(max-width: 767px)").matches) {
 			$root.find(".workbench-filter-panel").prop("open", false);
 		}
@@ -938,7 +1055,12 @@ if (typeof frappe !== "undefined") {
 			pagination: { page: 1, page_size: 20 },
 			expandedDemands: new Set(),
 		};
-		page.production_workbench = { state, loadOverview };
+		page.production_workbench = { state, loadOverview, showOrderView, restoreActiveView, openView: openProductionView };
+		function restoreActiveView() {
+			if (activeView === "operations" && operationPool) return operationPool.activate();
+			if (activeView === "materials" && materials) return materials.activate();
+			return loadOverview();
+		}
 
 		const helpers = () => ({
 			translate: __,
@@ -949,6 +1071,8 @@ if (typeof frappe !== "undefined") {
 				window.process_simplification?.can_manage_worker_assignments?.()
 			),
 			canReadStockEntries: Boolean(frappe.model.can_read("Stock Entry")),
+			canArrange,
+			canIssue,
 		});
 
 		function visibleDemands() {
@@ -1040,6 +1164,8 @@ if (typeof frappe !== "undefined") {
 		}
 
 		function loadOverview(options = {}) {
+			if (activeView === "operations" && operationPool) return operationPool.refresh(options);
+			if (activeView === "materials" && materials) return materials.refresh(options);
 			renderActiveFilters();
 			return frappe.ps_read_page(page, {
 				method: "process_simplification.page_refresh.production_overview",
@@ -1153,11 +1279,23 @@ if (typeof frappe !== "undefined") {
 			});
 		}
 
+		let orderSearchTimer = null;
 		$root.on("input change", "[data-filter]", (event) => {
 			const $input = $(event.currentTarget);
 			state.filters[$input.data("filter")] = $input.is(":checkbox") ? $input.prop("checked") : $input.val();
 			state.pagination.page = 1;
+			clearTimeout(orderSearchTimer);
+			if ($input.data("filter") === "search" && event.type === "input") {
+				orderSearchTimer = setTimeout(() => { if (activeView === "orders") loadOverview(); }, 300);
+				return;
+			}
 			loadOverview();
+		});
+		$root.on("click", ".production-open-view", (event) => {
+			event.preventDefault();
+			event.stopPropagation();
+			const button = event.currentTarget;
+			return openProductionView(button.dataset.openView, { search: button.dataset.search });
 		});
 		$root.on("click", ".production-clear-filters", () => {
 			clearProductionFilters(state);
@@ -1206,7 +1344,11 @@ if (typeof frappe !== "undefined") {
 			return frappe.set_route("production-workbench", { demand_key: route[1] });
 		}
 		const demandKey = frappe.route_options?.demand_key || null;
-		if (frappe.route_options) delete frappe.route_options.demand_key;
-		return refreshProductionOverview(wrapper.page, demandKey);
+		const requestedView = frappe.route_options?.production_view || null;
+		if (frappe.route_options) {
+			delete frappe.route_options.demand_key;
+			delete frappe.route_options.production_view;
+		}
+		return refreshProductionOverview(wrapper.page, demandKey, requestedView);
 	};
 }

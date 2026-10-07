@@ -228,12 +228,53 @@ class TestPageRefresh(TestCase):
 				refresh.document_changed(
 					frappe._dict(doctype="Job Card", name="JC", work_order="WO", company="Factory A")
 				)
-		with patch.object(
-			frappe, "get_all", side_effect=[["EMP-A", "EMP-B"], ["worker-a", "worker-b"]]
-		) as query:
+		with (
+			patch.object(frappe, "get_all", side_effect=[["EMP-A", "EMP-B"], ["worker-a", "worker-b"]]) as query,
+			patch.object(refresh, "_planned_worker_users", return_value={"planned-worker"}) as planned,
+		):
 			refresh.flush_changes()
 			self.assertEqual(query.call_count, 2)
+			planned.assert_called_once_with(["WO"])
 		self.assertIsNotNone(self.cache.get_value(refresh._key("version", "user", "worker-b", "tasks")))
+		self.assertIsNotNone(self.cache.get_value(refresh._key("version", "user", "planned-worker", "tasks")))
+
+	def test_stock_issue_wakes_planned_workers_without_formal_assignments(self):
+		frappe.session.user = "planned-worker"
+		refresh.check_updates(["tasks"])
+		frappe.session.user = "unrelated-worker"
+		refresh.check_updates(["tasks"])
+		refresh.document_changed(frappe._dict(doctype="Stock Entry", name="ISSUE", work_order="WO-A", company="Factory A"))
+		with (
+			patch.object(frappe, "get_all", return_value=[]),
+			patch.object(frappe.db, "table_exists", return_value=True),
+			patch.object(frappe.db, "sql", return_value=[frappe._dict(employee_user="planned-worker")]) as sql,
+			patch.object(frappe, "publish_realtime") as publish,
+		):
+			refresh.flush_changes()
+			self.assertEqual(sql.call_args.args[1], {"work_orders": ("WO-A",)})
+			publish.assert_called_once_with(refresh.EVENT, {"topics": ["tasks"]}, user="planned-worker")
+		self.assertIsNotNone(self.cache.get_value(refresh._key("version", "user", "planned-worker", "tasks")))
+
+	def test_missing_prearrangement_tables_do_not_break_existing_worker_refresh(self):
+		refresh.queue_changes({("work-order-workers", "WO-A")})
+		with (
+			patch.object(frappe, "get_all", side_effect=[["EMP-A"], ["worker-a"]]),
+			patch.object(frappe.db, "table_exists", return_value=False),
+			patch.object(frappe.db, "sql") as sql,
+		):
+			refresh.flush_changes()
+			sql.assert_not_called()
+		self.assertIsNotNone(self.cache.get_value(refresh._key("version", "user", "worker-a", "tasks")))
+
+	def test_closing_a_production_plan_invalidates_waiting_tasks_in_its_company(self):
+		factory_a = {**self.scope, "companies": ["Factory A"]}
+		factory_b = {**self.scope, "companies": ["Factory B"]}
+		before_a = refresh.versions_for("worker-a", ["tasks"], factory_a)
+		before_b = refresh.versions_for("worker-b", ["tasks"], factory_b)
+		refresh.document_changed(frappe._dict(doctype="Production Plan", name="PP-A", company="Factory A", status="Closed"))
+		refresh.flush_changes()
+		self.assertNotEqual(before_a, refresh.versions_for("worker-a", ["tasks"], factory_a))
+		self.assertEqual(before_b, refresh.versions_for("worker-b", ["tasks"], factory_b))
 
 	def test_failed_rpc_does_not_publish_change_hints(self):
 		with patch.object(refresh, "flush_changes") as flush:

@@ -9,6 +9,8 @@ const {
 	overviewSummary,
 	orderOverviewHtml,
 	orderNextActionLabel,
+	orderNextAction,
+	fulfillmentDisplayLabel,
 	fulfillmentCsv,
 	workbenchPaginationHtml,
 	refreshFulfillmentOverview,
@@ -158,7 +160,7 @@ test("order HTML escapes customer and item labels", () => {
 test("expanded product rows explain stock coverage and production demand", () => {
 	const html = orderOverviewHtml(order("SO-COMPLETED"), helpers);
 
-	for (const label of ["成品覆盖", "需生产", "已安排", "未安排"]) {
+	for (const label of ["成品覆盖", "需生产", "已建计划", "未建计划"]) {
 		assert.match(html, new RegExp(label));
 	}
 });
@@ -172,8 +174,9 @@ test("collapsed order names the first enabled business action", () => {
 
 	assert.equal(orderNextActionLabel(actionable), "创建发货单");
 	const html = orderOverviewHtml(actionable, helpers);
-	assert.match(html, /class="fulfillment-next-action"/);
-	assert.match(html, /<small>下一步<\/small><strong>创建发货单<\/strong>/);
+	assert.match(html, /class="fulfillment-card-action"/);
+	assert.match(html, /class="btn btn-primary row-action"[^>]*data-action="create_delivery_note"[^>]*>创建发货单<\/button>/);
+	assert.ok(html.indexOf('class="fulfillment-card-action"') < html.indexOf('<details class="fulfillment-order"'));
 
 	const active = order("SO-ACTIVE", { active_work_order_qty: 8, unplanned_production_qty: 0 });
 	active.rows[0].active_work_order_qty = 8;
@@ -253,8 +256,8 @@ test("expanded product rows expose labels for the mobile card layout", () => {
 		"优先获配成品",
 		"成品覆盖",
 		"需生产",
-		"已安排",
-		"未安排",
+		"已建计划",
+		"未建计划",
 		"状态",
 		"下一步",
 	]) {
@@ -285,7 +288,7 @@ test("CSV uses Chinese headers and filename", () => {
 	const csv = fulfillmentCsv([order("SO-CSV")]);
 
 	assert.equal(csv.filename, "订单履约总览.csv");
-	assert.match(csv.content, /^\uFEFF"销售订单","客户","最早交期","订购","已发","待交","有效预留","成品覆盖","需生产","已安排","未安排","风险"/);
+	assert.match(csv.content, /^\uFEFF"销售订单","客户","最早交期","订购","已发","待交","有效预留","成品覆盖","需生产","已建计划","未建计划","风险"/);
 	assert.match(csv.content, /"SO-CSV"/);
 });
 
@@ -340,4 +343,75 @@ test("every page refresh clears or sets route focus and reloads once", async () 
 	assert.equal(state.filters.search, "");
 	assert.deepEqual([...state.expandedOrders], []);
 	assert.equal(loads.length, 2);
+});
+
+test("plan status labels cannot be mistaken for personnel arrangement", () => {
+	for (const [input, expected] of [["已安排生产", "已建计划"], ["待安排生产", "未建计划"], ["未安排", "未建计划"], ["缺料", "缺料"]]) {
+		assert.equal(fulfillmentDisplayLabel(input), expected);
+	}
+	const planned = order("SO-PLAN", { status_label: "已安排生产", risk_label: "已安排生产" });
+	planned.rows[0].status = "待安排生产";
+	planned.rows[0].next_actions = [{ action: "open_production_workbench", label: "安排生产", enabled: true }];
+	const html = orderOverviewHtml(planned, helpers);
+	assert.doesNotMatch(html, /已安排生产|待安排生产|>安排生产</);
+	assert.match(html, /已建计划/);
+	assert.match(html, /未建计划/);
+	assert.match(html, />建生产计划<\/button>/);
+	assert.doesNotMatch(fulfillmentCsv([planned]).content, /已安排生产/);
+});
+
+test("a zero unplanned quantity takes precedence over legacy uncovered stock", () => {
+	const planned = order("SO-ZERO");
+	Object.assign(planned.rows[0], { unplanned_production_qty: 0, uncovered_qty: 8, active_work_order_qty: 8, next_actions: [{ action: "open_production_workbench", label: "安排生产", enabled: true }] });
+	assert.equal(orderNextActionLabel(planned), "查看生产进度");
+});
+
+test("multi-product cards expose the next eligible product and preserve every row action", () => {
+	const first = order("SO-FIRST").rows[0];
+	first.next_actions = [{ action: "reserve_stock", label: "预留库存", enabled: false }];
+	const second = { ...order("SO-SECOND").rows[0], next_actions: [{ action: "open_production_workbench", label: "安排生产", enabled: true }] };
+	const third = { ...order("SO-THIRD").rows[0], next_actions: [{ action: "create_delivery_note", label: "创建发货单", enabled: true }] };
+	const multiple = order("SO-MULTI", { rows: [first, second, third] });
+	assert.equal(orderNextAction(multiple).row.sales_order_item, "SO-SECOND-ITEM-1");
+	const html = orderOverviewHtml(multiple, helpers);
+	const main = html.slice(html.indexOf('class="fulfillment-card-action"'), html.indexOf('<details class="fulfillment-order"'));
+	assert.match(main, /先处理 Finished SO-SECOND/);
+	assert.match(main, /data-row="SO-SECOND-ITEM-1"/);
+	assert.equal((main.match(/<button/g) || []).length, 1);
+	assert.match(html, /等 3 项产品/);
+	assert.match(html, /data-row="SO-THIRD-ITEM-1"/);
+	assert.match(html, /data-action="reserve_stock"[^>]*disabled/);
+	assert.match(html, /<details class="fulfillment-stock-details"><summary>库存分配与生产单据/);
+});
+
+test("disabled actions are never promoted to a card primary action", () => {
+	const blocked = order("SO-NO-WRITE");
+	blocked.rows[0].unsupported = true;
+	blocked.rows[0].unsupported_reason = "请先修正生产资料";
+	blocked.rows[0].next_actions = [{ action: "reserve_stock", label: "预留库存", enabled: false }];
+	const html = orderOverviewHtml(blocked, helpers);
+	assert.equal(orderNextAction(blocked), null);
+	assert.doesNotMatch(html, /btn-primary/);
+	assert.match(html, /data-action="view_sales_order"/);
+	assert.match(html, /请先修正生产资料/);
+	assert.match(html, /data-action="reserve_stock"[^>]*disabled/);
+});
+
+test("direct actions escape order and row identities without hiding the product summary", () => {
+	const unsafe = order('SO-"<script>', { customer_name: '<img src=x>', rows: [{ ...order("SO-SAFE").rows[0], sales_order_item: '\"><script>', item_name: '<script>name</script>', next_actions: [{ action: 'open_production_workbench', label: '<img>', enabled: true }] }] });
+	const html = orderOverviewHtml(unsafe, helpers);
+	assert.doesNotMatch(html, /<script>|<img/);
+	assert.match(html, /data-sales-order="SO-&quot;&lt;script&gt;"/);
+	assert.match(html, /data-row="&quot;&gt;&lt;script&gt;"/);
+	assert.ok(html.indexOf('&lt;script&gt;name') < html.indexOf('<details class="fulfillment-order"'));
+});
+
+
+test("a read-only first product does not hide another product's pending action", () => {
+	const complete = { ...order("SO-COMPLETE").rows[0], next_actions: [{ action: "view_sales_order", label: "查看订单", enabled: true }] };
+	const pending = { ...order("SO-PENDING").rows[0], next_actions: [{ action: "open_production_workbench", label: "安排生产", enabled: true }] };
+	const mixed = order("SO-MIXED", { rows: [complete, pending] });
+	assert.equal(orderNextAction(mixed).row.sales_order_item, "SO-PENDING-ITEM-1");
+	assert.equal(orderNextActionLabel(mixed), "建生产计划");
+	assert.equal(orderNextAction({ rows: [complete] }).action.action, "view_sales_order");
 });

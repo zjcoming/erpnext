@@ -80,6 +80,7 @@ function workReportButtonMeta(assignment, translate = (message) => message) {
 		DAILY_MINUTES_LIMIT: translate("今日工时已满"),
 		MATERIAL_NOT_TRANSFERRED: translate("等待发料"),
 		PREVIOUS_OPERATION_PENDING: translate("等待前序"),
+		ACTIVE_WORK_SESSION: translate("请先结束正在做的任务"),
 		JOB_CARD_UNAVAILABLE: translate("不可报工"),
 		TIME_LOG_SETTING: translate("配置不兼容"),
 		PROCESS_LOSS: translate("需主管处理"),
@@ -102,6 +103,7 @@ function workReportBlockMessage(assignment, translate = (message) => message) {
 		DAILY_MINUTES_LIMIT: translate("今日计薪分钟已达到上限。"),
 		MATERIAL_NOT_TRANSFERRED: translate("物料尚未发放到在制仓，发料后才能开始报工。"),
 		PREVIOUS_OPERATION_PENDING: translate("前序工序尚无可接续的已完成数量，请等待主管审核前序报工。"),
+		ACTIVE_WORK_SESSION: translate("请先结束当前正在进行的任务，再开始这项工作。"),
 	};
 	return messages[assignment.block_code] || assignment.block_message || "";
 }
@@ -245,6 +247,63 @@ function shouldOpenWaitingMaterialGroup(partitions = {}) {
 	return !partitions.active?.length && !partitions.ready?.length && !partitions.blocked?.length;
 }
 
+// Keep source records and start APIs separate; only their presentation is combined.
+function workerQueueGroup(row, action = {}) {
+	if (["starting", "uncertain", "checking"].includes(action.status)) return "attention";
+	if (row.can_start) return "ready";
+	if (row.block_code === "PREVIOUS_OPERATION_PENDING") return "previous";
+	if (["MATERIAL_NOT_TRANSFERRED", "MATERIAL_NOT_FULLY_ISSUED", "DIRECT_MATERIAL_SHORTAGE"].includes(row.block_code)) return "material";
+	return "attention";
+}
+
+function buildWorkerTaskQueue(assignments = [], plannedState = {}) {
+	const active = assignments.filter((row) => row.active_report);
+	const groups = { ready: [], previous: [], material: [], attention: [] };
+	const plans = plannedState.tasks || [];
+	const actions = plannedState.actions || new Map();
+	const pending = (row) => ["starting", "uncertain", "checking"].includes(actions.get(row.name)?.status);
+	const pendingCards = new Set(plans.filter(pending).map((row) => row.job_card).filter(Boolean));
+	const formalCards = new Set(assignments.map((row) => row.job_card).filter(Boolean));
+	const activeCards = new Set(active.map((row) => row.job_card).filter(Boolean));
+	const add = (source, original) => {
+		const row = active.length && original.can_start ? {
+			...original, can_start: false, block_code: "ACTIVE_WORK_SESSION",
+			block_message: "请先结束当前正在进行的任务，再开始这项工作。",
+		} : original;
+		const action = source === "planned" ? actions.get(row.name) : undefined;
+		groups[workerQueueGroup(row, action)].push({ source, row });
+	};
+	assignments.forEach((row) => {
+		// An unresolved activation must retain its check-result action rather than
+		// expose another start button from a newly-created formal assignment.
+		if (!row.active_report && !pendingCards.has(row.job_card)) add("formal", row);
+	});
+	plans.forEach((row) => {
+		if (activeCards.has(row.job_card)) return;
+		if (formalCards.has(row.job_card) && !pending(row)) return;
+		add("planned", row);
+	});
+	return { active, groups, total: Object.values(groups).reduce((sum, rows) => sum + rows.length, 0) };
+}
+
+function workerTaskQueueHtml(queue, helpers = {}) {
+	const translate = helpers.translate || ((message) => message);
+	const descriptions = {
+		ready: ["可以开始", "点“开始计时”后开始工作。"],
+		previous: ["等待前序", "前序完成并审核后，再查看任务是否可以开始。"],
+		material: ["等待发料", "物料满足开工条件后，再开始计时。"],
+		attention: ["需处理", "按任务提示处理，或联系主管。"],
+	};
+	return Object.entries(descriptions).map(([key, [label, description]]) => {
+		const rows = queue.groups[key];
+		if (!rows.length) return "";
+		const cards = rows.map(({ source, row }) => source === "planned"
+			? helpers.plannedCard(row)
+			: workerAssignmentCardHtml(row, helpers)).join("");
+		return `<section class="worker-assignment-group worker-queue-group is-${key}-group" data-task-group="${key}"><div class="worker-queue-group-heading"><h5>${translate(label)} <span>${rows.length}</span></h5><p>${translate(description)}</p></div><div class="worker-assignment-grid">${cards}</div></section>`;
+	}).join("") || `<div class="text-muted worker-reporting-empty">${translate("当前没有待开始的任务。")}</div>`;
+}
+
 function workerScanTarget(assignments, jobCard) {
 	const row = (assignments || []).find((item) => item.job_card === jobCard);
 	return row ? { row, mode: row.active_report ? "active" : "queue" } : null;
@@ -301,21 +360,21 @@ function workerAssignmentCardHtml(row, helpers = {}) {
 		? "is-active"
 		: row.can_start
 			? "is-ready"
-			: row.block_code === "MATERIAL_NOT_TRANSFERRED"
+			: ["material", "previous"].includes(workerQueueGroup(row))
 				? "is-waiting-material"
 				: "is-blocked";
 	const stateLabel = row.active_report
 		? (row.timer_paused_at ? translate("已暂停") : translate("正在做"))
 		: row.can_start
 			? translate("可以开始")
-			: row.block_code === "MATERIAL_NOT_TRANSFERRED"
+			: workerQueueGroup(row) === "material"
 				? translate("等待发料")
-				: translate("待处理");
+				: workerQueueGroup(row) === "previous" ? translate("等待前序") : translate("需处理");
 	const stateIndicator = row.active_report
 		? (row.timer_paused_at ? "orange" : "blue")
 		: row.can_start
 			? "green"
-			: row.block_code === "MATERIAL_NOT_TRANSFERRED"
+			: ["material", "previous"].includes(workerQueueGroup(row))
 				? "gray"
 				: "orange";
 	return `<article class="worker-assignment-card ${stateClass}" data-assignment="${escapeHtml(row.name)}">
@@ -330,7 +389,7 @@ function workerAssignmentCardHtml(row, helpers = {}) {
 		${blockMessage ? `<p class="worker-assignment-block-message">${escapeHtml(blockMessage)}</p>` : ""}
 		${row.notes ? `<p class="text-muted worker-assignment-note">${escapeHtml(row.notes)}</p>` : ""}
 		<div class="worker-assignment-actions">
-			<button class="btn btn-primary worker-report-action" data-assignment="${escapeHtml(row.name)}" ${button.disabled ? "disabled" : ""}>${escapeHtml(button.label)}</button>
+			<button class="btn btn-primary worker-report-action" data-assignment="${escapeHtml(row.name)}" ${button.disabled || (!row.active_report && helpers.disableStart) ? "disabled" : ""}>${escapeHtml(button.label)}</button>
 			${timerButton ? `<button class="btn btn-default worker-timer-action" data-assignment="${escapeHtml(row.name)}" data-action="${escapeHtml(timerButton.action)}">${escapeHtml(timerButton.label)}</button>` : ""}
 			<button class="btn btn-link worker-exception-action" data-assignment="${escapeHtml(row.name)}">${translate("申请退料/报废")}</button>
 		</div>
@@ -353,7 +412,7 @@ function workerAssignmentCardHtml(row, helpers = {}) {
 
 function mountWorkerReportingPage({ page, root, mode = "queue" }) {
 	const $root = root;
-	const state = { data: { assignments: [], reports: [] } };
+	const state = { data: { assignments: [], reports: [] }, starting: false };
 	const esc = (value) => frappe.utils.escape_html(String(value ?? ""));
 	const number = (value) => format_number(flt(value), null, 2);
 	const dateTime = (value) =>
@@ -365,12 +424,30 @@ function mountWorkerReportingPage({ page, root, mode = "queue" }) {
 		formatDateTime: dateTime,
 	};
 
-	function renderSummary(partitions) {
+	function queueModel() {
+		return buildWorkerTaskQueue(state.data.assignments || [], page.worker_prearrangement?.state);
+	}
+
+	function startIsPending() {
+		const planned = page.worker_prearrangement?.state;
+		return state.starting || Boolean(planned?.busy || planned?.loading || planned?.error)
+			|| [...(planned?.actions?.values() || [])].some((action) => ["uncertain", "checking"].includes(action.status));
+	}
+
+	function canStartTask(source, name) {
+		return !startIsPending() && queueModel().groups.ready.some((task) => task.source === source && task.row.name === name);
+	}
+
+	function disableStarts() {
+		// The shared page reader captures expanded details after loading starts.
+		// Disable stale actions in place so that capture sees the existing DOM.
+		$root.find(".worker-report-action, .worker-planned-start").prop("disabled", true);
+	}
+
+	function renderSummary(partitions, queue) {
 		const focus = mode === "active"
 			? `${__("正在做")} ${partitions.active.length} ${__("项")}`
-			: `${__("待处理派工")} ${
-				partitions.ready.length + partitions.blocked.length + partitions.waitingMaterial.length
-			} ${__("项")}`;
+			: `${__("待开始任务")} ${queue.total} ${__("项")}`;
 		$root.find(".worker-reporting-summary").html(
 			`<div><strong>${esc(focus)}</strong><span>${__("今日计薪分钟")}：${number(state.data.daily_minutes_used)} / ${number(state.data.daily_minutes_limit)}</span></div>`
 		);
@@ -382,27 +459,27 @@ function mountWorkerReportingPage({ page, root, mode = "queue" }) {
 			.join("")}</div>`;
 	}
 
-	function renderQueue(partitions) {
+	function renderQueue(queue) {
 		$root.find(".worker-active-shortcut").html(
-			partitions.active.length
-				? `<button class="worker-focus-banner worker-open-active" type="button"><span><strong>${__("正在做")} ${partitions.active.length} ${__("项")}</strong><small>${__("优先处理计时、暂停或结束报工")}</small></span><span>${__("立即查看")} →</span></button>`
+			queue.active.length
+				? `<button class="worker-focus-banner worker-open-active" type="button"><span><strong>${__("正在做")} ${queue.active.length} ${__("项")}</strong><small>${__("优先处理计时、暂停或结束报工")}</small></span><span>${__("立即查看")} →</span></button>`
 				: ""
 		);
-
-		const groups = [];
-		if (partitions.ready.length) {
-			groups.push(`<section class="worker-assignment-group is-ready-group"><h5>${__("可以开始")} <span>${partitions.ready.length}</span></h5>${cardGrid(partitions.ready)}</section>`);
+		const planned = page.worker_prearrangement?.state;
+		const notices = [];
+		if (planned?.error) notices.push(`<p class="text-danger" role="alert">${esc(planned.error)} ${__("请刷新任务后重试。")}</p>`);
+		if (planned?.notice && !planned.tasks.some((task) => planned.actions.get(task.name)?.message === planned.notice)) {
+			notices.push(`<p class="text-${planned.noticeType === "success" ? "success" : "danger"}" role="status">${esc(planned.notice)}</p>`);
 		}
-		if (partitions.blocked.length) {
-			groups.push(`<section class="worker-assignment-group"><h5>${__("待处理")} <span>${partitions.blocked.length}</span></h5>${cardGrid(partitions.blocked)}</section>`);
-		}
-		if (partitions.waitingMaterial.length) {
-			const shouldOpen = shouldOpenWaitingMaterialGroup(partitions);
-			groups.push(`<details class="worker-assignment-group worker-waiting-group" ${shouldOpen ? "open" : ""}><summary>${__("等待发料")} <span>${partitions.waitingMaterial.length}</span><small>${__("发料后才可开始")}</small></summary>${cardGrid(partitions.waitingMaterial)}</details>`);
-		}
-		$root.find(".worker-assignment-list").html(
-			groups.join("") || `<div class="text-muted worker-reporting-empty">${__("当前没有待开始的派工任务。")}</div>`
-		);
+		$root.find(".worker-task-notices").html(notices.join(""));
+		$root.find(".worker-assignment-list").html(workerTaskQueueHtml(queue, {
+			...helpers, disableStart: startIsPending(),
+			plannedCard: (row) => window.process_simplification.worker_prearrangement.workerPlannedCardHtml(row, {
+				...helpers, action: planned?.actions.get(row.name), loading: planned?.loading || Boolean(planned?.error),
+				busy: state.starting || planned?.busy,
+				unresolved: [...(planned?.actions.values() || [])].some((action) => ["uncertain", "checking"].includes(action.status)),
+			}),
+		}));
 	}
 
 	function renderActive(partitions) {
@@ -415,22 +492,35 @@ function mountWorkerReportingPage({ page, root, mode = "queue" }) {
 
 	function render() {
 		const partitions = partitionWorkerAssignments(state.data.assignments || []);
-		renderSummary(partitions);
+		const queue = mode === "queue" ? queueModel() : null;
+		renderSummary(partitions, queue);
 		if (mode === "active") renderActive(partitions);
-		else renderQueue(partitions);
+		else renderQueue(queue);
 	}
 
 	function load(options = {}) {
 		const scans = window.process_simplification?.document_scan;
 		const pendingFocus = scans?.focusStore.peek(frappe.session.user, mode);
+		const planned = mode === "queue" ? page.worker_prearrangement : null;
+		planned?.loading();
 		return frappe.ps_read_page(page, {
-			method: "process_simplification.api.production_reporting.get_my_dashboard",
+			...(planned ? {
+				requests: {
+					dashboard: { method: "process_simplification.api.production_reporting.get_my_dashboard", args: {} },
+					planned: planned.query,
+				},
+			} : { method: "process_simplification.api.production_reporting.get_my_dashboard" }),
 			background: options.background && !pendingFocus,
 			freeze_message: mode === "active" ? __("正在读取进行中的任务...") : __("正在读取当前派工..."),
 			apply(response) {
-				state.data = response.message || { assignments: [], reports: [] };
+				state.data = (planned ? response.message?.dashboard : response.message) || { assignments: [], reports: [] };
+				planned?.accept(response.message?.planned);
+				planned?.reconcile(state.data);
 				render();
 			},
+		}).catch((error) => {
+			planned?.failed(error);
+			throw error;
 		}).then((applied) => {
 			// Run after the shared loader restores background scroll/expansion state,
 			// including when this read was merged with an already-running refresh.
@@ -456,16 +546,22 @@ function mountWorkerReportingPage({ page, root, mode = "queue" }) {
 	}
 
 	async function beginWork(row) {
+		if (!canStartTask("formal", row.name)) return false;
 		const requestId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
-		await frappe.call({
-			method: "process_simplification.api.production_reporting.start_work_session",
-			type: "POST",
-			freeze: true,
-			freeze_message: __("正在开始计时..."),
-			args: { assignment: row.name, request_id: requestId },
-		});
-		frappe.show_alert({ message: __("已经开始计时。"), indicator: "green" });
-		frappe.set_route("active-production-work");
+		state.starting = true;
+		render();
+		try {
+			await frappe.call({
+				method: "process_simplification.api.production_reporting.start_work_session",
+				type: "POST",
+				freeze: true,
+				freeze_message: __("正在开始计时..."),
+				args: { assignment: row.name, request_id: requestId },
+			});
+			frappe.show_alert({ message: __("已经开始计时。"), indicator: "green" });
+			frappe.set_route("active-production-work");
+			return true;
+		} finally { state.starting = false; render(); }
 	}
 
 	function startWork(row) {
@@ -812,7 +908,7 @@ function mountWorkerReportingPage({ page, root, mode = "queue" }) {
 		if (route) frappe.set_route(route);
 	});
 	addWorkerRefreshMenu(page);
-	page.worker_reporting = { state, load };
+	page.worker_reporting = { state, load, render, canStartTask, disableStarts };
 	return page.worker_reporting;
 }
 
@@ -839,6 +935,9 @@ const workerReportingApi = {
 	workerAssignmentPriority,
 	partitionWorkerAssignments,
 	shouldOpenWaitingMaterialGroup,
+	workerQueueGroup,
+	buildWorkerTaskQueue,
+	workerTaskQueueHtml,
 	workerScanTarget,
 	focusWorkerAssignment,
 	workerTaskNavigationHtml,

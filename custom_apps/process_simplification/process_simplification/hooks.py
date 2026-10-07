@@ -22,21 +22,32 @@ app_include_css = [
 	"/assets/process_simplification/css/hengsuan_branding.css?v=3",
 	"/assets/process_simplification/css/document_scan.css?v=7",
 	"/assets/process_simplification/css/mobile_desk.css?v=3",
+	"/assets/process_simplification/css/operation_dispatch_pool.css?v=1",
+	"/assets/process_simplification/css/production_planning.css?v=3",
+	"/assets/process_simplification/css/production_materials.css?v=2",
+	"/assets/process_simplification/css/production_center.css?v=2",
+	"/assets/process_simplification/css/order_workbench.css?v=2",
+	"/assets/process_simplification/css/worker_queue.css?v=1",
+	"/assets/process_simplification/css/workbench_ui.css?v=3",
 ]
 app_include_js = [
 	"/assets/process_simplification/js/sidebar_setup_compat.js?v=1",
 	"/assets/process_simplification/js/role_landing.js?v=1",
 	"/assets/process_simplification/js/item_identity.js?v=4",
 	"/assets/process_simplification/js/batch_quick_entry.js?v=1",
-	"/assets/process_simplification/js/worker_assignment.js?v=14",
-	"/assets/process_simplification/js/worker_reporting.js?v=17",
+	"/assets/process_simplification/js/worker_assignment.js?v=15",
+	"/assets/process_simplification/js/operation_dispatch_pool.js?v=4",
+	"/assets/process_simplification/js/production_prearrangement.js?v=3",
+	"/assets/process_simplification/js/production_materials.js?v=4",
+	"/assets/process_simplification/js/worker_reporting.js?v=19",
+	"/assets/process_simplification/js/worker_prearrangement.js?v=2",
 	"/assets/process_simplification/js/material_handling.js?v=3",
 	"/assets/process_simplification/js/document_scan.js?v=13",
 	"/assets/process_simplification/js/notification_sound.js?v=7",
 	"/assets/process_simplification/js/notification_sync.js?v=1",
 	"/assets/process_simplification/js/process_pwa.js?v=1",
 	"/assets/process_simplification/js/hengsuan_branding.js?v=3",
-	"/assets/process_simplification/js/page_refresh.js?v=9",
+	"/assets/process_simplification/js/page_refresh.js?v=10",
 	"/assets/process_simplification/js/mobile_desk.js?v=2",
 ]
 
@@ -66,6 +77,7 @@ boot_session = [
 	"process_simplification.branding.boot_session",
 	"process_simplification.role_landing.boot_session",
 	"process_simplification.document_scan.boot_session",
+	"process_simplification.operation_dispatch.boot_session",
 ]
 
 doctype_js = {

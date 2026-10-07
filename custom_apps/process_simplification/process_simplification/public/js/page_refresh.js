@@ -11,6 +11,7 @@ function createPageRefreshController(options) {
 	let versionsPending = null, versionPage = null;
 	let disposed = false, failures = 0, checkAgain = false;
 	const known = {};
+	const inputPageVersions = new WeakMap();
 	const visible = () => !disposed && options.visible();
 	function scheduleCheck() {
 		if (checkTimer !== null) cancel(checkTimer);
@@ -112,7 +113,23 @@ function createPageRefreshController(options) {
 			if (!visible()) return;
 			failures = 0;
 			const changed = Object.keys(data.versions || {}).filter((topic) => known[topic] !== data.versions[topic]);
-			if (page === active) invalidate(changed.filter((topic) => topic !== "notifications"));
+			if (page === active) {
+				let pageChanged = changed.filter((topic) => topic !== "notifications");
+				if (page?.manual && page?.protectInputs && !page?.load) {
+					// An entry form has no business snapshot for the first version to
+					// invalidate. Establish its own baseline; subsequent changes still
+					// matter even if another route has already seen that version.
+					const baseline = inputPageVersions.get(page) || {};
+					pageChanged = page.topics.filter((topic) =>
+						baseline[topic] !== undefined && data.versions?.[topic] !== undefined &&
+						baseline[topic] !== data.versions[topic]);
+					for (const topic of page.topics) {
+						if (data.versions?.[topic] !== undefined) baseline[topic] = data.versions[topic];
+					}
+					inputPageVersions.set(page, baseline);
+				}
+				invalidate(pageChanged);
+			}
 			for (const topic of Object.keys(data.versions || {})) {
 				if (topic !== "notifications") known[topic] = data.versions[topic];
 			}
@@ -261,6 +278,19 @@ function bindNotificationScrollUnlock(frappeRef, win) {
 	observer.observe(dropdown, { attributes: true, attributeFilter: ["class"] });
 }
 
+function pageRefreshStatusText(state, options, inputDirty) {
+	const changed = options.manual && !options.protectInputs
+		? (options.load ? "数据有更新。" : "数据有更新，可使用页面的“刷新”重新查询。")
+		: options.protectInputs && !inputDirty
+			? "数据有更新，可完成当前操作后刷新查看。"
+			: "数据有更新，当前填写内容已保留。完成操作后可刷新查看。";
+	return {
+		changed,
+		waiting: "数据有更新，稍后自动更新。", loading: "正在更新数据…",
+		error: options.manual ? "更新失败，请重试。" : "暂时未能更新，将自动重试。",
+	}[state];
+}
+
 function setupPageRefresh(frappeRef, win, doc, $) {
 	if (!frappeRef.boot || frappeRef.session?.user === "Guest" || win.__ps_page_refresh) return;
 	// Retire the previous complete-notification polling loop when both asset
@@ -339,13 +369,7 @@ function setupPageRefresh(frappeRef, win, doc, $) {
 			status(state) {
 				if (state === "fresh") { banner.prop("hidden", true).empty(); return; }
 				if (!doc.contains(banner[0])) placeBanner();
-				const texts = {
-					changed: options.manual && !options.protectInputs ? (options.load ? "数据有更新。" : "数据有更新，可使用页面的“刷新”重新查询。") :
-						"数据有更新，当前填写内容已保留。完成操作后可刷新查看。",
-					waiting: "数据有更新，稍后自动更新。", loading: "正在更新数据…",
-					error: options.manual ? "更新失败，请重试。" : "暂时未能更新，将自动重试。",
-				};
-				banner.prop("hidden", false).text(texts[state]);
+				banner.prop("hidden", false).text(pageRefreshStatusText(state, options, inputDirty));
 				if ((state === "changed" || (state === "error" && options.manual)) && !inputDirty && options.load) {
 					$('<button type="button" class="btn btn-xs btn-default ml-2"></button>').text(options.refreshLabel || "刷新数据")
 						.appendTo(banner).on("click", () => controller.refresh(true));
@@ -405,7 +429,7 @@ function setupPageRefresh(frappeRef, win, doc, $) {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-	module.exports = { createPageRefreshController, createPageReadLoader, bindFreshNotificationView, bindNotificationScrollUnlock, PS_REFRESH_HEALTHY_MS, PS_REFRESH_OFFLINE_MS };
+	module.exports = { createPageRefreshController, createPageReadLoader, bindFreshNotificationView, bindNotificationScrollUnlock, pageRefreshStatusText, PS_REFRESH_HEALTHY_MS, PS_REFRESH_OFFLINE_MS };
 }
 if (typeof frappe !== "undefined" && typeof window !== "undefined") {
 	const read = createPageReadLoader((args) => frappe.call(args),

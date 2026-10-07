@@ -25,6 +25,67 @@ const helpers = {
 	formatDate: (value) => value || "",
 };
 
+test("production navigation exposes only enabled work areas and reviewer actions", () => {
+	const enabled = productionWorkbench.productionCenterNavigationHtml({ canArrange: true, canIssue: true, canReview: true }, helpers);
+	for (const view of ["orders", "operations", "materials"]) assert.match(enabled, new RegExp(`data-production-view="${view}"`));
+	assert.match(enabled, /href="\/desk\/production-report-review"/);
+	assert.match(enabled, /aria-label="安排人员"/);
+	const disabled = productionWorkbench.productionCenterNavigationHtml({}, helpers);
+	assert.match(disabled, /data-production-view="orders"/);
+	assert.doesNotMatch(disabled, /data-production-view="operations"|data-production-view="materials"|production-report-review/);
+});
+
+test("order shortcuts allow advance arrangement before stock issue without starting work", () => {
+	const row = demand("EARLY", { unplanned_production_qty: 0, next_actions: [], work_orders: [{
+		name: "WO-WAIT", status: "Not Started", docstatus: 1, can_dispatch: false,
+		issue_state: { code: "waiting_material" }, operation_state: { code: "pending" },
+	}] });
+	const html = productionWorkbench.productionOrderShortcutsHtml(row, { ...helpers, canManageAssignments: true, canArrange: true, canIssue: true });
+	assert.match(html, /data-open-view="operations" data-search="SO-EARLY"/);
+	assert.match(html, /data-open-view="materials" data-search="SO-EARLY"/);
+	assert.doesNotMatch(html, /production-assignment-action|data-action="request_material_issue"/);
+	assert.equal(productionWorkbench.productionOrderShortcutsHtml(row, { ...helpers, canArrange: true, canIssue: true }), "");
+	assert.equal(productionWorkbench.productionOrderShortcutsHtml(row, { ...helpers, canManageAssignments: true }), "");
+});
+
+test("order shortcuts escape their search scope and do not offer planning on terminal work", () => {
+	const row = demand("SAFE", { sales_order: 'SO-"<script>', next_actions: [] });
+	const options = { ...helpers, canManageAssignments: true, canArrange: true, canIssue: true };
+	const html = productionWorkbench.productionOrderShortcutsHtml(row, options);
+	assert.match(html, /data-search="SO-&quot;&lt;script&gt;"/);
+	assert.doesNotMatch(html, /<script>/);
+	row.work_orders[0].status = "Completed";
+	assert.equal(productionWorkbench.productionOrderShortcutsHtml(row, options), "");
+	row.work_orders[0].status = "Not Started";
+	row.production_plans = [];
+	assert.equal(productionWorkbench.productionOrderShortcutsHtml(row, options), "");
+});
+
+test("central arrangement shortcut keeps the original formal-assignment history path", () => {
+	const row = demand("ASSIGNED", { unplanned_production_qty: 0, next_actions: [], work_orders: [{
+		name: "WO-STARTED", status: "In Process", docstatus: 1, can_dispatch: true,
+		worker_assignment_history_count: 1, operation_state: { code: "in_progress" }, issue_state: { code: "issued" },
+	}] });
+	const options = { ...helpers, canManageAssignments: true, canArrange: true, canIssue: true };
+	const task = productionWorkbench.productionNextTask(row, options);
+	const html = productionWorkbench.productionOrderShortcutsHtml(row, options, task);
+	assert.match(html, /production-assignment-action/);
+	assert.doesNotMatch(html, /data-open-view="materials"/);
+});
+
+test("order shortcuts skip personnel for work without operations and require an order search scope", () => {
+	const row = demand("NO-OPERATIONS", { next_actions: [], work_orders: [{
+		name: "WO-PLAIN", status: "Not Started", docstatus: 1,
+		operation_state: { code: "not_applicable" }, issue_state: { code: "issued" },
+	}] });
+	const options = { ...helpers, canManageAssignments: true, canArrange: true, canIssue: true };
+	assert.equal(productionWorkbench.productionOrderShortcutsHtml(row, options), "");
+	row.work_orders[0].operation_state.code = "pending";
+	row.work_orders[0].issue_state.code = "waiting_material";
+	row.sales_order = "";
+	assert.equal(productionWorkbench.productionOrderShortcutsHtml(row, options), "");
+});
+
 function demand(key, overrides = {}) {
 	return {
 		demand_key: key,
@@ -1246,6 +1307,43 @@ test("route focus replaces stale filters, keeps the internal key out of search a
 	assert.equal(state.pagination.page_size, 50);
 	assert.deepEqual([...state.expandedDemands], ["SOI-FOCUS"]);
 	assert.equal(loads.length, 1);
+});
+
+test("page reentry reactivates the active work area once and focused routes select orders first", async () => {
+	const calls = [];
+	const page = { production_workbench: {
+		state: { filters: {}, expandedDemands: new Set() },
+		loadOverview: () => calls.push("load"),
+		restoreActiveView: () => { calls.push("activate"); },
+		showOrderView: () => calls.push("orders"),
+	} };
+	await productionWorkbench.refreshProductionOverview(page);
+	assert.deepEqual(calls, ["activate"]);
+	calls.length = 0;
+	await productionWorkbench.refreshProductionOverview(page, "SOI-FOCUS");
+	assert.deepEqual(calls, ["orders", "activate"]);
+});
+
+test("arrangement route opens its work area once and safely falls back when unavailable", async () => {
+	const calls = [];
+	const page = { production_workbench: {
+		state: { filters: {}, expandedDemands: new Set() },
+		loadOverview: () => calls.push("orders-load"),
+		showOrderView: () => calls.push("orders-show"),
+		openView: (view, options) => { calls.push([view, options]); return Promise.resolve(); },
+	} };
+	await productionWorkbench.refreshProductionOverview(page, null, "operations");
+	assert.deepEqual(calls, [["operations", { search: "" }]]);
+	calls.length = 0;
+	page.production_workbench.openView = () => false;
+	await productionWorkbench.refreshProductionOverview(page, null, "operations");
+	assert.deepEqual(calls, ["orders-load"]);
+	calls.length = 0;
+	await productionWorkbench.refreshProductionOverview(page, "SOI-FOCUS", "operations");
+	assert.deepEqual(calls, ["orders-show", "orders-load"]);
+	calls.length = 0;
+	await productionWorkbench.refreshProductionOverview(page, null, "unknown");
+	assert.deepEqual(calls, ["orders-load"]);
 });
 
 test("order-line focus matches exactly and combines with manual filters", () => {

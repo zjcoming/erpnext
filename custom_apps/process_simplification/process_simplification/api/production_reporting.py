@@ -111,6 +111,27 @@ def get_work_order_assignment_context(work_order):
 	return service.get_work_order_assignment_context(work_order)
 
 
+@frappe.whitelist()
+def get_operation_dispatch_pool(page=1, page_length=20, filters=None):
+	from process_simplification.production_reporting import dispatch_pool
+
+	return dispatch_pool.get_operation_dispatch_pool(page, page_length, filters)
+
+
+@frappe.whitelist(methods=["POST"])
+def assign_workers_first(
+	job_card, assignments, expected_qty, supervisor=None,
+	expected_work_order=None, expected_operation_id=None,
+):
+	from process_simplification.production_reporting import dispatch_pool
+
+	parsed = frappe.parse_json(assignments) if isinstance(assignments, str) else assignments
+	return dispatch_pool.assign_workers_first(
+		job_card, parsed, expected_qty, supervisor,
+		expected_work_order=expected_work_order, expected_operation_id=expected_operation_id,
+	)
+
+
 @frappe.whitelist(methods=["POST"])
 def assign_worker(job_card, employee, supervisor=None, notes=None, assigned_qty=None):
 	return service.assign_worker(job_card, employee, supervisor, notes, assigned_qty)

@@ -3,7 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
-const { createPageRefreshController, createPageReadLoader, bindFreshNotificationView, bindNotificationScrollUnlock } = require("../../public/js/page_refresh.js");
+const { createPageRefreshController, createPageReadLoader, bindFreshNotificationView, bindNotificationScrollUnlock, pageRefreshStatusText } = require("../../public/js/page_refresh.js");
 
 function notificationScrollFixture() {
 	let changed, closes = 0, observers = 0;
@@ -142,6 +142,80 @@ test("batch master events mark an editing quick order as changed without replaci
 	await f.tick(30000);
 	assert.equal(f.page.dirty, true);
 	assert.equal(f.counters().loads, before);
+});
+test("an empty protected entry form establishes a quiet baseline and still loads notifications", async () => {
+	const f = fixture(), statuses = [];
+	Object.assign(f.page, { manual: true, protectInputs: true, load: undefined, dirty: false,
+		status: (state) => statuses.push(state) });
+	f.controller.activate(f.page); await drain();
+	assert.equal(f.page.dirty, false);
+	assert.deepEqual(statuses, ["fresh"]);
+	assert.equal(f.counters().notifications, 1, "notifications retain their initial fetch");
+	await f.tick(600000);
+	assert.equal(f.page.dirty, false);
+	assert.equal(f.counters().loads, 0);
+	assert.equal(statuses.includes("changed"), false);
+});
+test("first entry uses the form's baseline even after other pages checked older versions", async () => {
+	const f = fixture(), statuses = [];
+	f.controller.activate(f.page); await drain(); await f.tick(3000);
+	const before = f.counters().loads;
+	const form = { topics: ["tasks"], manual: true, protectInputs: true, dirty: false,
+		status: (state) => statuses.push(state) };
+	f.versions.tasks = "B";
+	f.controller.activate(form); await drain();
+	assert.equal(form.dirty, false);
+	assert.deepEqual(statuses, ["fresh"]);
+	f.versions.tasks = "C";
+	await f.controller.check();
+	assert.equal(form.dirty, true);
+	assert.equal(statuses.at(-1), "changed");
+	assert.equal(f.counters().loads, before);
+});
+test("a retained entry form notices changes already checked on another route", async () => {
+	const f = fixture(), statuses = [];
+	const form = { topics: ["tasks"], manual: true, protectInputs: true, dirty: false,
+		status: (state) => statuses.push(state) };
+	f.controller.activate(form); await drain();
+	f.controller.activate(f.page); await drain();
+	f.versions.tasks = "B";
+	await f.controller.check();
+	f.controller.activate(form); await drain();
+	assert.equal(form.dirty, true);
+	assert.equal(statuses.at(-1), "changed");
+});
+test("reconnection keeps an unchanged entry form quiet and reports genuine missed updates", async () => {
+	const f = fixture(), statuses = [];
+	Object.assign(f.page, { manual: true, protectInputs: true, load: undefined, dirty: false,
+		editable: () => true, status: (state) => statuses.push(state) });
+	f.controller.activate(f.page); await drain();
+	f.disconnect(); await drain();
+	assert.equal(statuses.includes("changed"), false);
+	f.hide(); f.versions.tasks = "B"; f.show(); await drain();
+	assert.equal(f.page.dirty, true);
+	assert.equal(statuses.at(-1), "changed");
+	await f.tick(120000);
+	assert.equal(f.counters().loads, 0, "no automatic read may replace entered values");
+});
+test("a realtime update during the entry form's first check is not cleared by baselining", async () => {
+	const f = fixture(), statuses = [];
+	let resolveVersion;
+	Object.assign(f.page, { manual: true, protectInputs: true, load: undefined, dirty: false,
+		status: (state) => statuses.push(state) });
+	f.options.check = () => new Promise((resolve) => { resolveVersion = resolve; });
+	f.controller.activate(f.page); await drain();
+	f.controller.event({ topics: ["tasks"] });
+	resolveVersion({ versions: { tasks: "B", notifications: "A" } }); await drain();
+	assert.equal(f.page.dirty, true);
+	assert.equal(statuses.at(-1), "changed");
+	assert.equal(f.counters().notifications, 1);
+});
+test("only actual entered values are described as preserved after a genuine data update", () => {
+	const options = { manual: true, protectInputs: true };
+	assert.doesNotMatch(pageRefreshStatusText("changed", options, false), /填写内容已保留/);
+	assert.match(pageRefreshStatusText("changed", options, true), /填写内容已保留/);
+	assert.equal(pageRefreshStatusText("changed", { manual: true, load() {} }, false), "数据有更新。");
+	assert.equal(pageRefreshStatusText("error", options, false), "更新失败，请重试。");
 });
 test("failed notification fetch retains the version so the next check retries", async () => {
 	const f = fixture(); let attempts = 0;

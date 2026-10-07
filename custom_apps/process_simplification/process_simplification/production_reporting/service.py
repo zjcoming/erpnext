@@ -594,7 +594,7 @@ def validate_report_document(doc):
 		frappe.throw(_("This work report status transition is not allowed."))
 
 
-def assign_workers(job_card: str, assignments, supervisor: str | None = None):
+def assign_workers(job_card: str, assignments, supervisor: str | None = None, *, first_only: bool = False):
 	"""Create or replace one complete, quantity-balanced Job Card dispatch plan."""
 	require_reviewer()
 	supervisor = supervisor or frappe.session.user
@@ -663,6 +663,21 @@ def assign_workers(job_card: str, assignments, supervisor: str | None = None):
 		.where(assignment_table.job_card == job_card)
 		.for_update()
 	).run(as_dict=True)
+	if first_only:
+		# Keep the original Job Card -> Work Order/stock -> Employee -> Assignment
+		# lock order. Current reads are required here: a prior permission read may
+		# have established a snapshot before a competing first assignment committed.
+		has_history = bool(existing_assignments or flt(jc.total_completed_qty) or flt(jc.process_loss_qty))
+		for doctype, filters in (
+			("Job Card Work Report", {"job_card": job_card}),
+			("Job Card Time Log", {"parent": job_card, "parenttype": "Job Card"}),
+			("Job Card Assignment Movement", {"job_card": job_card}),
+		):
+			if has_history:
+				break
+			has_history = bool(frappe.db.get_value(doctype, filters, "name", for_update=True))
+		if has_history:
+			frappe.throw(_("已存在派工或生产历史，本次未覆盖原安排，请刷新核对。"))
 	conflicting_supervisors = {
 		row.supervisor for row in existing_assignments if row.supervisor != supervisor
 	}

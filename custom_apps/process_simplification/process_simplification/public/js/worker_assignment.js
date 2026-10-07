@@ -39,7 +39,7 @@ function workerAssignmentWorkOrderStatusLabel(status, translate = (message) => m
 }
 
 function canManageWorkerAssignments(user, roles = []) {
-	return user === "Administrator" || ["System Manager", "Process Simplification Production Manager"].some((role) => roles.includes(role));
+	return user === "Administrator" || ["System Manager", "Process Simplification Owner", "Process Simplification Production Manager"].some((role) => roles.includes(role));
 }
 
 function defaultAssignmentJobCard(context = {}) {

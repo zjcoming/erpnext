@@ -12,8 +12,10 @@ class TestPurchaseRejectionFollowup(quantity_tests.TestPurchaseRejectionQuantiti
 	def _balance(self, mr):
 		return allocation.coverage(mr.name)[0][mr.items[0].name]
 
-	def _pending_names(self):
-		result = rejections.get_page(company=self.TEST_COMPANY)
+	def _pending_names(self, receipt):
+		# A reused test site can have more than one page of pending receipts.
+		# Check this fixture through the real search instead of assuming page 1.
+		result = rejections.get_page(company=self.TEST_COMPANY, search=receipt)
 		return [row["name"] for row in result["rows"]]
 
 	def test_rejection_is_separate_from_delivery_and_cannot_be_ordered_twice(self):
@@ -23,7 +25,7 @@ class TestPurchaseRejectionFollowup(quantity_tests.TestPurchaseRejectionQuantiti
 		self.assertEqual(balance.ordered_pending_qty, 0)
 		self.assertEqual(balance.rejected_pending_qty, 100)
 		self.assertEqual(balance.occupied_qty, 700)
-		self.assertIn(pr.name, self._pending_names())
+		self.assertIn(pr.name, self._pending_names(pr.name))
 		row = rejections.get_context(pr.name)["items"][0]
 		self.assertEqual((row["accepted_qty"], row["rejected_qty"], row["pending_return_qty"]), (600, 100, 100))
 		self.assertEqual(row["order_pending_qty"], 0)
@@ -43,7 +45,7 @@ class TestPurchaseRejectionFollowup(quantity_tests.TestPurchaseRejectionQuantiti
 		second = rejections.make_rejected_return(pr.name)
 		self.assertEqual(second.items[0].qty, -60)
 		second.insert().submit()
-		self.assertNotIn(pr.name, self._pending_names())
+		self.assertNotIn(pr.name, self._pending_names(pr.name))
 		self._assert_progress(mr, 600)
 		self.assertTrue(allocation._order_followup(po.reload())["can_receive"])
 		with self.assertRaises(frappe.ValidationError):
@@ -63,7 +65,7 @@ class TestPurchaseRejectionFollowup(quantity_tests.TestPurchaseRejectionQuantiti
 		context = rejections.get_context(pr.name)
 		self.assertEqual(context["return_drafts"], [draft.name])
 		self.assertEqual(context["items"][0]["pending_return_qty"], 100)
-		self.assertIn(pr.name, self._pending_names())
+		self.assertIn(pr.name, self._pending_names(pr.name))
 		self.assertEqual(frappe.db.count("Stock Ledger Entry"), before)
 		with self.assertRaises(frappe.ValidationError):
 			rejections.make_rejected_return(pr.name)
@@ -72,9 +74,9 @@ class TestPurchaseRejectionFollowup(quantity_tests.TestPurchaseRejectionQuantiti
 		mr, _, pr = self._flow()
 		ret = rejections.make_rejected_return(pr.name).insert()
 		ret.submit()
-		self.assertNotIn(pr.name, self._pending_names())
+		self.assertNotIn(pr.name, self._pending_names(pr.name))
 		ret.cancel()
-		self.assertIn(pr.name, self._pending_names())
+		self.assertIn(pr.name, self._pending_names(pr.name))
 		self._assert_progress(mr, 600)
 		self.assertEqual(self._stock(pr), 600)
 		self.assertEqual(self._balance(mr).rejected_pending_qty, 100)
@@ -86,7 +88,7 @@ class TestPurchaseRejectionFollowup(quantity_tests.TestPurchaseRejectionQuantiti
 		balance = self._balance(mr)
 		self.assertEqual((balance.received_qty, balance.ordered_pending_qty, balance.rejected_pending_qty), (600, 0, 0))
 		self.assertEqual(allocation.get_allocation_context(mr.name)["items"][0]["available_qty"], 100)
-		self.assertIn(pr.name, self._pending_names())
+		self.assertIn(pr.name, self._pending_names(pr.name))
 		ret = rejections.make_rejected_return(pr.name).insert()
 		ret.submit()
 		self.assertEqual(po.reload().status, "Closed")
@@ -115,7 +117,7 @@ class TestPurchaseRejectionFollowup(quantity_tests.TestPurchaseRejectionQuantiti
 		self.assertEqual(po.reload().status, "Closed")
 		make_purchase_receipt(new_po.name).insert().submit()
 		self._assert_progress(mr, 700, status="Received")
-		self.assertNotIn(pr.name, self._pending_names())
+		self.assertNotIn(pr.name, self._pending_names(pr.name))
 		self.assertEqual(self._stock(pr), 700)
 
 	def test_closed_order_accepted_return_and_cancellation_refresh_retained_supply(self):
@@ -188,7 +190,7 @@ class TestPurchaseRejectionFollowup(quantity_tests.TestPurchaseRejectionQuantiti
 		self.assertEqual(self._stock(pr), 700)
 		self._assert_progress(mr, 600)
 		self.assertEqual(other.reload().status, "Received")
-		self.assertIn(pr.name, self._pending_names())
+		self.assertIn(pr.name, self._pending_names(pr.name))
 
 	def test_stock_unit_followup_for_box_purchases(self):
 		_, _, pr = self._flow(conversion=10)
@@ -234,7 +236,7 @@ class TestPurchaseRejectionFollowup(quantity_tests.TestPurchaseRejectionQuantiti
 			self.assertIn(WAREHOUSE_OPERATOR_ROLE, frappe.get_roles())
 			with self.assertRaises(frappe.PermissionError):
 				rejections.get_page(company="Material Coverage Other Company")
-			self.assertNotIn(pr.name, self._pending_names())
+			self.assertNotIn(pr.name, self._pending_names(pr.name))
 			with self.assertRaises(frappe.PermissionError):
 				rejections.get_context(pr.name)
 			with self.assertRaises(frappe.PermissionError):
@@ -247,7 +249,7 @@ class TestPurchaseRejectionFollowup(quantity_tests.TestPurchaseRejectionQuantiti
 			}).insert()
 			frappe.clear_cache(user=user.name)
 			frappe.set_user(user.name)
-			self.assertIn(pr.name, self._pending_names())
+			self.assertIn(pr.name, self._pending_names(pr.name))
 			self.assertTrue(rejections.get_context(pr.name)["can_return"])
 			mapped = rejections.make_rejected_return(pr.name)
 			self.assertEqual(mapped.items[0].warehouse, pr.items[0].rejected_warehouse)
@@ -258,6 +260,6 @@ class TestPurchaseRejectionFollowup(quantity_tests.TestPurchaseRejectionQuantiti
 	def test_closed_or_cancelled_source_does_not_invent_a_return_action(self):
 		_, _, pr = self._flow()
 		pr.cancel()
-		self.assertNotIn(pr.name, self._pending_names())
+		self.assertNotIn(pr.name, self._pending_names(pr.name))
 		with self.assertRaises(frappe.ValidationError):
 			rejections.make_rejected_return(pr.name)

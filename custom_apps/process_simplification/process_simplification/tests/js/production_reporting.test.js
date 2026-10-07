@@ -534,6 +534,8 @@ test("contextual assignment chooses the first eligible operation and keeps role 
 		"JC-READY"
 	);
 	assert.equal(workerAssignment.canManageWorkerAssignments("Administrator", []), true);
+	assert.equal(workerAssignment.canManageWorkerAssignments("owner@example.com", ["Process Simplification Owner"]), true);
+	assert.equal(workerAssignment.canManageWorkerAssignments("sales@example.com", ["Process Simplification Sales Operator"]), false);
 	assert.equal(workerAssignment.canManageWorkerAssignments("manager@example.com", ["Process Simplification Production Manager"]), true);
 	assert.equal(workerAssignment.canManageWorkerAssignments("legacy@example.com", ["Production Supervisor"]), false);
 	assert.equal(workerAssignment.canManageWorkerAssignments("worker@example.com", ["Production Worker"]), false);

@@ -50,6 +50,11 @@ class TestPurchaseRejectionQuantities(IntegrationTestCase):
 		self.enterContext(patch.object(receipts, "events_enabled", return_value=True))
 		self.enterContext(patch.object(receipts, "process_notifications_enabled", return_value=False))
 
+	def tearDown(self):
+		frappe.set_user("Administrator")
+		frappe.db.rollback()
+		super().tearDown()
+
 	def _flow(self, *, conversion=1, accepted=600, rejected=100):
 		item = self._make_item("REJECTION", uoms=[{"uom": "Box", "conversion_factor": 10}])
 		mr = self._make_material_request(
@@ -68,6 +73,11 @@ class TestPurchaseRejectionQuantities(IntegrationTestCase):
 		pr.items[0].rejected_qty = rejected / conversion
 		pr.items[0].received_qty = (accepted + rejected) / conversion
 		pr.items[0].rejected_warehouse = self._make_warehouse("Rejected", is_rejected_warehouse=1)
+		# The receipt is setup stock, so keep it before every return action's
+		# live posting cutoff rather than racing wall-clock adjustments.
+		pr.set_posting_time = 1
+		pr.posting_date = nowdate()
+		pr.posting_time = "00:00:00"
 		pr.insert().submit()
 		return mr, po, pr
 

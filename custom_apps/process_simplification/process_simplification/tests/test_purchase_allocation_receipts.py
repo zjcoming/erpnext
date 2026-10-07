@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import multiprocessing
 from copy import deepcopy
+from pathlib import Path
 from unittest.mock import patch
 
 import frappe
@@ -25,9 +26,9 @@ from process_simplification.purchasing import allocation, receipts
 from process_simplification.tests import test_material_coverage_integration as coverage_fixtures
 
 
-def _parallel_purchase_action(site, barrier, output, action):
+def _parallel_purchase_action(site, sites_path, barrier, output, action):
 	"""A separate connection/process, not a mocked lock or shared test transaction."""
-	frappe.init(site=site, sites_path="/sites")
+	frappe.init(site=site, sites_path=sites_path)
 	frappe.connect()
 	frappe.set_user(action.get("user", "Administrator"))
 	frappe.flags.in_test = True
@@ -668,9 +669,10 @@ class TestPurchaseAllocationReceipts(IntegrationTestCase):
 	def _parallel(self, actions):
 		context = multiprocessing.get_context("spawn")
 		barrier, output = context.Barrier(len(actions)), context.Queue()
+		sites_path = str(Path(frappe.local.sites_path).resolve())
 		processes = [
 			context.Process(
-				target=_parallel_purchase_action, args=(frappe.local.site, barrier, output, action)
+				target=_parallel_purchase_action, args=(frappe.local.site, sites_path, barrier, output, action)
 			)
 			for action in actions
 		]

@@ -1,0 +1,146 @@
+/* Shared presentation for the factory workbenches; native ERP forms keep their own layout. */
+:root {
+	--ps-work-accent: #21695f;
+	--ps-work-accent-hover: #18564d;
+	--ps-work-soft: #edf6f2;
+	--ps-work-border: #dfe6e2;
+	--ps-work-muted: #67766f;
+	--ps-work-ink: #213a33;
+}
+.process-simplification-page, .production-center-shell, .warehouse-center-shell, .production-materials {
+	--primary: var(--ps-work-accent);
+	--ps-ui-accent: var(--ps-work-accent);
+	--ps-ui-accent-soft: var(--ps-work-soft);
+	--pc-accent: var(--ps-work-accent);
+	--personnel-accent: var(--ps-work-accent);
+	--materials-accent: var(--ps-work-accent);
+}
+:is(.process-simplification-page, .warehouse-center-shell) .btn-primary {
+	background: var(--ps-work-accent);
+	border-color: var(--ps-work-accent);
+	color: #fff;
+	box-shadow: none;
+}
+:is(.process-simplification-page, .warehouse-center-shell) .btn-primary:hover:not(:disabled) {
+	background: var(--ps-work-accent-hover);
+	border-color: var(--ps-work-accent-hover);
+}
+:is(.process-simplification-page, .warehouse-center-shell) :is(.btn, .form-control) {
+	min-height: 44px;
+	border-radius: 8px;
+	font-size: 14px;
+}
+:is(.process-simplification-page, .warehouse-center-shell) .btn-default {
+	background: var(--card-bg, #fff);
+	border: 1px solid var(--ps-work-border);
+}
+:is(.process-simplification-page, .warehouse-center-shell) :is(button, a, input, select, summary):focus-visible {
+	outline: 3px solid #83b4a4;
+	outline-offset: 3px;
+}
+:is(#page-shortage-purchase-planning, #page-purchase-supplier-allocation, #page-production-report-review, #page-production-exception-review, #page-quick-sales-order) .page-actions .btn-primary {
+	background: var(--ps-work-accent);
+	border-color: var(--ps-work-accent);
+	color: #fff;
+}
+.process-simplification-page :is(.review-hero, .shortage-hero, .purchase-hero) {
+	padding: 18px 20px;
+	border-radius: 12px;
+	box-shadow: none;
+}
+.process-simplification-page :is(.review-hero, .shortage-hero, .purchase-hero) :is(h1, h2) {
+	font-size: 24px;
+	line-height: 1.35;
+}
+.process-simplification-page :is(.review-eyebrow, .shortage-eyebrow, .purchase-eyebrow) {
+	color: var(--ps-work-accent);
+}
+.ps-work-area-nav {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 12px;
+	margin: 0 auto 20px;
+	max-width: 1480px;
+}
+.ps-work-area {
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	gap: 6px;
+	min-height: 80px;
+	padding: 16px 20px;
+	text-align: left;
+	border: 1px solid var(--ps-work-border);
+	border-radius: 12px;
+	background: var(--card-bg, #fff);
+	color: var(--ps-work-ink);
+}
+.ps-work-area strong { font-size: 17px; }
+.ps-work-area small { font-size: 13px; color: var(--ps-work-muted); }
+.ps-work-area:hover { border-color: #8bb5a4; }
+.ps-work-area.is-active { border: 2px solid var(--ps-work-accent); padding: 15px 19px; background: var(--ps-work-soft); }
+.warehouse-center-shell { padding: 24px !important; background: #f5f7f5; }
+.warehouse-center-shell [hidden] { display: none !important; }
+.warehouse-center-shell .warehouse-workbench { max-width: 1480px; padding: 20px; border: 1px solid var(--ps-work-border); border-radius: 12px; background: var(--card-bg, #fff); }
+.warehouse-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+.warehouse-heading h2 { margin: 0 0 6px; font-size: 22px; color: var(--ps-work-ink); }
+.warehouse-heading p { margin: 0; color: var(--ps-work-muted); font-size: 13px; }
+.warehouse-heading > .btn { flex-shrink: 0; }
+.warehouse-center-shell .warehouse-queue.is-active { border-color: var(--ps-work-accent); background: var(--ps-work-soft); }
+.warehouse-center-shell .warehouse-document-action { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.warehouse-document-action small { color: var(--ps-work-muted); font-size: 13px; }
+.warehouse-center-shell .warehouse-preparation { margin-top: 24px; }
+.warehouse-query-panel { border-top: 1px solid var(--ps-work-border); margin-top: 20px; }
+.warehouse-query-panel > summary { min-height: 44px; padding: 14px 0; cursor: pointer; font-size: 14px; font-weight: 600; }
+.warehouse-query-panel .warehouse-shortcuts { margin: 0 0 12px; }
+.warehouse-center-shell .warehouse-empty { padding: 28px 16px; }
+.production-center-shell .btn { min-height: 44px; }
+.production-center-shell .workbench-filter-panel > summary { min-height: 44px; }
+.production-center-header { margin-bottom: 16px; }
+.production-center-header h2 { font-size: 24px; }
+.production-center-shell .production-view-switch { margin-bottom: 18px; }
+.production-center-shell .production-view-card { min-height: 80px; padding: 14px 18px; }
+.production-center-shell .production-view-card.is-active { padding: 13px 17px; }
+.production-center-shell .production-prearrangement { --personnel-accent: var(--ps-work-accent); }
+.production-center-shell .production-prearrangement .production-personnel-header { margin-bottom: 14px; }
+
+@media (max-width: 767px) {
+	.warehouse-center-shell { padding: 12px !important; }
+	.warehouse-center-shell .warehouse-workbench { padding: 14px 12px; }
+	.ps-work-area-nav { gap: 8px; margin-bottom: 14px; }
+	.ps-work-area { padding: 10px; min-height: 60px; text-align: center; }
+	.ps-work-area.is-active { padding: 9px; }
+	.ps-work-area strong { font-size: 15px; }
+	.ps-work-area small { display: none; }
+	.warehouse-heading { align-items: flex-start; gap: 10px; margin-bottom: 14px; }
+	.warehouse-heading h2 { font-size: 20px; }
+	.warehouse-heading p { font-size: 13px; }
+	.warehouse-heading > .btn { padding: 8px 10px; }
+	.warehouse-center-shell .warehouse-queues { gap: 8px; }
+	.warehouse-document-action small { line-height: 1.6; }
+	.production-center-header { justify-content: flex-end; margin-bottom: 10px; }
+	.production-center-header > div:first-child { display: none; }
+	.production-center-links { flex-direction: row; align-items: center; gap: 16px; }
+	.production-center-links > a { font-size: 13px; min-height: 44px; display: inline-flex; align-items: center; }
+	.production-center-shell .production-view-switch { gap: 6px; margin-bottom: 12px; }
+	.production-center-shell .production-view-card { min-height: 48px; padding: 10px 6px; }
+	.production-center-shell .production-view-card.is-active { padding: 9px 5px; }
+	.production-center-shell .production-view-icon { display: none; }
+	.production-view-copy strong { font-size: 14px; }
+	.production-orders-heading { margin-bottom: 10px; }
+	.production-orders-heading p { display: none; }
+	.production-order-search { margin-top: 10px; }
+	.production-center-shell .production-kpi { min-height: 52px; padding: 8px; }
+	.production-center-shell .production-kpi > span { font-size: 12px; }
+	.production-center-shell .production-prearrangement .production-personnel-page-states { margin-block: 10px; }
+	.production-center-shell .production-prearrangement .production-personnel-header { margin-bottom: 10px; }
+	.production-center-shell .production-prearrangement .production-personnel-header p { font-size: 13px; }
+	.production-center-shell .production-prearrangement .production-personnel-selection { padding: 8px; gap: 8px; }
+	.production-center-shell .production-prearrangement .production-personnel-selection > div { min-width: 0; flex: 1 1 180px; }
+	.production-center-shell .production-prearrangement .production-personnel-selection label { min-height: 44px; }
+	.production-center-shell .production-prearrangement .production-personnel-selection [data-plan-count] { display: none; }
+	.production-center-shell .production-prearrangement .production-personnel-selection [data-plan-arrange] { flex: 1 1 110px; min-width: 0; }
+	.process-simplification-page :is(.review-hero, .shortage-hero, .purchase-hero) { padding: 14px; }
+	.process-simplification-page :is(.review-hero, .shortage-hero, .purchase-hero) :is(h1, h2) { font-size: 21px; }
+	:is(.process-simplification-page, .warehouse-center-shell) .form-control { font-size: 16px; }
+}

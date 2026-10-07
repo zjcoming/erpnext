@@ -37,7 +37,7 @@ TOPICS = {
 }
 DOCUMENT_TOPICS = {
 	"Sales Order": {"orders", "production", "purchase", "warehouse", "dashboard"},
-	"Production Plan": {"orders", "production", "purchase", "warehouse"},
+	"Production Plan": {"tasks", "orders", "production", "purchase", "warehouse"},
 	"Work Order": {"tasks", "review", "orders", "production", "purchase", "warehouse", "dashboard"},
 	"Job Card": {"tasks", "review", "production", "orders"},
 	"Job Card Worker Assignment": {"tasks", "review", "production"},
@@ -190,6 +190,27 @@ def _worker_users(doc):
 	return users - {None, ""}
 
 
+def _planned_worker_users(work_orders):
+	# Personnel plans have no formal assignment until the worker starts. Stock
+	# issue and predecessor approval still need to wake those waiting workers.
+	# During an upgrade these optional tables may not have been created yet;
+	# existing formal-assignment refresh must continue to work in that window.
+	if not all(frappe.db.table_exists(doctype) for doctype in (
+		"Job Card Prearrangement", "Job Card Prearrangement Worker"
+	)):
+		return set()
+	rows = frappe.db.sql("""
+		select distinct workers.employee_user
+		from `tabJob Card Prearrangement` plans
+		inner join `tabJob Card Prearrangement Worker` workers
+			on workers.parent = plans.name
+			and workers.parenttype = 'Job Card Prearrangement'
+			and workers.parentfield = 'workers'
+		where plans.status = 'Planned' and plans.work_order in %(work_orders)s
+	""", {"work_orders": tuple(sorted(set(work_orders)))}, as_dict=True)
+	return {row.employee_user for row in rows if row.employee_user}
+
+
 def document_changed(doc, method=None):
 	"""DocType hooks collect changes once per transaction, including deletions."""
 	if frappe.flags.in_migrate or frappe.flags.in_install:
@@ -261,6 +282,7 @@ def flush_changes():
 					"Employee", filters={"name": ["in", sorted(set(employees))]}, pluck="user_id"
 				)
 				changes.update(("user", user, "tasks") for user in users if user)
+			changes.update(("user", user, "tasks") for user in _planned_worker_users(work_orders))
 		for scope in changes:
 			_cache().set_value(_key("version", *scope), uuid4().hex)
 		for raw_user, expiry in _cache().hgetall(PREFIX + "watchers").items():

@@ -4,7 +4,7 @@ Input snapshots and notification/report dependencies are mocked. Assertions
 cover the approved quantity and status contracts, never real posting or audio.
 """
 from contextlib import ExitStack
-from datetime import date
+from datetime import date, datetime
 from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import Mock, patch
@@ -145,9 +145,10 @@ class TestV10ReportFailureBoundaries(TestCase):
             stack.enter_context(patch.object(dashboard, "require_owner_access"))
             stack.enter_context(patch.object(dashboard, "_companies", return_value=[frappe._dict(name="CASE-A", default_currency="CNY")]))
             stack.enter_context(patch.object(dashboard, "_order_totals", side_effect=lambda *args: {"order_count": 0, "order_amount": 0}))
-            for name in ("_order_trend", "_gross_profit", "_inventory_summary", "_order_health", "_overdue_orders"):
+            for name in ("_order_trend", "_gross_profit", "_inventory_summary", "_order_health"):
                 stack.enter_context(patch.object(dashboard, name, return_value={}))
-            stack.enter_context(patch.object(dashboard, "today", return_value="2026-09-03"))
+            stack.enter_context(patch.object(dashboard, "_delivery_orders", return_value=[]))
+            stack.enter_context(patch.object(dashboard, "now_datetime", return_value=datetime(2026, 9, 3, 10)))
             ageing = stack.enter_context(patch.object(dashboard, "_stock_ageing", return_value={"available": False, "message": "controlled failure"}))
             result = dashboard.get_dashboard(company="CASE-A", from_date="2026-01-01", to_date="2026-01-31")
         self.assertEqual(result["period"], {"from_date": "2026-01-01", "to_date": "2026-01-31"})

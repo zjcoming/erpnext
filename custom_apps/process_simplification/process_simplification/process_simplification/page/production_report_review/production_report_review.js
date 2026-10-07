@@ -123,6 +123,17 @@ function reviewMonthRange(month) {
 	};
 }
 
+function reviewNewAssignmentEntry({ poolEnabled = false, poolAvailable = false } = {}, translate = (message) => message) {
+	return poolEnabled && poolAvailable
+		? { label: translate("安排人员"), route: ["production-workbench", { production_view: "operations" }] }
+		: { label: translate("新增派工"), route: null };
+}
+
+function openReviewNewAssignment(entry, { setRoute, openLegacy }) {
+	if (entry.route) setRoute(...entry.route);
+	else openLegacy();
+}
+
 function runReviewToolbarLoad(load) {
 	load();
 }
@@ -137,6 +148,8 @@ const productionReportReviewApi = {
 	normalizeFrappeDateTime,
 	reviewMonthRange,
 	runReviewToolbarLoad,
+	reviewNewAssignmentEntry,
+	openReviewNewAssignment,
 };
 if (typeof module !== "undefined" && module.exports) module.exports = productionReportReviewApi;
 
@@ -271,11 +284,11 @@ if (typeof frappe !== "undefined") {
 								const movement = Number(row.released_qty || 0) || Number(row.redispatched_qty || 0)
 									? `<small>${__("原派")} ${number(row.original_assigned_qty)}${Number(row.released_qty || 0) ? ` · ${__("释放")} ${number(row.released_qty)}` : ""}${Number(row.redispatched_qty || 0) ? ` · ${__("转入")} ${number(row.redispatched_qty)}` : ""} · ${__("剩余")} ${number(row.remaining_qty)}</small>`
 									: `<small>${__("剩余")} ${number(row.remaining_qty)}</small>`;
-								const dispatchControl = `<button class="btn btn-xs btn-default assignment-open-plan" data-work-order="${esc(row.work_order)}">${__("查看/重新派工")}</button>`;
+								const dispatchControl = `<button class="btn btn-xs btn-default assignment-open-plan" data-work-order="${esc(row.work_order)}">${__("查看/调整派工")}</button>`;
 								return `<article class="review-compact-card"><div class="review-compact-main"><strong>${esc(employeeLabel(row))}</strong><span>${esc(row.operation || "-")}</span></div><div class="review-compact-metric"><span>${__("当前分配")}</span><strong>${number(row.effective_assigned_qty ?? row.assigned_qty)}</strong>${movement}</div><div class="review-compact-docs"><span>${__("任务单")} ${documentLink("Job Card", row.job_card, row.job_card)}</span><span>${__("工单")} ${documentLink("Work Order", row.work_order, row.work_order)}</span></div><div class="review-compact-action">${dispatchControl}${control}${action.message ? `<small>${esc(action.message)}</small>` : ""}</div></article>`;
 							})
 							.join("")}</div>`
-					: `<div class="text-muted worker-reporting-empty">${__("当前没有当前派工。")}</div>`
+					: `<div class="text-muted worker-reporting-empty">${__("当前没有已生效的派工。")}</div>`
 			);
 		}
 
@@ -567,7 +580,13 @@ if (typeof frappe !== "undefined") {
 			]);
 			await loadHistory(1);
 		});
-		page.add_inner_button(__("新增派工"), openAssignmentDialog);
+		const assignmentEntry = reviewNewAssignmentEntry({
+			poolEnabled: Boolean(frappe.boot?.enable_operation_dispatch_pool),
+			poolAvailable: Boolean(window.process_simplification?.mount_production_prearrangement),
+		}, __);
+		page.add_inner_button(assignmentEntry.label, () => {
+			openReviewNewAssignment(assignmentEntry, { setRoute: (...route) => frappe.set_route(...route), openLegacy: openAssignmentDialog });
+		});
 		page.add_inner_button(__("查看历史"), focusHistory);
 		page.add_inner_button(__("刷新"), () => runReviewToolbarLoad(load));
 	};

@@ -1,0 +1,161 @@
+{
+ "doctype": "DocType",
+ "name": "Job Card Prearrangement",
+ "module": "Process Simplification",
+ "engine": "InnoDB",
+ "autoname": "hash",
+ "allow_rename": 0,
+ "fields": [
+  {
+   "fieldname": "job_card",
+   "fieldtype": "Link",
+   "label": "工序任务",
+   "read_only": 1,
+   "options": "Job Card",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "work_order",
+   "fieldtype": "Link",
+   "label": "生产工单",
+   "read_only": 1,
+   "options": "Work Order",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "公司",
+   "read_only": 1,
+   "options": "Company",
+   "reqd": 1
+  },
+  {
+   "fieldname": "operation",
+   "fieldtype": "Link",
+   "label": "工序",
+   "read_only": 1,
+   "options": "Operation",
+   "reqd": 1
+  },
+  {
+   "fieldname": "operation_id",
+   "fieldtype": "Data",
+   "label": "工序标识",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "job_card_qty",
+   "fieldtype": "Float",
+   "label": "任务数量快照",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "状态",
+   "read_only": 1,
+   "options": "Planned\nActivated\nCancelled",
+   "default": "Planned",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "revision",
+   "fieldtype": "Int",
+   "label": "安排版本",
+   "read_only": 1,
+   "reqd": 1,
+   "default": "1"
+  },
+  {
+   "fieldname": "supervisor",
+   "fieldtype": "Link",
+   "label": "审核主管",
+   "read_only": 1,
+   "options": "User",
+   "reqd": 1
+  },
+  {
+   "fieldname": "workers",
+   "fieldtype": "Table",
+   "label": "安排人员",
+   "read_only": 1,
+   "options": "Job Card Prearrangement Worker",
+   "reqd": 1
+  },
+  {
+   "fieldname": "arranged_by",
+   "fieldtype": "Link",
+   "label": "安排人",
+   "read_only": 1,
+   "options": "User"
+  },
+  {
+   "fieldname": "arranged_at",
+   "fieldtype": "Datetime",
+   "label": "安排时间",
+   "read_only": 1
+  },
+  {
+   "fieldname": "activated_by",
+   "fieldtype": "Link",
+   "label": "首次开工人",
+   "read_only": 1,
+   "options": "User"
+  },
+  {
+   "fieldname": "activated_at",
+   "fieldtype": "Datetime",
+   "label": "首次开工时间",
+   "read_only": 1
+  },
+  {
+   "fieldname": "cancelled_by",
+   "fieldtype": "Link",
+   "label": "取消人",
+   "read_only": 1,
+   "options": "User"
+  },
+  {
+   "fieldname": "cancelled_at",
+   "fieldtype": "Datetime",
+   "label": "取消时间",
+   "read_only": 1
+  }
+ ],
+ "field_order": [
+  "job_card",
+  "work_order",
+  "company",
+  "operation",
+  "operation_id",
+  "job_card_qty",
+  "status",
+  "revision",
+  "supervisor",
+  "workers",
+  "arranged_by",
+  "arranged_at",
+  "activated_by",
+  "activated_at",
+  "cancelled_by",
+  "cancelled_at"
+ ],
+ "permissions": [],
+ "track_changes": 1,
+ "istable": 0,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "actions": [],
+ "links": [],
+ "states": [],
+ "creation": "2026-09-30 00:00:00.000000",
+ "modified": "2026-09-30 00:00:00.000000",
+ "modified_by": "Administrator",
+ "owner": "Administrator"
+}

@@ -108,7 +108,7 @@ class TestDashboardAmountQueries(TestCase):
 		health = dashboard._order_health(self.company, date(2026, 9, 8))
 		self.assertEqual(health["pending_amount"], 100)
 		self.assertEqual(health["overdue_amount"], 100)
-		self.assertEqual(float(dashboard._overdue_orders(self.company, date(2026, 9, 8))[0].pending_amount), 100)
+		self.assertEqual(float(dashboard._delivery_orders(self.company, date(2026, 9, 8))[0].pending_amount), 100)
 
 	def test_disabled_rounding_and_proportional_tax_are_consistent(self):
 		self.order("TAX", rounded=0, grand=1243, disabled=1)

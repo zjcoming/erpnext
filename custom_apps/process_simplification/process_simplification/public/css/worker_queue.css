@@ -1,0 +1,50 @@
+/* Queue sections describe what the worker can do, independent of task source. */
+.worker-queue-page .worker-queue-group {
+	margin: 0;
+	padding: 0;
+	gap: 0;
+}
+
+.worker-queue-page .worker-queue-group-heading {
+	display: flex;
+	align-items: baseline;
+	gap: 12px;
+	margin: 0 0 10px;
+}
+
+.worker-queue-page .worker-queue-group-heading h5 {
+	margin: 0;
+	font-size: 16px;
+	font-weight: 650;
+	white-space: nowrap;
+}
+
+.worker-queue-page .worker-queue-group-heading p {
+	margin: 0;
+	color: var(--text-muted, #68766f);
+	font-size: 12px;
+}
+
+.worker-queue-page .is-ready-group .worker-queue-group-heading h5 {
+	color: var(--ps-ui-accent, #21695f);
+}
+
+.worker-queue-page .worker-task-notices:empty {
+	display: none;
+}
+
+.worker-queue-page .worker-assignment-actions > .btn {
+	min-height: 44px;
+}
+
+@media (max-width: 767px) {
+	.worker-queue-page .worker-queue-group-heading {
+		align-items: flex-start;
+		flex-direction: column;
+		gap: 4px;
+	}
+
+	.worker-queue-page .worker-assignment-actions {
+		flex-wrap: wrap;
+	}
+}

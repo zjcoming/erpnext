@@ -92,7 +92,10 @@ class BatchSalesFixture(IntegrationTestCase):
 	def _receive(self, item, label, qty):
 		from erpnext.stock.doctype.stock_entry.stock_entry_utils import make_stock_entry
 		batch = frappe.get_doc(dict(doctype="Batch", item=item.name, batch_id=self.prefix + "-" + label)).insert()
-		entry = make_stock_entry(item_code=item.name, company=self.company, to_warehouse=self.stores, qty=qty, rate=10, batch_no=batch.name, use_serial_batch_fields=1)
+		# Fixture stock must predate the live reservation cutoff. A wall-clock
+		# adjustment during rapid receipt/reservation otherwise makes it future stock.
+		entry = make_stock_entry(item_code=item.name, company=self.company, to_warehouse=self.stores, qty=qty, rate=10, batch_no=batch.name, use_serial_batch_fields=1,
+			posting_date=add_days(nowdate(), -1), posting_time="12:00:00")
 		return entry, batch
 
 	def _order(self, item, qty):

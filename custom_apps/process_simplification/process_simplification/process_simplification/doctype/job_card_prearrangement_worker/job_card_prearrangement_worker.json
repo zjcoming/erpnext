@@ -1,0 +1,67 @@
+{
+ "doctype": "DocType",
+ "name": "Job Card Prearrangement Worker",
+ "module": "Process Simplification",
+ "engine": "InnoDB",
+ "autoname": "hash",
+ "allow_rename": 0,
+ "fields": [
+  {
+   "fieldname": "employee",
+   "fieldtype": "Link",
+   "label": "工人",
+   "read_only": 1,
+   "options": "Employee",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "employee_user",
+   "fieldtype": "Link",
+   "label": "工人账号快照",
+   "read_only": 1,
+   "options": "User",
+   "reqd": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "assigned_qty",
+   "fieldtype": "Float",
+   "label": "安排数量",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "安排备注",
+   "read_only": 1
+  },
+  {
+   "fieldname": "assignment",
+   "fieldtype": "Link",
+   "label": "正式派工",
+   "read_only": 1,
+   "options": "Job Card Worker Assignment"
+  }
+ ],
+ "field_order": [
+  "employee",
+  "employee_user",
+  "assigned_qty",
+  "notes",
+  "assignment"
+ ],
+ "permissions": [],
+ "track_changes": 0,
+ "istable": 1,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "actions": [],
+ "links": [],
+ "states": [],
+ "creation": "2026-09-30 00:00:00.000000",
+ "modified": "2026-09-30 00:00:00.000000",
+ "modified_by": "Administrator",
+ "owner": "Administrator"
+}

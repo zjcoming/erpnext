@@ -1,0 +1,103 @@
+/* Personnel styling stays inside the production center, away from warehouse pages. */
+.production-material-view { margin-top: 16px; }
+.production-center-shell .production-prearrangement {
+	--personnel-accent: #167665;
+	--personnel-accent-dark: #105b4e;
+	--personnel-ink: #263b36;
+	--personnel-muted: #687570;
+	--personnel-line: #e1e6e1;
+	--personnel-warm: #f7f7f3;
+	color: var(--personnel-ink);
+}
+.production-center-shell .production-prearrangement .btn,
+.production-personnel-dialog .btn { min-height: 44px; padding: 10px 15px; border-radius: 8px; font-weight: 600; }
+.production-center-shell .production-prearrangement .btn-primary,
+.production-personnel-dialog .btn-primary { background: #167665; border-color: #167665; color: #fff; }
+.production-center-shell .production-prearrangement .btn-primary:hover,
+.production-personnel-dialog .btn-primary:hover { background: #105b4e; border-color: #105b4e; }
+.production-center-shell .production-prearrangement .btn-default { background: #fff; border: 1px solid var(--personnel-line); color: var(--personnel-ink); }
+.production-center-shell .production-prearrangement .btn-link { color: var(--personnel-accent); }
+.production-center-shell .production-prearrangement button:focus-visible,
+.production-center-shell .production-prearrangement summary:focus-visible,
+.production-center-shell .production-prearrangement input:focus-visible { outline: 2px solid var(--personnel-accent); outline-offset: 3px; }
+.production-center-shell .production-prearrangement input[type="checkbox"] { width: 18px; height: 18px; flex: 0 0 18px; accent-color: var(--personnel-accent); cursor: pointer; }
+.production-center-shell .production-prearrangement .production-personnel-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+.production-center-shell .production-prearrangement .production-personnel-header h3 { margin: 0 0 7px; font-size: 20px; line-height: 1.4; font-weight: 700; color: var(--personnel-ink); }
+.production-center-shell .production-prearrangement .production-personnel-header p { margin: 0; color: var(--personnel-muted); font-size: 13px; line-height: 1.6; }
+.production-center-shell .production-prearrangement .production-personnel-header > .btn { flex-shrink: 0; }
+.production-center-shell .production-prearrangement .production-personnel-search { display: flex; align-items: center; gap: 8px; max-width: 640px; }
+.production-center-shell .production-prearrangement .production-personnel-search label { flex: 1; margin: 0; min-width: 0; }
+.production-center-shell .production-prearrangement .form-control { min-height: 44px; border: 1px solid var(--personnel-line); border-radius: 8px; background: #fff; }
+.production-center-shell .production-prearrangement .production-personnel-filters { margin: 8px 0 14px; }
+.production-center-shell .production-prearrangement .production-personnel-filters > summary { display: list-item; width: fit-content; padding: 11px 0; min-height: 44px; color: var(--personnel-muted); cursor: pointer; font-size: 13px; }
+.production-center-shell .production-prearrangement .production-personnel-filters > summary span { color: var(--personnel-muted); font-weight: 400; }
+.production-center-shell .production-prearrangement .operation-pool-filters { margin: 0; padding: 14px; border: 1px solid var(--personnel-line); border-radius: 10px; background: var(--personnel-warm); align-items: flex-end; }
+.production-center-shell .production-prearrangement .operation-pool-filters > label { min-width: 160px; color: var(--personnel-muted); }
+.production-center-shell .production-prearrangement .operation-pool-filters .production-personnel-saved-filter { display: flex; align-items: center; flex-direction: row; flex-wrap: nowrap; gap: 8px; min-height: 44px; max-width: 240px; font-size: 12px; }
+.production-center-shell .production-prearrangement .production-personnel-page-states { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 14px; }
+.production-center-shell .production-prearrangement .production-personnel-page-label { font-size: 12px; color: var(--personnel-muted); margin-right: 3px; }
+.production-center-shell .production-prearrangement .production-personnel-state { min-height: 44px; display: inline-flex; align-items: center; gap: 8px; padding: 9px 13px; border: 1px solid var(--personnel-line); border-radius: 8px; color: var(--personnel-muted); background: #fff; font-size: 13px; font-weight: 600; }
+.production-center-shell .production-prearrangement .production-personnel-state span { display: inline-flex; min-width: 22px; justify-content: center; border-radius: 5px; padding: 1px 5px; color: inherit; background: #f0f3ee; font-variant-numeric: tabular-nums; }
+.production-center-shell .production-prearrangement .production-personnel-state.is-active { color: var(--personnel-accent-dark); border-color: #8abaae; background: #eaf4ef; }
+.production-center-shell .production-prearrangement .production-personnel-state.is-active span { background: #d8eae2; }
+.production-center-shell .production-prearrangement .production-personnel-selection { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 0 0 12px; padding: 13px 16px; border: 1px solid var(--personnel-line); border-radius: 10px; background: var(--personnel-warm); }
+.production-center-shell .production-prearrangement .production-personnel-selection > div { display: flex; flex: 1; align-items: flex-start; flex-direction: column; gap: 5px; min-width: 210px; }
+.production-center-shell .production-prearrangement .production-personnel-selection label { display: inline-flex; align-items: center; gap: 9px; margin: 0; min-height: 27px; font-size: 13px; cursor: pointer; }
+.production-center-shell .production-prearrangement [data-plan-count] { color: var(--personnel-muted); font-size: 12px; margin-left: 27px; }
+.production-center-shell .production-prearrangement [data-plan-arrange] { min-width: 168px; }
+.production-center-shell .production-prearrangement .production-plan-feedback:empty { display: none; }
+.production-center-shell .production-prearrangement .production-plan-feedback { margin: 10px 0; color: var(--personnel-muted); }
+.production-center-shell .production-prearrangement .production-personnel-list { display: block; }
+.production-center-shell .production-prearrangement .production-personnel-operation { margin-top: 22px; }
+.production-center-shell .production-prearrangement .production-personnel-operation h4 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; margin: 0 0 11px; font-size: 16px; font-weight: 700; line-height: 1.5; }
+.production-center-shell .production-prearrangement .production-personnel-operation h4 small { font-weight: 400; font-size: 12px; color: var(--personnel-muted); }
+.production-center-shell .production-prearrangement .production-plan-row { display: grid; grid-template-columns: 32px minmax(170px, 1.15fr) minmax(90px, .4fr) minmax(220px, 1fr); align-items: start; gap: 14px; margin: 0 0 10px; padding: 17px 16px; border: 1px solid var(--personnel-line); border-radius: 11px; background: #fff; }
+.production-center-shell .production-prearrangement .production-plan-row.is-selected { border-color: #7cb3a3; box-shadow: inset 3px 0 0 var(--personnel-accent); background: #fbfefc; }
+.production-center-shell .production-prearrangement .production-plan-row > div { grid-column: auto; gap: 7px; }
+.production-center-shell .production-prearrangement .production-plan-row .operation-pool-check { display: flex; align-items: flex-start; justify-content: center; margin: -9px -6px 0; padding: 12px 8px; min-height: 44px; cursor: pointer; }
+.production-center-shell .production-prearrangement .production-personnel-product > strong { font-size: 16px; line-height: 1.5; color: var(--personnel-ink); }
+.production-center-shell .production-prearrangement .production-personnel-task-meta { font-size: 12px; color: var(--personnel-muted); line-height: 1.5; }
+.production-center-shell .production-prearrangement .production-personnel-source { width: 100%; margin-top: 1px; }
+.production-center-shell .production-prearrangement .production-personnel-source > summary { min-height: 44px; padding: 10px 0; color: var(--personnel-muted); font-size: 12px; cursor: pointer; }
+.production-center-shell .production-prearrangement .production-personnel-source > div { display: flex; flex-direction: column; gap: 5px; color: var(--personnel-muted); font-size: 11px; overflow-wrap: anywhere; }
+.production-center-shell .production-prearrangement .production-personnel-source .btn { align-self: flex-start; padding-left: 0; font-size: 12px; }
+.production-center-shell .production-prearrangement .production-personnel-quantity > strong { font-size: 25px; line-height: 1.25; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--personnel-ink); }
+.production-center-shell .production-prearrangement .production-personnel-quantity > strong span { font-size: 12px; font-weight: 400; color: var(--personnel-muted); }
+.production-center-shell .production-prearrangement .production-personnel-quantity > small { font-size: 12px; color: var(--personnel-muted); }
+.production-center-shell .production-prearrangement .production-personnel-assignment { align-items: flex-start; gap: 9px; }
+.production-center-shell .production-prearrangement .production-personnel-people { font-size: 14px; line-height: 1.6; color: var(--personnel-ink); }
+.production-center-shell .production-prearrangement .production-personnel-people.is-unassigned { font-weight: 400; color: var(--personnel-muted); }
+.production-center-shell .production-prearrangement .production-personnel-reason { color: var(--personnel-muted); line-height: 1.6; max-width: 38em; }
+.production-center-shell .production-prearrangement .production-personnel-row-actions { display: flex; flex-wrap: wrap; gap: 5px; }
+.production-center-shell .production-prearrangement .production-personnel-cancel { color: #8b6254; font-size: 12px; }
+.production-center-shell .production-prearrangement .production-personnel-empty { padding: 26px 20px; border: 1px dashed var(--personnel-line); border-radius: 10px; text-align: center; background: #fff; }
+.production-center-shell .production-prearrangement .production-personnel-empty strong { font-size: 15px; }
+.production-center-shell .production-prearrangement .production-personnel-empty p { margin: 7px 0 0; color: var(--personnel-muted); font-size: 13px; }
+.production-center-shell .production-prearrangement .operation-pool-pagination { margin-top: 16px; color: var(--personnel-muted); font-size: 12px; }
+.production-center-shell .production-prearrangement .production-personnel-results { margin-top: 18px; border: 1px solid var(--personnel-line); border-radius: 10px; padding: 0 14px; background: #fff; }
+.production-center-shell .production-prearrangement .production-personnel-results > summary { min-height: 44px; padding: 13px 0; font-size: 13px; font-weight: 600; cursor: pointer; }
+.production-center-shell .production-prearrangement .production-personnel-results > summary span { color: var(--personnel-muted); margin-left: 10px; font-size: 12px; font-weight: 400; }
+.production-center-shell .production-prearrangement .production-personnel-results .operation-pool-result { padding: 12px 0; }
+.production-personnel-dialog .production-plan-shortcuts { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 14px 0 18px; }
+.production-personnel-dialog .operation-pool-preview-row { background: #f7f7f3; border: 1px solid #e1e6e1; border-radius: 10px; padding: 15px; }
+.production-personnel-dialog .operation-pool-preview-row > strong { font-size: 15px; color: #263b36; }
+@media (max-width: 1050px) {
+	.production-center-shell .production-prearrangement .production-plan-row { grid-template-columns: 28px minmax(145px, 1fr) minmax(76px, .4fr); }
+	.production-center-shell .production-prearrangement .production-plan-row > .production-personnel-assignment { grid-column: 2 / -1; padding-top: 8px; border-top: 1px solid var(--personnel-line); }
+}
+@media (max-width: 600px) {
+	.production-center-shell .production-prearrangement .production-personnel-header { gap: 10px; }
+	.production-center-shell .production-prearrangement .production-personnel-header h3 { font-size: 18px; }
+	.production-center-shell .production-prearrangement .production-personnel-header p { font-size: 12px; }
+	.production-center-shell .production-prearrangement .production-personnel-header > .btn { padding: 10px; font-size: 12px; }
+	.production-center-shell .production-prearrangement .production-personnel-page-label { flex-basis: 100%; }
+	.production-center-shell .production-prearrangement .production-personnel-page-states { gap: 6px; }
+	.production-center-shell .production-prearrangement .production-personnel-state { flex: 1; justify-content: center; gap: 5px; padding: 9px 7px; font-size: 12px; }
+	.production-center-shell .production-prearrangement .production-personnel-selection { padding: 12px; }
+	.production-center-shell .production-prearrangement [data-plan-arrange] { width: 100%; }
+	.production-center-shell .production-prearrangement .production-plan-row { grid-template-columns: 24px minmax(0, 1fr) auto; padding: 14px 12px; gap: 10px; }
+	.production-center-shell .production-prearrangement .production-personnel-product > strong { font-size: 15px; }
+	.production-center-shell .production-prearrangement .production-personnel-quantity > strong { font-size: 22px; }
+	.production-center-shell .production-prearrangement .production-personnel-row-actions { width: 100%; }
+	.production-center-shell .production-prearrangement .operation-pool-filters > label { flex: 1 1 100%; min-width: 0; max-width: none; }
+}
