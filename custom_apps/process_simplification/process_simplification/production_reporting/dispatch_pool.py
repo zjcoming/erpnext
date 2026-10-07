@@ -1,4 +1,4 @@
-"""Read-only operation view and opt-in first-assignment orchestration.
+"""Read-only operation view and guarded first-assignment orchestration.
 
 Each write owns exactly one Job Card. Stock, wages, operation readiness and
 assignment creation continue to belong to the existing reporting service.
@@ -20,7 +20,9 @@ INACTIVE_STATUSES = {"Closed", "Stopped", "Completed", "Cancelled"}
 
 
 def is_enabled() -> bool:
-	return frappe.conf.get("enable_operation_dispatch_pool") in (True, 1, "1")
+	# Existing sites get the standard production views after updating. Preserve
+	# an explicit site override for installations that need the original flow.
+	return frappe.conf.get("enable_operation_dispatch_pool", True) in (True, 1, "1")
 
 
 def _require_access():

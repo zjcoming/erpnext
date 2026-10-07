@@ -102,19 +102,20 @@ chooses a supplier or creates a Purchase Order.
 Both workbenches are derived views, not business ledgers. Loading, filtering and expanding are read-only. Reserving
 stock, creating a Work Order, preparing a Delivery Note or creating a Material Request remains an explicit action with
 normal ERPNext permissions and a fresh server-side validation. The production workbench may create or supplement a
-standard Work Order, inspect material risk and reserve completed stock back to its source order. The opt-in production
+standard Work Order, inspect material risk and reserve completed stock back to its source order. The standard production
 efficiency views also arrange personnel in advance and collect material requests. Warehouse confirmation posts each
 native Stock Entry separately; workers explicitly start and report from their own task pages. Capacity scheduling,
 stock accounting and wage rules retain their existing services and checks.
 
-## 工序集中派工（试点）
+## 工序集中安排
 
-集中安排入口默认关闭，保留原单卡操作。启用后，生产计划中心按“订单与进度、安排人员、领料出库”组织操作；
-“已建计划”表示生产计划覆盖，“已安排”表示人员安排，两者分别展示。试点范围、站点开关和验证结果见
-[工序集中派工实施记录](docs/production_operation_pool_validation_20260928.md)。
+集中安排与领料入口默认开启，保留原单卡操作。生产计划中心按“订单与进度、安排人员、领料出库”组织操作；
+“已建计划”表示生产计划覆盖，“已安排”表示人员安排，两者分别展示。更新后需按正常部署流程迁移、清缓存和重启，
+无需额外配置启用开关。显式设置 `enable_operation_dispatch_pool=0` 的站点仍保持关闭，可删除该配置或设为 `1` 恢复。
+业务范围、权限和回退说明见[生产效率实施方案](docs/production_efficiency_20260930.md)。
 
 ## 默认打印与扫码
 
 采购、生产、采购收退货、库存作业及销售出退货单使用随应用安装的工厂打印模板，支持系统内二维码定位。部署、客户定制保护和验证范围见 [工厂默认打印与库存扫码](docs/factory_print_suite.md)。
 
-生产效率扩展：支持提前安排人员、保存工序常用人员、工人就绪后直接开工，以及集中领料申请和普通物料出库确认。需要迁移新增安排表，复用原试用开关；业务边界与回退说明见 [2026-09-30 实施方案](docs/production_efficiency_20260930.md)。
+生产效率扩展：支持提前安排人员、保存工序常用人员、工人就绪后直接开工，以及集中领料申请和普通物料出库确认。需要迁移新增安排表，默认启用；业务边界与回退说明见 [2026-09-30 实施方案](docs/production_efficiency_20260930.md)。

@@ -9,6 +9,16 @@ from process_simplification.management_access import CAPABILITY_PRODUCTION_REVIE
 
 
 class TestOperationDispatchBoot(TestCase):
+	def test_unconfigured_site_exposes_both_views_to_administrator(self):
+		with (
+			patch.object(frappe, "conf", frappe._dict()),
+			patch.object(frappe, "session", SimpleNamespace(user="Administrator")),
+		):
+			boot = {}
+			operation_dispatch.boot_session(boot)
+		self.assertIs(boot["enable_operation_dispatch_pool"], True)
+		self.assertIs(boot["enable_production_materials"], True)
+
 	def test_disabled_rollout_preserves_the_old_entry_without_permission_lookup(self):
 		boot = {"enable_operation_dispatch_pool": True}
 		with (

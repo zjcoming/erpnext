@@ -16,10 +16,18 @@ class TestBulkMaterials(TestCase):
 		self.stack.enter_context(patch.object(frappe, "throw", side_effect=throw))
 
 	def test_disabled_module_never_reads_or_writes(self):
-		with patch.object(frappe, "conf", frappe._dict()), patch.object(bulk, "_work_order") as lookup:
+		with patch.object(frappe, "conf", frappe._dict(enable_operation_dispatch_pool=0)), patch.object(bulk, "_work_order") as lookup:
 			with self.assertRaises(frappe.PermissionError):
 				bulk.request_material("WO", {}, 5)
 			lookup.assert_not_called()
+
+	def test_unconfigured_site_uses_role_permissions_for_both_material_views(self):
+		with patch.object(frappe, "conf", frappe._dict()), patch.object(bulk, "user_company_scope", return_value={"C"}):
+			for allowed, view in ((bulk.CAPABILITY_PRODUCTION_REVIEW, "request"), (bulk.CAPABILITY_WAREHOUSE_WORKBENCH, "confirm")):
+				with self.subTest(view=view), patch.object(bulk, "user_has_capability", side_effect=lambda capability: capability == allowed):
+					self.assertEqual(bulk._access(view, "C")[0], view)
+			with patch.object(bulk, "user_has_capability", return_value=False), self.assertRaises(frappe.PermissionError):
+				bulk._access("request", "C")
 
 	def test_warehouse_role_cannot_request_manager_cannot_submit(self):
 		with patch.object(frappe, "conf", frappe._dict(enable_operation_dispatch_pool=1)), patch.object(bulk, "user_company_scope", return_value={"C"}):

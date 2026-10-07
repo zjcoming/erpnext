@@ -19,8 +19,10 @@ class TestDispatchPool(TestCase):
 		self.addCleanup(self.stack.close)
 		self.stack.enter_context(patch.object(pool.frappe, "throw", side_effect=_throw))
 
-	def test_gate_is_strict_and_default_off(self):
-		for value, expected in ((None, False), (False, False), ("false", False), ("0", False), (True, True), (1, True), ("1", True)):
+	def test_gate_defaults_on_and_preserves_explicit_overrides(self):
+		with patch.object(pool.frappe, "conf", frappe._dict()):
+			self.assertTrue(pool.is_enabled())
+		for value, expected in ((None, False), (False, False), (0, False), ("false", False), ("0", False), ("invalid", False), (True, True), (1, True), ("1", True)):
 			with self.subTest(value=value), patch.object(pool.frappe, "conf", frappe._dict(enable_operation_dispatch_pool=value)):
 				self.assertEqual(pool.is_enabled(), expected)
 

@@ -1,4 +1,4 @@
-"""Expose the opt-in dispatch view only to existing production reviewers."""
+"""Expose production views according to existing roles and explicit site overrides."""
 
 from __future__ import annotations
 

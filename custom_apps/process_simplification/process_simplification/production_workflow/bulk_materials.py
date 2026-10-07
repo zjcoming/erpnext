@@ -18,6 +18,7 @@ from process_simplification.management_access import (
 	CAPABILITY_PRODUCTION_REVIEW, CAPABILITY_WAREHOUSE_WORKBENCH,
 	user_company_scope, user_has_capability,
 )
+from process_simplification.production_reporting.dispatch_pool import is_enabled
 from process_simplification.production_workflow import service
 
 LIMIT = 20
@@ -29,7 +30,7 @@ def _throw(message, permission=False):
 
 
 def _access(view=None, company=None):
-	if frappe.conf.get("enable_operation_dispatch_pool") not in (True, 1, "1"):
+	if not is_enabled():
 		_throw("集中领料尚未启用。", True)
 	capabilities = {
 		"request": bool(user_has_capability(CAPABILITY_PRODUCTION_REVIEW)),
