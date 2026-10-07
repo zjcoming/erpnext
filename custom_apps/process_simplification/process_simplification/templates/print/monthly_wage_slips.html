@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>{{ wage_month | e }}工资条 - {{ company_name | e }}</title>
+	<style>
+		@page { size: A4 portrait; margin: 10mm; }
+		* { box-sizing: border-box; }
+		body { margin: 0; color: #111; font: 12px/1.5 "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", sans-serif; background: #eee; }
+		.print-toolbar { padding: 14px; text-align: center; }
+		.print-toolbar button { padding: 7px 24px; margin-right: 12px; cursor: pointer; font: inherit; }
+		.wage-sheet { width: 190mm; margin: 0 auto 16px; padding: 0; background: white; }
+		.wage-slip { min-height: 53mm; padding: 4mm 3mm; border-bottom: 1px dashed #777; break-inside: avoid; page-break-inside: avoid; }
+		.slip-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8mm; margin-bottom: 2mm; }
+		.slip-heading strong { font-size: 14px; overflow-wrap: anywhere; }
+		.slip-heading span { font-size: 16px; font-weight: bold; white-space: nowrap; }
+		.slip-person { display: flex; flex-wrap: wrap; gap: 1mm 8mm; margin-bottom: 2mm; overflow-wrap: anywhere; }
+		table { border-collapse: collapse; width: 100%; table-layout: fixed; text-align: center; }
+		th, td { border: 1px solid #888; padding: 1.2mm 2mm; overflow-wrap: anywhere; }
+		th { font-size: 11px; font-weight: normal; }
+		td { font-size: 14px; font-variant-numeric: tabular-nums; }
+		td:last-child { font-weight: bold; }
+		.slip-footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 1mm 6mm; margin-top: 2mm; color: #555; font-size: 10px; overflow-wrap: anywhere; }
+		@media print {
+			body { background: white; }
+			.print-toolbar { display: none; }
+			.wage-sheet { width: auto; margin: 0; break-after: page; page-break-after: always; }
+			.wage-sheet:last-child { break-after: auto; page-break-after: auto; }
+		}
+		@media screen and (max-width: 760px) {
+			.wage-sheet { width: calc(100% - 20px); }
+			.slip-heading { gap: 3mm; }
+		}
+	</style>
+</head>
+<body>
+	<div class="print-toolbar"><button type="button" onclick="window.print()">打印工资条</button>共 {{ count }} 人 · A4 纵向 · 沿虚线裁剪</div>
+	{% for page in pages %}
+	<section class="wage-sheet">
+		{% for slip in page %}
+		<article class="wage-slip">
+			<div class="slip-heading"><strong>{{ company_name | e }}</strong><span>工资条</span></div>
+			<div class="slip-person">
+				<span>工资月份：{{ wage_month | e }}</span>
+				<span>姓名：<b>{{ (slip.employee_name or slip.employee) | e }}</b></span>
+				<span>工号：{{ slip.employee | e }}</span>
+			</div>
+			<table>
+				<thead><tr><th>计件金额（{{ currency | e }}）</th><th>计时金额（{{ currency | e }}）</th><th>工资合计（{{ currency | e }}）</th></tr></thead>
+				<tbody><tr><td>{{ "{:,.2f}".format(slip.piecework_amount or 0) }}</td><td>{{ "{:,.2f}".format(slip.time_amount or 0) }}</td><td>{{ "{:,.2f}".format(slip.total_amount or 0) }}</td></tr></tbody>
+			</table>
+			<div class="slip-footer"><span>生产报工工资汇总 · {{ "已确认" if slip.docstatus == 1 else "草稿 · 待确认" }}</span><span>编号：{{ slip.name | e }}</span></div>
+		</article>
+		{% endfor %}
+	</section>
+	{% endfor %}
+</body>
+</html>

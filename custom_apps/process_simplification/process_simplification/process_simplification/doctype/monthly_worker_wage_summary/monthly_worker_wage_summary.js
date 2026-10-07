@@ -13,6 +13,11 @@ frappe.ui.form.on("Monthly Worker Wage Summary", {
 		frm.dashboard.set_headline(__("该单据是生产报工工资汇总，不代表已付款，也不生成会计凭证。"), "blue");
 		frm.dashboard.add_comment(`${frappe.utils.escape_html(frm.doc.employee_name || frm.doc.employee || "")} · ${frappe.utils.escape_html(frm.doc.wage_month || "")} · ${format_currency(frm.doc.total_amount || 0)}`, "green", true);
 		frm.add_custom_button(__("计价规则"), () => frappe.set_route("List", "Operation Wage Rate"));
+		if (!frm.is_new() && frm.doc.docstatus < 2) {
+			frm.add_custom_button(__("打印工资条"), () => {
+				process_simplification.openWageSlipDialog({ selected: [frm.doc] });
+			});
+		}
 		if (frappe.user.has_role("System Manager")) {
 			frm.add_custom_button(__("返回报工审核"), () => frappe.set_route("production-report-review"));
 		}

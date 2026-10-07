@@ -41,7 +41,7 @@ function setupWageSummaryMonthFilter(listview) {
 
 if (typeof frappe !== "undefined") {
 	frappe.listview_settings["Monthly Worker Wage Summary"] = {
-		add_fields: ["employee_name", "wage_month", "total_amount", "docstatus"],
+		add_fields: ["company", "month_start", "employee_name", "wage_month", "total_amount", "docstatus"],
 		get_indicator(doc) {
 			return doc.docstatus === 1
 				? [__("已确认"), "green", "docstatus,=,1"]
@@ -49,6 +49,12 @@ if (typeof frappe !== "undefined") {
 		},
 		onload(listview) {
 			setupWageSummaryMonthFilter(listview);
+			listview.page.add_inner_button(__("打印工资条"), () => {
+				process_simplification.openWageSlipDialog({
+					selected: listview.get_checked_items(),
+					preferredMonth: listview.page.fields_dict.wage_month.get_value(),
+				});
+			});
 			listview.page.add_inner_button(__("计价规则"), () => {
 				frappe.set_route("List", "Operation Wage Rate");
 			});

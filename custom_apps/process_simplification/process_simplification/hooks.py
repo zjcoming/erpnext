@@ -31,6 +31,7 @@ app_include_css = [
 	"/assets/process_simplification/css/workbench_ui.css?v=3",
 ]
 app_include_js = [
+	"/assets/process_simplification/js/wage_slips.js?v=2",
 	"/assets/process_simplification/js/sidebar_setup_compat.js?v=1",
 	"/assets/process_simplification/js/role_landing.js?v=1",
 	"/assets/process_simplification/js/item_identity.js?v=4",
