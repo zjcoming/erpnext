@@ -177,7 +177,7 @@ const fixture = [
 	}),
 	demand("HANDOFF", {
 		status_code: "awaiting_order_reservation",
-		status_label: "待回补订单",
+		status_label: "完工待预留",
 		unplanned_production_qty: 0,
 		production_required_qty: 0,
 	}),
@@ -453,7 +453,7 @@ test("production demand HTML escapes server values and exposes complete labelled
 		"工单覆盖",
 		"未安排",
 		"已完工",
-		"当前可回补",
+		"可预留完工成品",
 	]) {
 		assert.match(html, new RegExp(`data-label="${label}"`));
 	}

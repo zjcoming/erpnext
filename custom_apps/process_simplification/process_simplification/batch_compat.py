@@ -219,7 +219,7 @@ def _source_batches(row):
 		return [frappe._dict(batch_no=batch, qty=qty, warehouse=row.t_warehouse) for batch, qty in amounts.items()]
 	if row.batch_no:
 		return [frappe._dict(batch_no=row.batch_no, qty=flt(row.transfer_qty), warehouse=row.t_warehouse)]
-	frappe.throw("该入库明细没有实际批次，不能自动回补，请核对原单。")
+	frappe.throw("该入库明细没有实际批次，不能自动预留，请核对原单。")
 
 
 def get_source_batches(source_detail):

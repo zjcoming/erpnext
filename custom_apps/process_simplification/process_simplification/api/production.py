@@ -40,7 +40,7 @@ STATUS_LABELS = {
 	"ready_to_start": "可开工",
 	"in_production": "生产中",
 	"partially_completed": "部分完工",
-	"awaiting_order_reservation": "待回补订单",
+	"awaiting_order_reservation": "完工待预留",
 	"overplanned": "超计划生产",
 }
 
@@ -102,7 +102,7 @@ def _risk_for_demand(delivery_timing: str, status_code: str):
 	if status_code in {"in_production", "partially_completed"}:
 		return "blue", 50, STATUS_LABELS[status_code]
 	if status_code == "awaiting_order_reservation":
-		return "blue", 40, "完工待回补"
+		return "blue", 40, "完工待预留"
 	return "green", 20, "计划已覆盖"
 
 
@@ -195,7 +195,7 @@ def build_production_demand(order, row, work_orders=None, today=None):
 	if unplanned_production_qty > 0 and status_code != "master_data_blocked":
 		_unique_action(actions, "创建生产计划", "create_work_order")
 	if completed_unreserved_qty > 0:
-		_unique_action(actions, "回补订单", "reserve_completed_stock")
+		_unique_action(actions, "预留完工成品", "reserve_completed_stock")
 	_unique_action(actions, "查看销售订单", "view_sales_order")
 
 	return _apply_batch_reservation_block({

@@ -802,7 +802,7 @@ function productionDemandHtml(demand, helpers) {
 		[t("工单覆盖"), demand.active_work_order_qty],
 		[t("未安排"), demand.unplanned_production_qty],
 		[t("已完工"), demand.completed_qty],
-		[t("当前可回补"), demand.completed_unreserved_qty],
+		[t("可预留完工成品"), demand.completed_unreserved_qty],
 	];
 	const actions = (demand.next_actions || [])
 		.map(
@@ -972,7 +972,7 @@ if (typeof frappe !== "undefined") {
 					<summary><span>${__("更多筛选")} <span class="production-filter-count" hidden></span></span><small>${__("交期 · 状态 · 客户")}</small></summary>
 				<div class="production-filter-bar">
 					<select class="form-control" data-filter="deliveryWindow"><option value="">${__("全部交期")}</option><option value="overdue">${__("已逾期")}</option><option value="today">${__("今日交期")}</option><option value="within_7_days">${__("7 天内交期")}</option><option value="later">${__("稍后交期")}</option><option value="missing">${__("缺少交期")}</option></select>
-					<select class="form-control" data-filter="status"><option value="">${__("全部状态")}</option><option value="master_data_blocked">${__("基础资料异常")}</option><option value="batch_reservation_blocked">${__("批次预留需核对")}</option><option value="planning_required">${__("待创建生产计划")}</option><option value="legacy_work_order">${__("旧工单未纳入计划")}</option><option value="material_shortage">${__("缺底层原材料")}</option><option value="awaiting_supply">${__("等待到料")}</option><option value="waiting_subassembly">${__("等待半成品")}</option><option value="awaiting_receipt">${__("待完工入库")}</option><option value="awaiting_issue">${__("待生产发料")}</option><option value="ready_to_start">${__("可开工")}</option><option value="in_production">${__("生产中")}</option><option value="partially_completed">${__("部分完工")}</option><option value="awaiting_order_reservation">${__("待回补订单")}</option><option value="overplanned">${__("超计划生产")}</option></select>
+					<select class="form-control" data-filter="status"><option value="">${__("全部状态")}</option><option value="master_data_blocked">${__("基础资料异常")}</option><option value="batch_reservation_blocked">${__("批次预留需核对")}</option><option value="planning_required">${__("待创建生产计划")}</option><option value="legacy_work_order">${__("旧工单未纳入计划")}</option><option value="material_shortage">${__("缺底层原材料")}</option><option value="awaiting_supply">${__("等待到料")}</option><option value="waiting_subassembly">${__("等待半成品")}</option><option value="awaiting_receipt">${__("待完工入库")}</option><option value="awaiting_issue">${__("待生产发料")}</option><option value="ready_to_start">${__("可开工")}</option><option value="in_production">${__("生产中")}</option><option value="partially_completed">${__("部分完工")}</option><option value="awaiting_order_reservation">${__("完工待预留")}</option><option value="overplanned">${__("超计划生产")}</option></select>
 					<select class="form-control" data-filter="risk"><option value="">${__("全部风险")}</option><option value="red">${__("高风险")}</option><option value="orange">${__("需关注")}</option><option value="blue">${__("处理中")}</option><option value="green">${__("正常")}</option></select>
 					<select class="form-control" data-filter="customer"><option value="">${__("全部客户")}</option></select>
 					<label><input type="checkbox" data-filter="shortageOnly"> ${__("只看缺料")}</label>
@@ -1108,7 +1108,7 @@ if (typeof frappe !== "undefined") {
 				[__("7 天内到期"), summary.due_within_7_days, "orange"],
 				[__("已核料缺料"), summary.material_shortage_demands, "red"],
 				[__("生产中"), summary.in_production_demands, "blue"],
-				[__("待回补订单"), summary.awaiting_order_reservation_demands, "green"],
+				[__("完工待预留"), summary.awaiting_order_reservation_demands, "green"],
 			];
 			$root.find(".production-kpis").html(
 				cards.map(([label, value, color]) => `<div class="production-kpi production-kpi-${color} ${Number(value || 0) ? "" : "is-zero"}"><span>${frappe.utils.escape_html(label)}</span><strong>${value}</strong></div>`).join("")
@@ -1213,7 +1213,7 @@ if (typeof frappe !== "undefined") {
 			const demand = (state.data.demands || []).find((row) => row.sales_order_item === salesOrderItem);
 			const message = action === "create_work_order"
 				? `${__("确认按当前未安排数量创建生产计划并生成层级工单？")}<br>${frappe.utils.escape_html(productionWorkbenchItemIdentity.itemIdentityText(demand?.item_code, demand?.item_name, __, __("产品编码")))} · ${format_number(flt(demand?.unplanned_production_qty), null, 2)}`
-				: __("确认将当前可用完工成品回补到来源订单？");
+				: __("确认将当前可用完工成品预留给来源订单？");
 			frappe.confirm(message, () => {
 				frappe.call({ method: methods[action], type: "POST", args: { sales_order: salesOrder, sales_order_item: salesOrderItem }, freeze: true }).then((r) => {
 					const created = (r && r.message) || {};
