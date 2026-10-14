@@ -4,7 +4,7 @@ from contextlib import contextmanager
 
 import frappe
 from frappe import _
-from frappe.utils import cint, flt
+from frappe.utils import cint, flt, now_datetime
 
 
 def managed_draft_job_cards(work_order: str, *, for_update: bool = True) -> list[str]:
@@ -43,6 +43,59 @@ def assert_no_managed_draft_job_cards(work_order: str):
 				"Finish their approved quantity, or remove a report-free assignment first."
 			).format(", ".join(job_cards))
 		)
+
+
+def _pause_work_order_sessions(work_order: str):
+	"""Freeze open timers before Stop, following the reporting lock order."""
+	from process_simplification.production_reporting.service import _close_time_segment, _hash_key
+
+	job_cards = managed_draft_job_cards(work_order, for_update=True)
+	stored = frappe.db.get_value("Work Order", work_order, ["docstatus", "status"],
+		as_dict=True, for_update=True)
+	if not stored or cint(stored.docstatus) != 1 or stored.status == "Closed":
+		frappe.throw(_("生产工单状态已变化，请刷新工单后再停止。"))
+	if stored.status == "Stopped" or not job_cards:
+		return stored.status
+	filters = {"work_order": work_order, "job_card": ["in", job_cards]}
+	fields = ["name", "job_card", "work_order", "employee", "employee_user"]
+	candidates = frappe.get_all("Job Card Worker Assignment", filters=filters,
+		fields=fields, order_by="name", limit=0)
+	if any(not row.employee or not row.employee_user for row in candidates):
+		frappe.throw(_("派工信息不完整，请刷新工单后再停止。"))
+	identities = {(row.employee, row.employee_user) for row in candidates}
+	for employee in sorted({employee for employee, _user in identities}):
+		frappe.db.get_value("Employee", employee, "name", for_update=True)
+	for user in sorted({user for _employee, user in identities}):
+		frappe.db.get_value("User", user, "name", for_update=True)
+	# These locking reads must see newly committed sessions under REPEATABLE READ.
+	assignments = frappe.db.get_values("Job Card Worker Assignment", filters, fields,
+		as_dict=True, order_by="name", for_update=True)
+	if any((row.employee, row.employee_user) not in identities for row in assignments):
+		frappe.throw(_("派工信息已变化，请刷新工单后再停止。"))
+	assignments = {row.name: row for row in assignments}
+	rows = frappe.db.get_values("Job Card Work Report", {**filters, "status": "In Progress"},
+		["name", "job_card", "assignment", "employee", "employee_user"],
+		as_dict=True, order_by="name", for_update=True)
+	documents = []
+	for row in rows:
+		doc = frappe.get_doc("Job Card Work Report", row.name, for_update=True)
+		assignment = assignments.get(doc.assignment)
+		if (doc.status != "In Progress" or doc.work_order != work_order or doc.job_card not in job_cards
+			or not assignment or any(doc.get(field) != assignment.get(field)
+				for field in ("job_card", "work_order", "employee", "employee_user"))
+			or any(doc.get(field) != row.get(field)
+				for field in ("job_card", "assignment", "employee", "employee_user"))):
+			frappe.throw(_("当前计时与工单不一致，请刷新后联系主管。"))
+		if not doc.timer_paused_at:
+			documents.append(doc)
+	stopped_at = now_datetime()
+	for doc in documents:
+		_close_time_segment(doc, stopped_at,
+			_hash_key("work_order_stop", work_order, doc.name, stopped_at, frappe.session.user))
+		doc.timer_paused_at = stopped_at
+		doc.flags.worker_reporting_action = True
+		doc.save(ignore_permissions=True)
+	return stored.status
 
 
 _CLOSE_CONTINUATION_FLAG = "worker_reporting_unstarted_continuation_close"
@@ -230,6 +283,12 @@ class WorkerReportingWorkOrderMixin:
 		# Work Order. Acquire Job Card locks first to match approval's JC -> WO order.
 		if status == "Closed":
 			assert_work_order_close_allowed(self.name)
+		elif status == "Stopped":
+			self.check_permission("read")
+			self.check_permission("write")
+			# Native status updates compare against self.status; use the current
+			# locked value when the caller loaded an older transaction snapshot.
+			self.status = _pause_work_order_sessions(self.name)
 		return super().update_status(status)
 
 	def cancel(self):

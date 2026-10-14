@@ -3265,6 +3265,72 @@ class TestWorkerReporting(IntegrationTestCase):
 		self.assertEqual(report.reported_minutes, 75)
 		self.assertEqual(report.wage_amount, 25)
 
+	def test_work_order_stop_freezes_timer_and_explicit_resume_excludes_stop_from_time_wage(self):
+		from erpnext.manufacturing.doctype.work_order.work_order import stop_unstop
+
+		started = datetime.combine(get_datetime(nowdate()).date(), time(9, 0, 0, 123456))
+		stopped = started + timedelta(minutes=10)
+		resumed = started + timedelta(minutes=50)
+		with self.change_settings("Process Simplification Settings", {"allow_manual_time_entry": 0}):
+			with self.freeze_time(started):
+				job_card, assignment = self._setup_flow(qty=10, wage_type="Time", rate=30)
+				with self.set_user(self.worker_user):
+					report = service.start_work_session(assignment.name, "wo-stop-start", started_at=started)
+			with self.set_user("Administrator"), self.freeze_time(stopped):
+				stop_unstop(job_card.work_order, "Stopped")
+			report.reload()
+			self.assertEqual(get_datetime(report.timer_paused_at), stopped)
+			self.assertEqual(report.time_segments[0].duration_minutes, 10)
+			stop_key = report.time_segments[0].stop_request_key
+			with self.set_user("Administrator"), self.freeze_time(stopped + timedelta(minutes=5)):
+				stop_unstop(job_card.work_order, "Stopped")
+			report.reload()
+			self.assertEqual(report.time_segments[0].stop_request_key, stop_key)
+			self.assertEqual(get_datetime(report.timer_paused_at), stopped)
+			with self.set_user(self.worker_user):
+				with self.assertRaises(frappe.ValidationError):
+					service.resume_work_session(report.name, "wo-still-stopped", resumed_at=resumed)
+			with self.set_user("Administrator"), self.freeze_time(resumed):
+				stop_unstop(job_card.work_order, "In Process")
+			report.reload()
+			self.assertEqual(get_datetime(report.timer_paused_at), stopped)
+			self.assertEqual(len(report.time_segments), 1)
+			with self.set_user(self.worker_user):
+				service.resume_work_session(report.name, "wo-worker-resume", resumed_at=resumed)
+				report = service.finish_work_session(report.name, 1, "wo-stop-finish",
+					ended_at=started + timedelta(minutes=60))
+		self.assertEqual(report.actual_minutes, 20)
+		self.assertEqual(report.reported_minutes, 20)
+		self.assertEqual(report.wage_amount, 10)
+		self.assertEqual((report.rate, report.hourly_rate_snapshot), (30, 30))
+		self.assertFalse(report.manual_time_entry)
+		self.assertEqual(len(report.time_segments), 2)
+
+	def test_failed_native_stop_rolls_back_timer_changes_with_its_transaction(self):
+		from erpnext.manufacturing.doctype.work_order.work_order import WorkOrder
+
+		started = datetime.combine(get_datetime(nowdate()).date(), time(9, 0, 0, 123456))
+		with self.freeze_time(started):
+			job_card, assignment = self._setup_flow(qty=10)
+			with self.set_user(self.worker_user):
+				report = service.start_work_session(assignment.name, "failed-stop-start", started_at=started)
+		order = frappe.get_doc("Work Order", job_card.work_order)
+		original_status = order.status
+		frappe.db.savepoint("before_timer_stop")
+		try:
+			with self.set_user("Administrator"), self.freeze_time(started + timedelta(minutes=10)), \
+				patch.object(WorkOrder, "update_status", side_effect=frappe.ValidationError("native stop failed")):
+				with self.assertRaises(frappe.ValidationError):
+					order.update_status("Stopped")
+		finally:
+			frappe.db.rollback(save_point="before_timer_stop")
+		report.reload()
+		order.reload()
+		self.assertEqual(order.status, original_status)
+		self.assertFalse(report.timer_paused_at)
+		self.assertFalse(report.time_segments[0].ended_at)
+		self.assertFalse(report.time_segments[0].stop_request_key)
+
 	def test_cross_midnight_time_session_belongs_to_its_starting_production_day(self):
 		production_moment = datetime.combine(
 			get_datetime(nowdate()).date(), time(23, 30, 0, 123456)

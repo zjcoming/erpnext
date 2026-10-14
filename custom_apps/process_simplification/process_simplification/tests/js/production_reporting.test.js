@@ -202,6 +202,32 @@ test("worker button state is driven by server block codes", () => {
 	);
 });
 
+test("stopped active work disables timer and finish while preserving frozen minutes", () => {
+	const row = {name: "ASSIGN-1", active_report: "REPORT-1", can_finish: false,
+		block_code: "WORK_ORDER_UNAVAILABLE", block_message: "生产工单已停止，当前不能开工；请联系主管。",
+		timer_paused_at: "2026-10-14 09:10:00", active_minutes: 10};
+	assert.equal(workerPage.workReportButtonMeta(row).disabled, true);
+	assert.deepEqual(workerPage.workReportTimerButtonMeta(row),
+		{action: "resume", label: "继续计时", disabled: true});
+	assert.match(workerPage.workReportBlockMessage(row), /已停止.*计时已暂停/);
+	assert.equal(workerPage.workReportDisplayMinutes(row, 0, 600000), 10);
+	const html = workerPage.workerAssignmentCardHtml(row);
+	assert.match(html, /worker-report-action[^>]*disabled/);
+	assert.match(html, /worker-timer-action[^>]*disabled/);
+	assert.equal(workerPage.workReportTimerButtonMeta({...row, timer_paused_at: null}).disabled, true);
+});
+
+test("resuming the Work Order leaves an explicit worker resume action", () => {
+	const row = {active_report: "REPORT-1", can_finish: true, block_code: null,
+		timer_paused_at: "2026-10-14 09:10:00", active_minutes: 10};
+	assert.deepEqual(workerPage.workReportTimerButtonMeta(row),
+		{action: "resume", label: "继续计时", disabled: false});
+	assert.equal(workerPage.workReportButtonMeta(row).disabled, false);
+	assert.equal(workerPage.workReportDisplayMinutes(row, 0, 600000), 10);
+	assert.equal(workerPage.workReportDisplayMinutes({...row, timer_paused_at: null}, 0, 60000), 11);
+	assert.equal(workerPage.workReportButtonMeta({...row, block_code: "NO_REMAINING_QTY"}).disabled, false);
+});
+
 test("worker assignments separate active work and demote material waits", () => {
 	const partitions = workerPage.partitionWorkerAssignments([
 		{ name: "WAITING", block_code: "MATERIAL_NOT_TRANSFERRED" },

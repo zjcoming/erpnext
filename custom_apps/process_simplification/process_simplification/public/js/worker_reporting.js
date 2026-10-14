@@ -68,7 +68,7 @@ function workerExceptionMaterialState(options = {}, requestType, cause) {
 
 function workReportButtonMeta(assignment, translate = (message) => message) {
 	if (assignment.active_report) {
-		return { action: "finish", label: translate("结束并报工"), disabled: false };
+		return { action: "finish", label: translate("结束并报工"), disabled: assignment.block_code === "WORK_ORDER_UNAVAILABLE" };
 	}
 	if (assignment.can_start) {
 		return { action: "start", label: translate("开始计时"), disabled: false };
@@ -90,12 +90,16 @@ function workReportButtonMeta(assignment, translate = (message) => message) {
 
 function workReportTimerButtonMeta(assignment, translate = (message) => message) {
 	if (!assignment?.active_report) return null;
+	const disabled = assignment.block_code === "WORK_ORDER_UNAVAILABLE";
 	return assignment.timer_paused_at
-		? { action: "resume", label: translate("继续计时"), disabled: false }
-		: { action: "pause", label: translate("暂停计时"), disabled: false };
+		? { action: "resume", label: translate("继续计时"), disabled }
+		: { action: "pause", label: translate("暂停计时"), disabled };
 }
 
 function workReportBlockMessage(assignment, translate = (message) => message) {
+	if (assignment.active_report && assignment.timer_paused_at && assignment.block_code === "WORK_ORDER_UNAVAILABLE") {
+		return `${assignment.block_message || ""} ${translate("计时已暂停，当前不能继续或报工；请联系主管。")}`.trim();
+	}
 	const messages = {
 		PENDING_REPORT: translate("已有报工等待主管审核，审核完成后才能继续。"),
 		NO_REMAINING_QTY: translate("本人的派工数量已报完，或该生产任务单已没有可报数量。"),
@@ -401,7 +405,7 @@ function workerAssignmentCardHtml(row, helpers = {}) {
 		${row.notes ? `<p class="text-muted worker-assignment-note">${escapeHtml(row.notes)}</p>` : ""}
 		<div class="worker-assignment-actions">
 			<button class="btn btn-primary worker-report-action" data-assignment="${escapeHtml(row.name)}" ${button.disabled || (!row.active_report && helpers.disableStart) ? "disabled" : ""}>${escapeHtml(button.label)}</button>
-			${timerButton ? `<button class="btn btn-default worker-timer-action" data-assignment="${escapeHtml(row.name)}" data-action="${escapeHtml(timerButton.action)}">${escapeHtml(timerButton.label)}</button>` : ""}
+			${timerButton ? `<button class="btn btn-default worker-timer-action" data-assignment="${escapeHtml(row.name)}" data-action="${escapeHtml(timerButton.action)}" ${timerButton.disabled ? "disabled" : ""}>${escapeHtml(timerButton.label)}</button>` : ""}
 			<button class="btn btn-link worker-exception-action" data-assignment="${escapeHtml(row.name)}">${translate("申请退料/报废")}</button>
 		</div>
 		<details class="worker-assignment-more">
@@ -683,6 +687,10 @@ function mountWorkerReportingPage({ page, root, mode = "queue" }) {
 			const current = state.data.assignments?.find((item) => item.name === row.name && item.active_report === row.active_report);
 			if (applied !== true || snapshotRevision <= revision || !current) {
 				frappe.msgprint(__("任务状态未能更新或已改变，请刷新任务后再试。"));
+				return;
+			}
+			if (current.block_code === "WORK_ORDER_UNAVAILABLE") {
+				frappe.msgprint(workReportBlockMessage(current, __));
 				return;
 			}
 			openFinishDialog(current);
