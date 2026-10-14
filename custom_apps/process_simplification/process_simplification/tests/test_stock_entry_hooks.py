@@ -491,6 +491,103 @@ class TestStockEntryHooks(UnitTestCase):
 			{"SRE-1": 5, "SRE-2": 1},
 		)
 
+	def _reconcile_wip_movements(self, issues, returned, consumed, reservations, **options):
+		from process_simplification.production_stock_facts import aggregate_work_order_stock_facts
+
+		sources = list(issues)
+		items = [frappe._dict(
+			name=f"WOI-{idx}", item_code="RM", source_warehouse=source,
+			transferred_qty=qty, consumed_qty=returned + consumed,
+		) for idx, (source, qty) in enumerate(issues.items())]
+		movements = [frappe._dict(
+			work_order="WO-1", item_code="RM", docstatus=1,
+			purpose="Material Transfer for Manufacture", is_return=0,
+			s_warehouse=source, t_warehouse="WIP", transfer_qty=qty,
+		) for source, qty in issues.items()]
+		movements.extend([
+			frappe._dict(
+				work_order="WO-1", item_code="RM", docstatus=1,
+				purpose="Material Transfer for Manufacture", is_return=1,
+				s_warehouse="WIP", t_warehouse="Quarantine", transfer_qty=returned,
+				custom_return_source_warehouse=sources[0],
+			),
+			frappe._dict(
+				work_order="WO-1", item_code="RM", docstatus=1,
+				purpose="Manufacture", s_warehouse="WIP", transfer_qty=consumed,
+			),
+		])
+		entries = [frappe._dict(
+			name=f"SRE-{idx}", voucher_detail_no=f"WOI-{source_idx}",
+			item_code="RM", warehouse="WIP", from_voucher_type="Stock Entry",
+			reserved_qty=qty, voucher_qty=qty, transferred_qty=0,
+			consumed_qty=qty, delivered_qty=0, reservation_based_on="Qty",
+			creation=f"2026-09-01 08:00:{idx:02}",
+		) for idx, (source_idx, qty) in enumerate(reservations)]
+		for idx, values in (options.get("entry_overrides") or {}).items():
+			entries[idx].update(values)
+		return build_work_order_sre_reconciliation(
+			frappe._dict(
+				name="WO-1", skip_transfer=options.get("skip_transfer", 0),
+				from_wip_warehouse=options.get("skip_transfer", 0), wip_warehouse="WIP",
+			), items, entries,
+			aggregate_work_order_stock_facts(movements)
+			if options.get("load_facts", True) else None,
+		)
+
+	def test_unreserved_return_does_not_consume_later_quantity_wip_reservation(self):
+		updates = self._reconcile_wip_movements({"Stores": 2}, 1, 0, [(0, 1)])
+
+		self.assertEqual(updates[0].consumed_qty, 0)
+		self.assertEqual(updates[0].status, "Reserved")
+
+	def test_quantity_wip_return_reissue_and_manufacture_reconcile_current_stock(self):
+		# Each stage contains only its currently submitted stock movements. A
+		# cancelled receipt/return disappears from those authoritative facts.
+		for name, issued, returned, consumed, capacities, expected in (
+			("partial return", 10, 4, 0, [10], [4]),
+			("reissue after reserved return", 14, 4, 0, [10, 4], [4, 0]),
+			("partial manufacture", 14, 4, 3, [10, 4], [7, 0]),
+			("cancel manufacture", 14, 4, 0, [10, 4], [4, 0]),
+			("cancel return", 14, 0, 0, [10, 4], [0, 0]),
+			("new reservation after old return, then manufacture", 2, 1, 1, [1], [1]),
+		):
+			with self.subTest(stage=name):
+				updates = self._reconcile_wip_movements(
+					{"Stores": issued}, returned, consumed,
+					[(0, qty) for qty in capacities],
+				)
+				self.assertEqual([row.consumed_qty for row in updates], expected)
+
+	def test_quantity_wip_consumption_is_allocated_once_across_source_warehouses(self):
+		updates = self._reconcile_wip_movements(
+			{"Stores A": 5, "Stores B": 5}, 0, 6, [(0, 5), (1, 5)],
+		)
+
+		self.assertEqual([row.consumed_qty for row in updates], [5, 1])
+		self.assertEqual(sum(row.consumed_qty for row in updates), 6)
+
+	def test_quantity_wip_fix_preserves_direct_consumption_and_no_fact_fallback(self):
+		for options in ({"skip_transfer": 1}, {"load_facts": False}):
+			with self.subTest(options=options):
+				updates = self._reconcile_wip_movements(
+					{"Stores": 2}, 1, 0, [(0, 1)], **options,
+				)
+				self.assertEqual(updates[0].consumed_qty, 1)
+				self.assertEqual(updates[0].status, "Delivered")
+
+	def test_quantity_wip_fix_preserves_serial_batch_and_mixed_reservation_behavior(self):
+		for capacities in ([(0, 1)], [(0, 1), (0, 1)]):
+			with self.subTest(capacities=capacities):
+				updates = self._reconcile_wip_movements(
+					{"Stores": sum(qty for _, qty in capacities) + 1}, 1, 0,
+					capacities,
+					entry_overrides={0: {
+						"reservation_based_on": "Serial and Batch", "serial_batch_used_qty": 1,
+					}},
+				)
+				self.assertEqual(updates[0].consumed_qty, 1)
+				self.assertEqual(sum(row.consumed_qty for row in updates), 1)
+
 	def test_serial_batch_children_are_rebuilt_from_current_submitted_entries(self):
 		class Reservation:
 			def __init__(self):

@@ -178,6 +178,7 @@ def build_work_order_sre_reconciliation(
 		if entry.get("name")
 	}
 	touched_names = set()
+	quantity_wip_items = set()
 	for (item_code, source_warehouse), items in items_by_group.items():
 		detail_names = {item.get("name") for item in items}
 		group_entries = [
@@ -247,6 +248,42 @@ def build_work_order_sre_reconciliation(
 				default=0,
 			)
 		)
+		if facts_loaded and not work_order.get("skip_transfer"):
+			# Historical unreserved issues/returns cannot consume a later WIP
+			# reservation. Keep its quantity reserved while that Work Order still
+			# holds the material. Same-item source rows share one WIP quantity.
+			item_rows = [
+				item for group in items_by_group.values() for item in group
+				if item.get("item_code") == item_code
+			]
+			item_detail_names = {item.get("name") for item in item_rows}
+			wip_entries = [
+				entry for entry in entries_by_name.values()
+				if entry.get("voucher_detail_no") in item_detail_names
+				and entry.get("item_code") == item_code
+				and entry.get("warehouse") == consumption_warehouse
+				and entry.get("from_voucher_type") == "Stock Entry"
+			]
+			if all(entry.get("reservation_based_on") in (None, "", "Qty") for entry in wip_entries):
+				if item_code in quantity_wip_items:
+					consumption_entries = []
+				else:
+					quantity_wip_items.add(item_code)
+					consumption_entries = wip_entries
+					wip_fact = get_work_order_stock_fact(
+						stock_facts, work_order_name, item_code, consumption_warehouse,
+					)
+					held_qty = max(sum(
+						flt(get_work_order_stock_fact(
+							stock_facts, work_order_name, item_code, warehouse,
+						).net_issued_qty)
+						for warehouse in {item.get("source_warehouse") for item in item_rows}
+					) - flt(wip_fact.consumed_qty), 0)
+					capacity = sum(max(
+						flt(entry.get("reserved_qty")) - flt(entry.get("delivered_qty"))
+						- flt(entry.get("transferred_qty")), 0,
+					) for entry in wip_entries)
+					consumption_target = min(consumption_target, max(capacity - held_qty, 0))
 		_allocate_sre_group_quantity(
 			consumption_entries,
 			"consumed_qty",

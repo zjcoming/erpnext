@@ -598,14 +598,15 @@ def _guided_component_issue_quantities(
 def _insert_guided_issue_stock_entry(work_order, finished_qty: float, stock_facts=None):
 	"""Create a transfer draft, rebuilding uneven component rows from net coverage."""
 	has_return_gap = _has_material_return_gap(work_order, stock_facts)
-	entry = frappe.get_doc(
-		make_stock_entry(
-			work_order.name,
-			"Material Transfer for Manufacture",
-			qty=finished_qty,
-			is_additional_transfer_entry=has_return_gap,
-		)
+	message_start = len(frappe.local.message_log)
+	native_entry = make_stock_entry(
+		work_order.name,
+		"Material Transfer for Manufacture",
+		qty=finished_qty,
+		is_additional_transfer_entry=has_return_gap,
 	)
+	native_messages = tuple(frappe.local.message_log[message_start:])
+	entry = frappe.get_doc(native_entry)
 	entry.custom_process_workflow_action = ISSUE_ACTION
 	entry.custom_process_requested_by = frappe.session.user
 	# Keep the business quantity separate from ERPNext's header counter.  A
@@ -651,6 +652,17 @@ def _insert_guided_issue_stock_entry(work_order, finished_qty: float, stock_fact
 		if not entry.items:
 			_throw("本次净发料缺口无法生成库存明细，请刷新工单后重试。")
 	entry.insert(ignore_permissions=True)
+	if has_return_gap:
+		# Remove only this builder's stale gross-transfer notice after net rows saved.
+		native_notice = {
+			"message": _("All items have already been transferred for this Work Order."),
+			"as_table": False,
+			"title": _("Message", context="Default title of the message dialog"),
+		}
+		stale_ids = {id(message) for message in native_messages if message == native_notice}
+		frappe.local.message_log[:] = [
+			message for message in frappe.local.message_log if id(message) not in stale_ids
+		]
 	return entry
 
 
