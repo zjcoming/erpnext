@@ -79,15 +79,23 @@ function createMaterialHandlingPanel(page, root) {
                 {fieldname: "rework_bom", fieldtype: "Link", options: "BOM", label: "返工 BOM", hidden: 1,
                     get_query: () => ({filters: {docstatus: 1, is_active: 1, company: options?.company}})},
                 {fieldname: "reason", fieldtype: "Small Text", label: "补充说明（选填）"},
-            ], primary_action_label: "确认处理，交库房核对", primary_action: async values => {
+            ], primary_action_label: data.can_review ? "确认处理，交库房核对" : "提交处理申请", primary_action: async values => {
                 const items = (values.materials || []).filter(r => Number(r.qty) > 0).map(r => ({material_key:r.material_key, qty:r.qty, purchase_receipt_item:r.purchase_receipt_item}));
                 if (!items.length) {frappe.msgprint("请填写至少一行实际数量。"); return;}
                 dialog.get_primary_btn().prop("disabled", true);
                 try {
-                    await call("create_material_handling", {action: values.action, items, request_key:key,
+                    const result = await call("create_material_handling", {action: values.action, items, request_key:key,
                         work_order: closeout ? values.work_order : options.work_order, source_stock_entry: closeout ? null : values.source_stock_entry,
                         reason:values.reason, purchase_receipt:values.purchase_receipt, rework_bom:values.rework_bom}, true);
-                    dialog.hide(); await load(); frappe.show_alert({message:"处理单已生成，请库房核对实物后过账。",indicator:"green"});
+                    const messages = {
+                        "Pending Approval": "处理单已提交，等待主管确认。",
+                        "Awaiting Stock Entry": "处理单已生成，请库房核对实物后过账。",
+                        Completed: "处理单已完成。",
+                        Withdrawn: "处理单已撤回，请重新申请。",
+                        Rejected: "处理单已驳回，请重新申请。",
+                    };
+                    dialog.hide(); await load(); frappe.show_alert({message:messages[result?.status] || "请查看处理记录确认当前状态。",
+                        indicator:["Pending Approval", "Awaiting Stock Entry", "Completed"].includes(result?.status) ? "green" : "orange"});
                 } finally {dialog.get_primary_btn().prop("disabled", false);}
             }});
         function actionChanged() {
