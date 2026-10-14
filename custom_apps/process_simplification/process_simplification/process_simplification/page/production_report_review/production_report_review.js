@@ -587,6 +587,9 @@ if (typeof frappe !== "undefined") {
 		page.add_inner_button(assignmentEntry.label, () => {
 			openReviewNewAssignment(assignmentEntry, { setRoute: (...route) => frappe.set_route(...route), openLegacy: openAssignmentDialog });
 		});
+		if (assignmentEntry.route) {
+			page.add_inner_button(__("按工单派工"), openAssignmentDialog);
+		}
 		page.add_inner_button(__("查看历史"), focusHistory);
 		page.add_inner_button(__("刷新"), () => runReviewToolbarLoad(load));
 	};
