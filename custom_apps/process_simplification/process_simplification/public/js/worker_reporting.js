@@ -406,6 +406,7 @@ function workerAssignmentCardHtml(row, helpers = {}) {
 		<div class="worker-assignment-actions">
 			<button class="btn btn-primary worker-report-action" data-assignment="${escapeHtml(row.name)}" ${button.disabled || (!row.active_report && helpers.disableStart) ? "disabled" : ""}>${escapeHtml(button.label)}</button>
 			${timerButton ? `<button class="btn btn-default worker-timer-action" data-assignment="${escapeHtml(row.name)}" data-action="${escapeHtml(timerButton.action)}" ${timerButton.disabled ? "disabled" : ""}>${escapeHtml(timerButton.label)}</button>` : ""}
+			${row.active_report && row.block_code === "WORK_ORDER_UNAVAILABLE" ? `<button class="btn btn-link worker-cancel-session-action" data-assignment="${escapeHtml(row.name)}">${translate("取消本次计时")}</button>` : ""}
 			<button class="btn btn-link worker-exception-action" data-assignment="${escapeHtml(row.name)}">${translate("申请退料/报废")}</button>
 		</div>
 		<details class="worker-assignment-more">
@@ -675,6 +676,19 @@ function mountWorkerReportingPage({ page, root, mode = "queue" }) {
 		await load();
 	}
 
+	function cancelWorkSession(row, dialog) {
+		return frappe.confirm(__("确定取消本次计时吗？未提交的计时记录将被删除。"), async () => {
+			await frappe.call({
+				method: "process_simplification.api.production_reporting.cancel_work_session",
+				type: "POST",
+				args: { report: row.active_report },
+			});
+			dialog?.hide();
+			frappe.show_alert({ message: __("本次计时已取消。"), indicator: "orange" });
+			await load();
+		});
+	}
+
 	async function prepareFinishDialog(row, $button) {
 		if (openingFinish || finishView || !isCurrent()) return;
 		openingFinish = true;
@@ -841,18 +855,7 @@ function mountWorkerReportingPage({ page, root, mode = "queue" }) {
 			},
 			on_hide() { if (finishView?.dialog === dialog) finishView = null; },
 		});
-		dialog.set_secondary_action(() => {
-			frappe.confirm(__("确定取消本次计时吗？未提交的计时记录将被删除。"), async () => {
-				await frappe.call({
-					method: "process_simplification.api.production_reporting.cancel_work_session",
-					type: "POST",
-					args: { report: row.active_report },
-				});
-				dialog.hide();
-				frappe.show_alert({ message: __("本次计时已取消。"), indicator: "orange" });
-				await load();
-			});
-		});
+		dialog.set_secondary_action(() => cancelWorkSession(row, dialog));
 		dialog.set_secondary_action_label(__("取消本次计时"));
 		finishView = { dialog, assignment: row.name, report: row.active_report, minutes: Number(timerMinutes(row).toFixed(2)), stale: false };
 		dialog.show();
@@ -1018,6 +1021,12 @@ function mountWorkerReportingPage({ page, root, mode = "queue" }) {
 		);
 		const action = $(event.currentTarget).data("action");
 		if (row && ["pause", "resume"].includes(action)) return changeTimerState(row, action);
+	});
+	$root.on("click.worker-reporting", ".worker-cancel-session-action", (event) => {
+		const row = (state.data.assignments || []).find(
+			(item) => item.name === $(event.currentTarget).data("assignment")
+		);
+		if (row?.active_report && row.block_code === "WORK_ORDER_UNAVAILABLE") return cancelWorkSession(row);
 	});
 	$root.on("click.worker-reporting", ".worker-exception-action", (event) => {
 		const row = (state.data.assignments || []).find(

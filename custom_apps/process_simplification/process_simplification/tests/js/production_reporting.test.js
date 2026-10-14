@@ -217,6 +217,62 @@ test("stopped active work disables timer and finish while preserving frozen minu
 	assert.equal(workerPage.workReportTimerButtonMeta({...row, timer_paused_at: null}).disabled, true);
 });
 
+test("unavailable active work retains a confirmed cancellation action", async () => {
+	const row = {name: "ASSIGN-1", active_report: "REPORT-1", block_code: "WORK_ORDER_UNAVAILABLE",
+		timer_paused_at: "2026-10-14 09:10:00"};
+	const html = workerPage.workerAssignmentCardHtml(row);
+	assert.match(html, /worker-cancel-session-action[^>]*>取消本次计时<\/button>/);
+	assert.match(html, /worker-report-action[^>]*disabled/);
+	assert.match(html, /worker-timer-action[^>]*disabled/);
+	assert.match(workerPage.workerAssignmentCardHtml({...row, timer_paused_at: null}), /worker-cancel-session-action/);
+	assert.doesNotMatch(workerPage.workerAssignmentCardHtml({...row, active_report: null}), /worker-cancel-session-action/);
+	assert.doesNotMatch(workerPage.workerAssignmentCardHtml({...row, block_code: null}), /worker-cancel-session-action/);
+	const handlers = new Map(), calls = [];
+	let confirmed, confirmationMessage, failure, loads = 0, alerts = 0;
+	const chain = {addClass() {return this;}, find() {return this;}, attr() {return this;}};
+	const page = {add_custom_menu_item: () => chain, menu_btn_group: chain};
+	const root = {on(event, selector, handler) {handlers.set(selector, handler);}};
+	const context = {
+		module: {exports: {}}, window: {}, __: (message) => message,
+		$: (target) => ({data: (key) => target[key]}),
+		frappe: {
+			session: {user: "worker@example.com"},
+			confirm(message, action) {confirmationMessage = message; confirmed = action;},
+			async call(options) {calls.push(options); if (failure) throw failure;},
+			show_alert() {alerts++;},
+			async ps_read_page() {loads++; return true;},
+		},
+	};
+	require("node:vm").runInNewContext(
+		fs.readFileSync(path.join(appDirectory, "public/js/worker_reporting.js"), "utf8"), context
+	);
+	const mounted = context.module.exports.mountWorkerReportingPage({page, root, mode: "active"});
+	mounted.state.data.assignments = [row];
+	const cancel = handlers.get(".worker-cancel-session-action");
+	assert.equal(typeof cancel, "function");
+	cancel({currentTarget: {assignment: row.name}});
+	assert.match(confirmationMessage, /未提交的计时记录将被删除/);
+	assert.equal(calls.length, 0);
+	await confirmed();
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0].method, "process_simplification.api.production_reporting.cancel_work_session");
+	assert.equal(calls[0].type, "POST");
+	assert.equal(calls[0].args.report, row.active_report);
+	assert.equal(loads, 1);
+	failure = new Error("Server rejected stale report");
+	cancel({currentTarget: {assignment: row.name}});
+	await assert.rejects(confirmed, failure);
+	assert.equal(alerts, 1);
+	assert.equal(loads, 1);
+	confirmed = null;
+	for (const current of [{...row, active_report: null}, {...row, block_code: null}]) {
+		mounted.state.data.assignments = [current];
+		cancel({currentTarget: {assignment: row.name}});
+		assert.equal(confirmed, null);
+	}
+	assert.equal(calls.length, 2);
+});
+
 test("resuming the Work Order leaves an explicit worker resume action", () => {
 	const row = {active_report: "REPORT-1", can_finish: true, block_code: null,
 		timer_paused_at: "2026-10-14 09:10:00", active_minutes: 10};
