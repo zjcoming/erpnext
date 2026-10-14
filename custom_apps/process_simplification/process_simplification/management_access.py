@@ -268,6 +268,7 @@ PRODUCTION_MANAGER_PERMISSIONS = {
 	"Job Card": {"read", "select", "print"},
 	"Stock Reservation Entry": {"read", "select"},
 	"Stock Entry": {"read", "select"},
+	"Stock Settings": {"read"},
 	"Delivery Note": {"read", "select"},
 	"Material Request": {"read", "select"},
 	"Purchase Order": {"read", "select"},

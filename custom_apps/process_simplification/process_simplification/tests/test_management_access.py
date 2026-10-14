@@ -513,7 +513,7 @@ class TestManagementAccess(IntegrationTestCase):
 			return frappe.db.get_value(
 				"Custom DocPerm",
 				{"parent": doctype, "role": role, "permlevel": 0, "if_owner": 0},
-				["read", "select", "create", "write", "submit", "cancel", "delete", "amend", "report"],
+				["read", "select", "create", "write", "submit", "cancel", "delete", "amend", "report", "import"],
 				as_dict=True,
 			)
 
@@ -646,6 +646,18 @@ class TestManagementAccess(IntegrationTestCase):
 		production_stock = permission("Stock Entry", PRODUCTION_MANAGER_ROLE)
 		self.assertTrue(production_stock.read)
 		self.assertFalse(production_stock.create or production_stock.write or production_stock.submit)
+
+		production_stock_settings = permission("Stock Settings", PRODUCTION_MANAGER_ROLE)
+		self.assertTrue(production_stock_settings.read)
+		self.assertFalse(
+			production_stock_settings.create
+			or production_stock_settings.write
+			or production_stock_settings.submit
+			or production_stock_settings.cancel
+			or production_stock_settings.delete
+			or production_stock_settings.amend
+			or production_stock_settings.get("import")
+		)
 
 		owner_purchase = permission("Purchase Order", OWNER_ROLE)
 		self.assertTrue(owner_purchase.read and owner_purchase.create and owner_purchase.write and owner_purchase.submit)
