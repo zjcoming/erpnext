@@ -1640,7 +1640,7 @@ class TestWorkerReporting(IntegrationTestCase):
 		self.assertTrue(movement_meta.get_field("movement_key").unique)
 		self.assertEqual(
 			movement_meta.get_field("movement_type").options.splitlines(),
-			["Release", "Redispatch", "Release Reversal"],
+			["Release", "Redispatch", "Release Reversal", "Continuation"],
 		)
 		self.assertEqual(
 			movement_meta.get_field("source_movement").options,
