@@ -45,5 +45,14 @@ class TestERPNextPatch(unittest.TestCase):
         self.assertIn("Refusing changed or unsupported", result.stderr)
         self.assertEqual(before, self.contents())
 
+    def test_partly_applied_fixes_rejected_without_writes(self):
+        name = next(iter(MANIFEST["files"]))
+        (self.target / name).write_bytes((ROOT / name).read_bytes())
+        before = self.contents()
+        result = self.run_apply()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Refusing partly applied", result.stderr)
+        self.assertEqual(before, self.contents())
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

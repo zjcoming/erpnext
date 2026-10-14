@@ -13,6 +13,12 @@ from frappe.tests import UnitTestCase
 
 
 class TestAggregatedShortage(UnitTestCase):
+	def setUp(self):
+		# Scope itself is covered with real User Permissions in
+		# test_purchase_shortage_permissions; these rows use fictional warehouses.
+		super().setUp()
+		self.enterContext(patch("process_simplification.api.shortage._can_read_purchase_material", return_value=True))
+
 	@patch(
 		"process_simplification.api.shortage._create_material_request_locked",
 		return_value={"material_request": "MAT-MR-TEST", "docstatus": 1},

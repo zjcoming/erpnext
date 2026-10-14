@@ -43,6 +43,8 @@ from process_simplification.production_reporting.domain import (
 	job_card_qty_precision,
 	job_card_values,
 	material_reportable_qty,
+	operation_reporting_used_qty,
+	previous_operation_capacity,
 	money,
 	pending_report_qty,
 	reportable_qty,
@@ -443,6 +445,9 @@ def validate_assignment_deletion(doc):
 		frappe.throw(_("Worker assignments can only be removed through Production Report Review."))
 	if frappe.db.exists("Job Card Work Report", {"assignment": doc.name}):
 		frappe.throw(_("An assignment with work reports cannot be removed."))
+	from process_simplification.production_reporting.continuation import assert_assignment_not_continued
+
+	assert_assignment_not_continued(doc.name)
 
 
 def validate_report_document(doc):
@@ -594,6 +599,14 @@ def validate_report_document(doc):
 		frappe.throw(_("This work report status transition is not allowed."))
 
 
+def _assert_assignment_job_card_supported(jc):
+	from process_simplification.production_reporting.continuation import is_continuation_assignment
+
+	block = job_card_block(jc, for_update=True)
+	if block and not (block.code == "PREVIOUS_OPERATION_PENDING" and is_continuation_assignment(jc.name)):
+		frappe.throw(block.message)
+
+
 def assign_workers(job_card: str, assignments, supervisor: str | None = None, *, first_only: bool = False):
 	"""Create or replace one complete, quantity-balanced Job Card dispatch plan."""
 	require_reviewer()
@@ -612,7 +625,7 @@ def assign_workers(job_card: str, assignments, supervisor: str | None = None, *,
 		assert_work_order_dispatch_ready,
 	)
 
-	assert_supported_job_card(jc, for_update=True)
+	_assert_assignment_job_card_supported(jc)
 	assert_work_order_dispatch_ready(jc.work_order)
 	precision = job_card_qty_precision()
 	allocations = _normalize_assignment_plan(assignments, jc.for_quantity, precision)
@@ -714,7 +727,7 @@ def assign_workers(job_card: str, assignments, supervisor: str | None = None, *,
 		frappe.throw(_("Assign workers before recording any Job Card quantity or time rows."))
 	# Keep the write-path lock order aligned with submit/review: configuration is
 	# checked only after Job Card -> Work Order -> Employee -> Assignment locks.
-	assert_supported_job_card(jc, for_update=True)
+	_assert_assignment_job_card_supported(jc)
 	if not get_wage_rate(jc.company, jc.operation, nowdate(), for_update=True):
 		frappe.throw(_("Configure an enabled wage rate for this operation before assigning workers."))
 
@@ -2585,17 +2598,16 @@ def approve_work_report(name: str):
 	):
 		frappe.throw(_("Pending reports no longer fit the Job Card quantity. Reject the incorrect report."))
 	material_capacity = work_order_material_capacity(jc_values, for_update=True)
-	if material_capacity is not None and flt(
-		flt(jc_values.total_completed_qty, precision)
-		+ flt(jc_values.process_loss_qty, precision)
-		+ all_pending,
-		precision,
-	) > flt(material_capacity, precision):
+	operation_used = operation_reporting_used_qty(jc_values, for_update=True)
+	if material_capacity is not None and operation_used > flt(material_capacity, precision):
 		frappe.throw(
 			_(
 				"Issued materials currently cover at most {0}; reject or wait for material transfer."
 			).format(flt(material_capacity, precision))
 		)
+	previous_capacity = previous_operation_capacity(jc_values, for_update=True)
+	if previous_capacity is not None and operation_used > flt(previous_capacity, precision):
+		frappe.throw(_("前序已完成数量不足以承接本工序全部待审报工，请先核对数量。"))
 
 	job_card = frappe.get_doc("Job Card", doc.job_card, for_update=True)
 	segments = _time_segments(doc)
@@ -2671,7 +2683,7 @@ def reject_work_report(name: str, reason: str):
 	reason = str(reason or "").strip()
 	if not reason:
 		frappe.throw(_("A rejection reason is required."))
-	_, _, doc = _lock_report_for_review(
+	_job_card, _assignment, doc = _lock_report_for_review(
 		name,
 		{"Pending Approval", "Rejected"},
 		require_job_card_consistency=False,
@@ -2714,6 +2726,7 @@ def get_work_order_assignment_context(work_order: str):
 			"docstatus",
 			"skip_transfer",
 			"material_transferred_for_manufacturing",
+			"transfer_material_against",
 		],
 		as_dict=True,
 	)
@@ -2741,6 +2754,9 @@ def get_work_order_assignment_context(work_order: str):
 		limit=0,
 	)
 	assignment_names = [row.name for row in all_assignments]
+	continuation_rows = frappe.get_all("Job Card Assignment Movement",
+		filters={"work_order": work_order, "movement_type": "Continuation"},
+		fields=["job_card", "source_assignment", "target_assignment", "reference_name", "qty"], limit=0)
 	from process_simplification.production_reporting.assignment_movement import (
 		assignment_effective_qty,
 		movement_totals,
@@ -2846,7 +2862,8 @@ def get_work_order_assignment_context(work_order: str):
 		available_redispatch_qty = redispatchable_qty(job_card) if job_card else 0
 		assignment_plan_locked = any(
 			row.name in report_assignment_names for row in job_assignments
-		)
+		) or any(row.job_card == job_card_row.name or row.reference_name == job_card_row.name
+			for row in continuation_rows)
 		if not block and assignment_plan_locked:
 			remaining_plan_qty = sum(
 				max(
@@ -2916,6 +2933,12 @@ def get_work_order_assignment_context(work_order: str):
 			and (not block or block.code == "ASSIGNMENT_PLAN_LOCKED")
 		)
 		material_capacity = work_order_material_capacity(job_card) if job_card else 0
+		from process_simplification.production_reporting.continuation import partial_completion_state
+
+		job_assignment_names = {row.name for row in job_assignments}
+		partial_state = partial_completion_state(job_card, job_assignments,
+			[row for row in latest_reports if row.assignment in job_assignment_names], work_order_row)
+		outgoing = [row for row in continuation_rows if row.job_card == job_card_row.name]
 		available_reportable_qty = material_reportable_qty(job_card) if job_card else 0
 		if remaining_qty <= 0:
 			material_status = "COMPLETED"
@@ -2930,6 +2953,11 @@ def get_work_order_assignment_context(work_order: str):
 		job_cards.append(
 			{
 				"name": job_card_row.name,
+				"docstatus": job_card.docstatus if job_card else None,
+				"can_finalize_partial": partial_state.can_finalize_partial,
+				"partial_completion_block_message": partial_state.partial_completion_block_message,
+				"continued_qty": flt(sum(flt(row.qty) for row in outgoing), job_card_qty_precision()),
+				"continued_to": outgoing[0].reference_name if outgoing else None,
 				"operation": job_card_row.operation,
 				"workstation": job_card_row.workstation,
 				"sequence_id": job_card_row.sequence_id,

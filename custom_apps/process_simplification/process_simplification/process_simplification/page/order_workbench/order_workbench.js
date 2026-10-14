@@ -144,7 +144,10 @@ function orderNextAction(order) {
 
 function orderNextActionLabel(order, translate = (message) => message) {
 	const next = orderNextAction(order);
-	return next ? fulfillmentActionLabel(next.action, next.row, translate) : translate("查看销售订单");
+	const handoff = (order?.rows || []).find((row) => row.reservation_handoff)?.reservation_handoff;
+	return next && next.action.action !== "view_sales_order"
+		? fulfillmentActionLabel(next.action, next.row, translate)
+		: translate(handoff?.label || next?.action.label || "查看销售订单");
 }
 
 function fulfillmentCsv(orders) {
@@ -179,7 +182,7 @@ function orderOverviewHtml(order, helpers) {
 	const number = helpers.formatNumber;
 	const date = helpers.formatDate;
 	const rows = order.rows || [];
-	const button = (action, row, primary = false) => `<button type="button" class="btn ${primary ? "btn-primary" : "btn-default"} row-action" data-action="${esc(action.action)}" data-sales-order="${esc(order.name)}" data-row="${esc(row?.sales_order_item || "")}" ${action.enabled ? "" : "disabled"}>${esc(fulfillmentActionLabel(action, row || {}, t))}</button>`;
+	const button = (action, row, primary = false) => `<button type="button" class="btn ${primary ? "btn-primary" : "btn-default"} row-action" data-action="${esc(action.action)}" data-sales-order="${esc(order.name)}" data-row="${esc(row?.sales_order_item || "")}" ${action.enabled ? "" : "disabled"} title="${esc(action.reason || "")}">${esc(fulfillmentActionLabel(action, row || {}, t))}</button>`;
 	const fact = (label, value, className = "") => `<div class="fulfillment-order-fact ${className}" data-label="${esc(t(label))}"><span>${esc(t(label))}</span><strong>${value}</strong></div>`;
 	const itemRows = rows.map((row) => {
 		const plans = (row.production_plans || []).length
@@ -202,11 +205,13 @@ function orderOverviewHtml(order, helpers) {
 	const moreProducts = productNames.length > 2 ? ` · ${t("等")} ${productNames.length} ${t("项产品")}` : "";
 	const next = orderNextAction(order);
 	const primaryButton = next ? button(next.action, next.row, true) : button({ action: "view_sales_order", label: "查看销售订单", enabled: true }, null);
+	const handoffs = rows.filter((row) => row.reservation_handoff).map((row) => `<div class="fulfillment-reservation-handoff alert alert-info"><strong>${esc(t(row.reservation_handoff.label))}</strong> · ${esc(row.item_name || row.item_code || "")}<p>${esc(t(row.reservation_handoff.reason))}</p><span>${esc(t("来源订单"))}：${esc(order.name)}</span></div>`).join("");
 	const actionContext = next && rows.length > 1 ? `${t("先处理")} ${next.row.item_name || next.row.item_code || t("当前产品")}` : t("下一步");
 	return `<article class="fulfillment-order-card fulfillment-risk-${esc(order.risk_level || "gray")}">
 		<header class="fulfillment-card-heading"><div class="fulfillment-order-primary"><strong>${esc(productTitle)}${esc(moreProducts)}</strong><span>${esc(order.customer_name || order.customer || "")} · ${esc(order.name)}</span></div><div class="fulfillment-order-risk">${statusPill}${riskPill}</div></header>
 		<div class="fulfillment-card-facts">${fact("最早交期", `${esc(date(order.delivery_date)) || esc(t("未设置"))}${order.has_multiple_delivery_dates ? ` <span class="indicator-pill gray">${esc(t("多交期"))}</span>` : ""}`)}${fact("已发 / 订购", `${number(order.delivered_qty)} / ${number(order.order_qty)}`)}${fact("成品覆盖 / 待交", `${number(order.finished_stock_coverage_qty ?? order.reserved_qty)} / ${number(order.pending_qty)}`)}${fact("已建计划 / 未建计划", `${number(order.active_work_order_qty)} / ${number(order.unplanned_production_qty ?? order.uncovered_qty)}`)}</div>
 		<div class="fulfillment-card-action"><span>${esc(actionContext)}</span>${primaryButton}</div>
+		${handoffs}
 		<details class="fulfillment-order" data-sales-order="${esc(order.name)}"><summary><span>${esc(t("产品明细与库存分配"))}</span><span class="workbench-expand-label"><span class="when-closed">${esc(t("展开"))} ▾</span><span class="when-open">${esc(t("收起"))} ▴</span></span></summary><div class="fulfillment-order-details"><div class="fulfillment-order-actions" aria-label="${esc(t("订单操作"))}"><strong class="fulfillment-order-actions-title">${esc(t("订单操作"))}</strong><button type="button" class="btn btn-default row-action" data-action="view_sales_order" data-sales-order="${esc(order.name)}">${esc(t("查看销售订单"))}</button></div>${itemRows}</div></details>
 	</article>`;
 }

@@ -30,6 +30,9 @@ function workerReportHistoryCardHtml(row = {}, helpers = {}) {
 	const formatNumber = helpers.formatNumber || ((value) => String(value ?? ""));
 	const formatDateTime = helpers.formatDateTime || ((value) => String(value || "-"));
 	const status = workerReportHistoryStatusMeta(row.status, translate);
+	const amountLabel = row.status === "Approved"
+		? translate("计薪金额")
+		: row.status === "Rejected" ? translate("报工金额（不计薪）") : translate("待审核金额");
 	const reviewText = row.status === "Pending Approval"
 		? translate("已提交，等待主管审核")
 		: `${translate("审核人")}：${row.reviewed_by || "-"} · ${translate("审核时间")}：${formatDateTime(row.reviewed_at)}`;
@@ -46,7 +49,7 @@ function workerReportHistoryCardHtml(row = {}, helpers = {}) {
 			<span><small>${translate("完成数量")}</small><strong>${formatNumber(row.completed_qty)}</strong></span>
 			<span><small>${translate("实际分钟")}</small><strong>${formatNumber(row.actual_minutes)}</strong></span>
 			<span><small>${translate("计薪分钟")}</small><strong>${formatNumber(row.reported_minutes)}</strong></span>
-			<span><small>${translate("计薪金额")}</small><strong>${formatNumber(row.wage_amount)}</strong></span>
+			<span><small>${escapeHtml(amountLabel)}</small><strong>${formatNumber(row.wage_amount)}</strong></span>
 		</div>
 		<div class="worker-history-audit"><span>${escapeHtml(reviewText)}</span>${row.submitted_at ? `<small>${translate("提交时间")}：${escapeHtml(formatDateTime(row.submitted_at))}</small>` : ""}${row.rejection_reason ? `<strong class="text-danger">${translate("驳回原因")}：${escapeHtml(row.rejection_reason)}</strong>` : ""}</div>
 	</article>`;

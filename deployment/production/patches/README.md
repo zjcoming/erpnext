@@ -6,10 +6,11 @@
 
 ## 修复范围
 
-- **编号竞争**：MariaDB 的 `tabSeries` 使用原连接、原事务内的原子递增与条件递减。只有这两条计数器语句采用 `SET STATEMENT innodb_snapshot_isolation=OFF FOR ...`；MariaDB 在语句结束或报错时恢复设置。业务表继续使用原快照，编号变化和单据一起回滚。新增系列并发创建、最后一个编号删除回退以及异常 `NULL` 计数器的原报错行为都有覆盖。没有独立提交编号，没有请求重放。Frappe 的写入计数、表缓存失效仍按实际 INSERT/UPDATE 分类执行。
+- **编号竞争**：MariaDB 的 `tabSeries` 使用原连接、原事务内的原子递增与条件递减。这两条计数器语句采用 `SET STATEMENT innodb_snapshot_isolation=OFF FOR ...`；MariaDB 在语句结束或报错时恢复设置。业务表继续使用原快照，编号变化和单据一起回滚。新增系列并发创建、最后一个编号删除回退以及异常 `NULL` 计数器的原报错行为都有覆盖。没有独立提交编号，没有请求重放。Frappe 的写入计数、表缓存失效仍按实际 INSERT/UPDATE 分类执行。
 - **同账号登录竞争**：在 `HTTPRequest`、认证和请求钩子之前，只在尚未建立连接、没有写入、事务回调或禁用事务控制时执行。先用只读事务查账号候选名并完整回滚这一次查询，再按名字顺序通过主键锁住 `User`，随后锁 `__Auth` 密码记录。这样避开 OR 条件锁表扫描，其他员工可以并行登录。重新核对候选映射后，继续原来的账号选择、权限、密码、禁用状态、IP/时段、二次验证和钩子流程。别名在中途变化会在认证前返回通用认证错误。
-- **锁顺序**：User 密码写入、删除和重命名统一使用 `User → __Auth`；会话刷新采用 `User → Sessions`，避免登录与密码重置、退出其他会话产生反向等待。所有这些锁均使用普通快照规则，遇到业务冲突仍然报错并回滚。
-- **会话一致性**：新 SID 在数据库成功提交后才写入 Redis。MariaDB 的 1020/1213 会回滚整个事务，不能通过保存点恢复；登录元数据更新保留原异常，由事务拥有方处理，避免被后续 1305 覆盖或者留下只有缓存、没有数据库记录的 SID。其他数据库后端继续使用原保存点行为。
+- **锁顺序与活动时间刷新**：User 密码写入、删除和重命名统一使用 `User → __Auth`；会话刷新采用 `User → Sessions`，避免登录与密码重置、退出其他会话产生反向等待。只有会话刷新中的 User 锁及 `last_active/last_ip` 写入另外使用语句级 current-read，避免已有页面快照与另一请求的活动时间写入冲突。`last_ip=None` 保留原值。认证、密码及 Sessions 写入继续使用原快照规则，异常向事务拥有方传播。
+- **会话一致性**：新 SID 在数据库成功提交后才写入 Redis。缓存命中恢复身份前核对数据库中的 SID、用户和有效期；数据库缺失或身份不一致时丢弃缓存，回到原数据库／Guest 路径。刷新在同一事务内先锁定并确认 Sessions 行仍存在，避免删除后继续发布缓存；强制刷新返回认证错误，响应后的常规刷新正常退出并保留原清理回调。提交后到缓存发布之间仍可能短暂出现已撤销缓存，但下一新请求必须经数据库核验，不能靠该缓存继续认证。这增加每次非 Guest 缓存命中的一次 SID 索引查询，不承诺瞬时终止已经在途的请求；读副本部署仍受复制延迟影响。
+- **事务失败处理**：MariaDB 的 1020/1213 会回滚整个事务，不能通过保存点恢复；登录元数据更新保留原异常，由事务拥有方处理，避免被后续 1305 覆盖或者把已回滚的写入报告为成功。其他数据库后端继续使用原保存点行为。
 - **销售订单新草稿快照恢复**：REST v1 `create_doc` 为 Sales Order 调用可选 App hook；Desk 将原 `savedocs` 的保存主体提取为 `_savedocs`，保持临时名称、附件映射、权限、onload 和返回格式，遥测在恢复循环外执行一次。实际恢复策略在 `process_simplification.sales_order_creation`，只对这两个真实 HTTP 新草稿入口启用，首次遇到明确的 Sales Order 父表 INSERT 1020 后完整回滚，再从原始输入构造新 Document，最多两次尝试。它不自行提交；成功仍由原请求边界提交。
 
 补丁未修改编号格式、业务校验、库存与财务计算、登录权限策略、全局数据库参数或 Web 进程数。它不承诺任意后台任务、单点登录或自定义 `before_login` 改写身份的路径具有相同并发效果；新增这类钩子时应复验锁定候选与最终认证身份一致。元数据刷新和其他业务写入遇到真实冲突仍会失败，不会静默成功或自动重放。
@@ -61,6 +62,34 @@ python3 deployment/production/patches/apply_frappe_patches.py /path/to/frappe --
 
 隔离 WSGI、真实 TCP 并发及生产发布是不同证据；生产是否生效以对应发布记录和镜像校验为准。
 
+### 会话 HTTP 回归（2026-10-10）
+
+`test_session_http.py` 与 `test_session_http_concurrency.py` 直接用 Werkzeug Client 调用真实 `frappe.app.application`，覆盖普通登录、Desk 首次生成 CSRF、错误／缺失 token、同值刷新、无 IP 更新、缓存身份与数据库有效期，以及两条独立数据库连接下的活动时间竞争、三种注销时序、密码重置和响应结束清理。Session、认证、CSRF、数据库均不替换；同值刷新用固定时钟，并发测试仅在明确调用点等待另一连接完成真实事务。密码重置使用原生 helper，不代表密码重置页面已验收。
+
+仅在一次性本地测试站点运行，须显式设置 `PS_SESSION_DISPOSABLE=1` 与 `PS_SESSION_TEST_SITE`，站点名只接受 `test-*.localhost` 等测试前缀或本次固定隔离站点，拒绝 demoerp／production。可通过 `PS_SESSION_SITES_PATH` 指定 sites 目录。使用已打补丁的 Frappe Python 环境，以 bench 的 sites 为 cwd；传入本目录当前 manifest，脚本先验证全部八个运行文件的 SHA。以下路径须替换为隔离环境中的实际挂载路径，输出文件必须尚不存在：
+
+```sh
+export PS_SESSION_DISPOSABLE=1
+export PS_SESSION_TEST_SITE=test-session.localhost
+../env/bin/python /path/to/patches/test_session_http.py --manifest /path/to/patches/frappe-patches.json --out /tmp/session-http.json
+../env/bin/python /path/to/patches/test_session_http_concurrency.py --manifest /path/to/patches/frappe-patches.json --out /tmp/session-concurrency.json
+```
+
+测试自行创建随机 User fixture，仅创建阶段设置全局 `frappe.in_test=True` 以同步创建 Contact，HTTP 前恢复 False；结束清理其用户、会话、认证记录、Contact 和相关测试日志。不更改站点 CSRF／allow_tests 配置，不保存密码、SID、token 或原始页面。任何断言或清理失败均返回非零；并发保护检查失败也不能作为“已观察”成功退出。
+
+本次最终两个脚本验证通过：普通与边界共 10 次 WSGI 请求／33 项检查；6 个并发场景均满足机制和安全检查，7 个 fixture 的 Contact 均同步创建且清理后为零，精确测试作业残留为零。只读 EXPLAIN 确认 SID 核验查询使用现有 `sid` 索引，不是性能压测。证据归档于本次 `demo-session-http-20261010/repo-ready/run-7daf6e6ae1/`；这些隔离结果与 demo 发布、角色登录及实际业务验收分别记录，不能相互替代。
+
 ## ERPNext 批次补货补丁（2026-09-15）
 
 `erpnext-patches.json` 固定 ERPNext v16.33.0 的 `erpnext/stock/reorder_item.py` 原始和修改后 SHA-256。`apply_erpnext_patches.py` 采用相同的拒绝未知源码、只读检查和重复应用校验。镜像同时保存此清单及其校验值。补丁只将不可用实物批次从补货预期库存中剔除，不改写库存余额、不重复扣除预留，也不改变普通物料规则。升级 ERPNext 时必须重新审查和回归。
+
+## ERPNext 分批工序原生修复（2026-10-10）
+
+同一清单现固定三个源码文件。为保持构建入口兼容，补丁文件保留原文件名；其中追加两项已合并的官方 v16 修复，未升级 ERPNext 依赖或改变其他原生流程：
+
+- [PR #58467](https://github.com/frappe/erpnext/pull/58467)：计算已安排的工卡数量时扣除明确留给后续工卡的 pending_qty，支持原卡 5 件完成 2 件后再建 3 件的工卡。
+- [PR #59945](https://github.com/frappe/erpnext/pull/59945)：按工卡完整 for_quantity 分摊原料。原卡 5 件完成 2 件、剩余 3 件时，制造 2 件只扣 2 件用料，剩余用料留给后续工卡。
+
+生产函数与对应上游补丁一致；清单记录原始及修改后的 SHA-256。旧镜像已有批次补货补丁，因此属于部分应用状态，不能直接运行完整安装器。完整镜像从固定上游重建；demo 派生镜像只能在核对基准镜像、旧清单和全部文件后，明确替换已核验文件，并更新镜像内清单及其 release.env 指纹。不能通过跳过部分应用检查更新站点。
+
+`test_erpnext_patch_application.py` 验证只读预检、完整应用、幂等校验、未知源码和部分应用拒绝。原生生命周期与库存回归分别位于 `erpnext/tests/test_pending_qty_regression.py` 和 `erpnext/tests/test_pending_material_share_regression.py`，应在隔离测试站点执行；源码及测试通过不等于 demo 已部署或工厂已验收。

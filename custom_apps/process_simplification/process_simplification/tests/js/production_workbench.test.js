@@ -1383,3 +1383,347 @@ test("clear filters restores all demands and resets focus and pagination", () =>
 	assert.equal(state.expandedDemands.size, 0);
 	assert.deepEqual(productionWorkbench.filterProductionDemands(fixture, state.filters), fixture);
 });
+
+
+test("reservation handoff stays visible without an executable supervisor shortcut", () => {
+	const handoff = { label: "待库房预留完工成品", reason: "请库房人员在订单工作台处理 <来源订单>。" };
+	const reserve = { action: "reserve_completed_stock", label: handoff.label, enabled: false, reason: handoff.reason };
+	const row = demand("HANDOFF-PERM", {
+		sales_order: 'SO-"<other>', status_code: "awaiting_order_reservation", status_label: handoff.label,
+		production_required_qty: 0, unplanned_production_qty: 0, completed_unreserved_qty: 30,
+		work_orders: [{ name: "WO-DONE", status: "Completed", docstatus: 1 }],
+		next_actions: [reserve, { action: "view_sales_order", label: "查看销售订单", enabled: true }],
+		reservation_handoff: handoff,
+	});
+	const options = { ...helpers, canManageAssignments: true, canArrange: true, canIssue: true };
+	const html = productionWorkbench.productionDemandHtml(row, options);
+	assert.match(html, /data-action="reserve_completed_stock"[^>]*disabled/);
+	assert.match(html, /production-demand-next-action[^]*?<strong>待库房预留完工成品<\/strong>/);
+	assert.match(html, /production-reservation-handoff/);
+	assert.match(html, /href="\/desk\/order-workbench\/SO-%22%3Cother%3E"/);
+	assert.match(html, /&lt;来源订单&gt;/);
+	assert.doesNotMatch(html, /<other>|<来源订单>/);
+	assert.equal(productionWorkbench.productionOrderShortcutsHtml(row, options, null, reserve), "");
+});
+
+test("authorized reservation keeps its normal production shortcut and label", () => {
+	const action = { action: "reserve_completed_stock", label: "预留完工成品", enabled: true };
+	const row = demand("CAN-RESERVE", { work_orders: [], next_actions: [action] });
+	const html = productionWorkbench.productionDemandHtml(row, { ...helpers, canManageAssignments: true, canArrange: true });
+	assert.match(html, /btn-primary production-action[^>]*data-action="reserve_completed_stock"/);
+	assert.match(html, />预留完工成品<\/button>/);
+	assert.doesNotMatch(html, /production-reservation-handoff|待库房/);
+});
+
+
+test("partial receipt confirmation and action retain the currently completed quantity", () => {
+	const wo = { name: "WO-PARTIAL", status: "In Process",
+		receipt_state: { code: "requestable", remaining_qty: 2 } };
+	const action = productionWorkbench.workOrderNextActionMeta(wo, helpers.translate);
+	assert.equal(action.qty, 2);
+	assert.match(productionWorkbench.workOrderActionConfirmation("request_manufacture", wo, helpers.translate),
+		/本批完工数量（含损耗）：2/);
+	assert.match(productionWorkbench.workOrderActionConfirmation("request_manufacture",
+		{ ...wo, requested_receipt_qty: 1 }, helpers.translate), /本批完工数量（含损耗）：1/);
+	assert.match(productionWorkbench.workOrderActionConfirmation("request_manufacture", wo, helpers.translate),
+		/成品数量会扣除本批损耗/);
+});
+
+function planningPageHarness(row, respond) {
+	const handlers = new Map();
+	const calls = [], dialogs = [], messages = [], confirmations = [], alerts = [], refreshes = [];
+	const node = {};
+	for (const method of ["addClass", "html", "find", "before", "prop", "toggleClass", "text", "each"]) {
+		node[method] = () => node;
+	}
+	node.on = (event, selector, handler) => { handlers.set(`${event}:${selector}`, handler); return node; };
+	const page = { main: node, add_inner_button() {} };
+	class Dialog {
+		constructor(options) { this.options = options; this.visible = false; this.disabled = false; dialogs.push(this); }
+		show() { this.visible = true; }
+		hide() { this.visible = false; }
+		get_primary_btn() { return { prop: (key, value) => { if (key === "disabled") this.disabled = value; } }; }
+	}
+	const ui = {
+		pages: { "production-workbench": {} }, ui: { Dialog, make_app_page: () => page },
+		session: { user: "supervisor@example.test" }, user: { has_role: () => false }, boot: {},
+		model: { can_read: () => true },
+		utils: { escape_html: escapeHtml },
+		msgprint: (message) => messages.push(message),
+		confirm: (message, confirm) => confirmations.push({ message, confirm }),
+		show_alert: (alert) => alerts.push(alert),
+		ps_read_page: (_page, options) => refreshes.push(options),
+		call(options) {
+			calls.push({ ...options, args: { ...options.args } });
+			return respond ? respond(options) : Promise.resolve({ message: {
+				production_plan: "PP-NEW", work_orders: ["WO-NEW"], sub_assembly_count: 0,
+			} });
+		},
+	};
+	const sourcePath = require.resolve("../../process_simplification/page/production_workbench/production_workbench.js");
+	const sandbox = {
+		module: { exports: {} }, require: require("node:module").createRequire(sourcePath), frappe: ui,
+		window: { process_simplification: {}, matchMedia: () => ({ matches: false }) },
+		$: (element) => typeof element?.data === "function" ? element : node,
+		__: (text, values = []) => text.replace(/\{(\d+)\}/g, (_match, index) => values[index]),
+		flt: (value) => Number(value || 0), format_number: String,
+	};
+	require("node:vm").runInNewContext(require("node:fs").readFileSync(sourcePath, "utf8"), sandbox);
+	ui.pages["production-workbench"].on_page_load({});
+	page.production_workbench.state.data.demands = [row];
+	return { calls, dialogs, messages, confirmations, alerts, refreshes, page,
+		click(action = "create_work_order") {
+			return handlers.get("click:.production-action")({ currentTarget: {
+				data: (key) => ({ action, "sales-order": row.sales_order, row: row.sales_order_item })[key],
+			} });
+		},
+	};
+}
+
+test("planning dialog defaults to unplanned stock quantity and preserves the product identity", () => {
+	const harness = planningPageHarness(demand("QTY", { item_name: "产品 <script>" }));
+	harness.click();
+	const dialog = harness.dialogs[0];
+	const field = dialog.options.fields.find((field) => field.fieldname === "qty");
+	assert.equal(field.default, 10); // Not the order's100 or production-required50.
+	assert.equal(field.label, "本次计划数量");
+	assert.match(field.description, /产品库存单位.*未安排 10.*可减量/);
+	assert.match(dialog.options.fields[0].options, /产品 &lt;script&gt;/);
+	assert.doesNotMatch(dialog.options.fields[0].options, /<script>/);
+	assert.equal(dialog.visible, true);
+	assert.equal(harness.calls.length, 0);
+	dialog.hide(); // Dismissal is not a request to plan the default quantity.
+	assert.equal(harness.calls.length, 0);
+});
+
+test("planning sends the exact selected quantity and refreshes after success", async () => {
+	for (const requested of [1, "0.125", 2]) {
+		const row = demand("QTY-SUBMIT", { unplanned_production_qty: 2 });
+		const harness = planningPageHarness(row);
+		harness.click();
+		await harness.dialogs[0].options.primary_action({ qty: requested });
+		assert.equal(harness.calls.length, 1);
+		assert.equal(harness.calls[0].method, "process_simplification.api.actions.create_work_order");
+		assert.equal(harness.calls[0].type, "POST");
+		assert.equal(harness.calls[0].freeze, true);
+		assert.deepEqual(harness.calls[0].args, {
+			sales_order: row.sales_order, sales_order_item: row.sales_order_item, qty: Number(requested),
+		});
+		assert.equal(harness.alerts.length, 1);
+		assert.equal(harness.refreshes.length, 1);
+		assert.equal(harness.refreshes[0].method, "process_simplification.page_refresh.production_overview");
+	}
+});
+
+test("a refreshed remaining quantity becomes the next planning default", async () => {
+	const row = demand("REMAIN", { unplanned_production_qty: 2 });
+	const harness = planningPageHarness(row);
+	harness.click();
+	await harness.dialogs[0].options.primary_action({ qty: 1 });
+	harness.page.production_workbench.state.data.demands = [{ ...row, unplanned_production_qty: 1 }];
+	harness.click();
+	assert.equal(harness.dialogs[1].options.fields.find((field) => field.fieldname === "qty").default, 1);
+	assert.equal(harness.calls.length, 1); // Opening the next dialog does not repeat the first request.
+});
+
+test("planning only falls back to the legacy quantity when the current field is absent", () => {
+	for (const value of [0, -1, NaN, Infinity, "invalid"]) {
+		const harness = planningPageHarness(demand("NO-REMAIN", { unplanned_production_qty: value, uncovered_qty: 2 }));
+		harness.click();
+		assert.equal(harness.dialogs.length, 0);
+		assert.equal(harness.calls.length, 0);
+		assert.match(harness.messages[0], /请刷新/);
+	}
+	const legacy = planningPageHarness(demand("LEGACY-QTY", { unplanned_production_qty: undefined, uncovered_qty: 2 }));
+	legacy.click();
+	assert.equal(legacy.dialogs[0].options.fields.find((field) => field.fieldname === "qty").default, 2);
+	const missing = planningPageHarness(demand("NO-QTY", { unplanned_production_qty: undefined }));
+	missing.click();
+	assert.equal(missing.dialogs.length, 0);
+	assert.equal(missing.calls.length, 0);
+});
+
+test("invalid plan quantities never request creation and keep the dialog editable", async () => {
+	const harness = planningPageHarness(demand("INVALID-QTY", { unplanned_production_qty: 2 }));
+	harness.click();
+	const dialog = harness.dialogs[0];
+	for (const qty of [undefined, null, "", " ", "invalid", NaN, Infinity, -Infinity, 0, -1, 2.01]) {
+		dialog.options.primary_action({ qty });
+		assert.equal(harness.calls.length, 0);
+		assert.equal(dialog.visible, true);
+		assert.equal(dialog.disabled, false);
+	}
+	assert.equal(harness.messages.length, 11);
+	await dialog.options.primary_action({ qty: 1 });
+	assert.equal(harness.calls.length, 1);
+});
+
+test("a planning submission is latched before the asynchronous API resolves", async () => {
+	let resolve;
+	const harness = planningPageHarness(demand("DOUBLE", { unplanned_production_qty: 2 }),
+		() => new Promise((done) => { resolve = done; }));
+	harness.click();
+	const dialog = harness.dialogs[0];
+	const pending = dialog.options.primary_action({ qty: 1 });
+	dialog.options.primary_action({ qty: 1 });
+	assert.equal(harness.calls.length, 1);
+	assert.equal(dialog.disabled, true);
+	assert.equal(dialog.visible, false);
+	assert.equal(harness.refreshes.length, 0);
+	resolve({ message: { work_orders: ["WO-ONE"], production_plan: "PP-ONE" } });
+	await pending;
+	assert.equal(harness.refreshes.length, 1);
+});
+
+test("server rejection or unknown result refreshes for verification without retrying creation", async () => {
+	for (const message of ["Remaining quantity changed", "Transport result unknown"]) {
+		const harness = planningPageHarness(demand("REJECT", { unplanned_production_qty: 2 }),
+			() => Promise.reject(new Error(message)));
+		harness.click();
+		const dialog = harness.dialogs[0];
+		await dialog.options.primary_action({ qty: 2 });
+		dialog.options.primary_action({ qty: 1 });
+		assert.equal(harness.calls.length, 1);
+		assert.equal(harness.calls[0].args.qty, 2);
+		assert.equal(harness.alerts.length, 0);
+		assert.equal(harness.refreshes.length, 1);
+		assert.equal(harness.refreshes[0].method, "process_simplification.page_refresh.production_overview");
+		assert.match(harness.messages[0].message, /未能确认.*先核对.*勿重复创建/);
+		assert.equal(harness.messages[0].indicator, "orange");
+		assert.equal(harness.calls[0].error, undefined); // Frappe retains its native server-error display.
+		assert.equal(dialog.disabled, true);
+	}
+});
+
+test("completed-stock reservation keeps its confirmation and does not receive a planning quantity", async () => {
+	const row = demand("RESERVE", { unplanned_production_qty: 0 });
+	const harness = planningPageHarness(row);
+	harness.click("reserve_completed_stock");
+	assert.equal(harness.dialogs.length, 0);
+	assert.equal(harness.calls.length, 0);
+	assert.match(harness.confirmations[0].message, /确认将当前可用完工成品预留/);
+	await harness.confirmations[0].confirm();
+	assert.equal(harness.calls[0].method, "process_simplification.api.actions.reserve_completed_stock");
+	assert.deepEqual(harness.calls[0].args, { sales_order: row.sales_order, sales_order_item: row.sales_order_item });
+	assert.equal(harness.refreshes.length, 1);
+});
+
+function returnedProductionHarness(sources, respond) {
+	return planningPageHarness(demand("RETURN", { unplanned_production_qty: 2,
+		work_orders: [{ name: "WO-ORIGINAL", status: "Completed", produced_qty: 2 }] }),
+		(options) => options.type === "GET"
+			? Promise.resolve({ message: { options: sources } })
+			: respond ? respond(options) : Promise.resolve({ message: { production_plan: "PP-REPLACEMENT", work_orders: ["WO-REPLACEMENT"] } }));
+}
+
+test("return replacement requires an explicit source step before any creation", async () => {
+	const source = { return_item: "DNI-RETURN", return_delivery: "DN-RETURN", return_row: 3,
+		remaining_qty: 1, warehouse: "隔离仓", posting_date: "2026-10-10" };
+	const harness = returnedProductionHarness([source]);
+	harness.click();
+	const normal = harness.dialogs[0];
+	assert.equal(normal.options.secondary_action_label, "按退货补产");
+	assert.equal(harness.calls.length, 0);
+	await normal.options.secondary_action();
+	assert.equal(harness.calls.length, 1);
+	assert.equal(harness.calls[0].type, "GET");
+	assert.equal(harness.calls[0].method, "process_simplification.production_workflow.customer_returns.get_replacement_options");
+	assert.deepEqual(harness.calls[0].args, { sales_order: "SO-RETURN", sales_order_item: "RETURN" });
+	const replacement = harness.dialogs[1];
+	const fields = replacement.options.fields;
+	assert.equal(fields.find((f) => f.fieldname === "return_item").default, "DNI-RETURN");
+	assert.match(fields.find((f) => f.fieldname === "return_item").options[1].label, /DN-RETURN.*第 3 行.*隔离仓.*可补产 1/);
+	assert.equal(fields.find((f) => f.fieldname === "qty").default, 1);
+	assert.equal(normal.visible, false);
+	assert.equal(replacement.visible, true);
+	normal.options.primary_action({ qty: 2 }); // The abandoned normal path cannot create a second plan.
+	assert.equal(harness.calls.length, 1);
+	await replacement.options.primary_action({ return_item: "DNI-RETURN", qty: "0.5" });
+	assert.equal(harness.calls.length, 2);
+	assert.equal(harness.calls[1].type, "POST");
+	assert.deepEqual(harness.calls[1].args, { sales_order: "SO-RETURN", sales_order_item: "RETURN",
+		qty: 0.5, return_delivery_note_item: "DNI-RETURN" });
+	assert.equal(harness.refreshes.length, 1);
+});
+
+test("multiple return sources require selection and enforce both quantity limits", async () => {
+	const harness = returnedProductionHarness([
+		{ return_item: "SMALL", return_delivery: "DN-1", remaining_qty: 1 },
+		{ return_item: "LARGE", return_delivery: "DN-2", remaining_qty: 4 },
+		{ return_item: "USED", remaining_qty: 0 },
+	]);
+	harness.click();
+	await harness.dialogs[0].options.secondary_action();
+	const dialog = harness.dialogs[1];
+	const field = dialog.options.fields.find((f) => f.fieldname === "return_item");
+	assert.equal(field.default, "");
+	assert.equal(field.options.length, 3);
+	for (const values of [
+		{ return_item: "", qty: 1 }, { return_item: "FORGED", qty: 1 },
+		{ return_item: "USED", qty: 1 }, { return_item: "SMALL", qty: 1.01 },
+		{ return_item: "LARGE", qty: 2.01 }, { return_item: "LARGE", qty: Infinity },
+		{ return_item: "LARGE", qty: 0 }, { return_item: "LARGE", qty: -1 },
+	]) dialog.options.primary_action(values);
+	assert.equal(harness.calls.length, 1);
+	assert.equal(dialog.visible, true);
+	assert.equal(dialog.disabled, false);
+	await dialog.options.primary_action({ return_item: "LARGE", qty: 2 });
+	assert.equal(harness.calls.length, 2);
+	assert.equal(harness.calls[1].args.qty, 2);
+});
+
+test("return source loading cannot race a normal creation or a second lookup", async () => {
+	let resolve;
+	const harness = planningPageHarness(demand("LOADING", { work_orders: [{ status: "Completed" }] }),
+		() => new Promise((done) => { resolve = done; }));
+	harness.click();
+	const normal = harness.dialogs[0];
+	const pending = normal.options.secondary_action();
+	normal.options.secondary_action();
+	normal.options.primary_action({ qty: 1 });
+	assert.equal(harness.calls.length, 1);
+	resolve({ message: { options: [] } });
+	await pending;
+	assert.equal(normal.visible, true);
+	assert.equal(harness.dialogs.length, 1);
+	assert.match(harness.messages[0], /没有尚可补产/);
+});
+
+test("failed source reads keep the normal dialog without creating anything", async () => {
+	const harness = planningPageHarness(demand("READ-FAIL", { work_orders: [{ produced_qty: 1 }] }),
+		() => Promise.reject(new Error("read denied")));
+	harness.click();
+	await harness.dialogs[0].options.secondary_action();
+	assert.equal(harness.calls.length, 1);
+	assert.equal(harness.calls[0].type, "GET");
+	assert.equal(harness.dialogs.length, 1);
+	assert.equal(harness.dialogs[0].visible, true);
+	assert.match(harness.messages[0], /本次没有创建补产计划/);
+});
+
+test("replacement submission latches until success or unknown-result refresh", async () => {
+	let reject;
+	const harness = returnedProductionHarness([{ return_item: "DNI-RETURN", remaining_qty: 1 }],
+		() => new Promise((_resolve, fail) => { reject = fail; }));
+	harness.click();
+	await harness.dialogs[0].options.secondary_action();
+	const dialog = harness.dialogs[1];
+	const values = { return_item: "DNI-RETURN", qty: 1 };
+	const pending = dialog.options.primary_action(values);
+	dialog.options.primary_action(values);
+	assert.equal(harness.calls.length, 2);
+	assert.equal(dialog.disabled, true);
+	reject(new Error("transport result unknown"));
+	await pending;
+	dialog.options.primary_action(values);
+	assert.equal(harness.calls.length, 2);
+	assert.equal(harness.refreshes.length, 1);
+	assert.match(harness.messages[0].message, /请先核对.*勿重复创建/);
+});
+
+test("normal unproduced orders do not load return sources", () => {
+	const harness = planningPageHarness(demand("ORDINARY", { work_orders: [{ status: "Not Started", produced_qty: 0 }] }));
+	harness.click();
+	assert.equal(harness.dialogs[0].options.secondary_action, undefined);
+	assert.equal(harness.calls.length, 0);
+});

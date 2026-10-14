@@ -81,6 +81,7 @@ def ensure_production_workflow_fields():
 					"options": "Material Handling Request",
 					"read_only": 1,
 					"no_copy": 1,
+					"insert_after": "work_order",
 				},
 				{
 					"fieldname": "custom_return_source_warehouse",
@@ -112,7 +113,8 @@ def ensure_production_workflow_fields():
 				},
 				{
 					"fieldname": "custom_process_coverage_qty",
-					"label": "Process Requested Work Order Coverage Qty",
+					"label": "本次领料对应生产数量",
+					"depends_on": "eval:doc.custom_process_workflow_action == 'Material Issue Request'",
 					"fieldtype": "Float",
 					"precision": "6",
 					"read_only": 1,
@@ -121,6 +123,24 @@ def ensure_production_workflow_fields():
 				},
 			],
 			"Material Request": [
+				{
+					"fieldname": "custom_replacement_delivery_note",
+					"label": "补产来源客户退货单",
+					"fieldtype": "Link",
+					"options": "Delivery Note",
+					"read_only": 1,
+					"no_copy": 1,
+					"insert_after": "material_request_type",
+				},
+				{
+					"fieldname": "custom_replacement_delivery_note_item",
+					"label": "补产来源客户退货明细",
+					"fieldtype": "Data",
+					"read_only": 1,
+					"no_copy": 1,
+					"search_index": 1,
+					"insert_after": "custom_replacement_delivery_note",
+				},
 				{
 					"fieldname": "custom_replenishes_work_order",
 					"label": "Replenishes Work Order",

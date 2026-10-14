@@ -111,6 +111,7 @@ class TestRequestTransaction(TestCase):
 		with (
 			patch.object(frappe, "has_permission", return_value=True),
 			patch.object(frappe, "get_doc", return_value=SimpleNamespace(company="Factory")),
+			patch.object(frappe, "get_all", return_value=[]),
 			patch.object(actions, "_row_from_workbench", side_effect=[
 				frappe._dict(completed_unreserved_qty=5), frappe._dict(completed_unreserved_qty=2)
 			]) as rows,

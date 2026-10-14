@@ -17,7 +17,8 @@ from process_simplification.production_reporting.domain import (
 RELEASE = "Release"
 REDISPATCH = "Redispatch"
 RELEASE_REVERSAL = "Release Reversal"
-MOVEMENT_TYPES = {RELEASE, REDISPATCH, RELEASE_REVERSAL}
+CONTINUATION = "Continuation"
+MOVEMENT_TYPES = {RELEASE, REDISPATCH, RELEASE_REVERSAL, CONTINUATION}
 
 
 def _hash_key(*values) -> str:
@@ -54,6 +55,9 @@ def validate_movement_document(doc):
 	elif doc.movement_type == RELEASE_REVERSAL:
 		if doc.target_assignment or not doc.source_movement or not doc.reference_name:
 			frappe.throw(_("释放冲销必须关联原释放记录和取消的库存单。"))
+	elif doc.movement_type == CONTINUATION:
+		if not doc.target_assignment or not doc.request_key or doc.source_movement:
+			frappe.throw(_("剩余任务承接必须关联目标派工和请求编号。"))
 	elif not (doc.target_assignment and doc.source_movement and doc.request_key):
 		frappe.throw(_("A redispatch movement requires its target, source release, and request id."))
 	source = frappe.db.get_value(
@@ -67,6 +71,10 @@ def validate_movement_document(doc):
 		for fieldname in ("job_card", "work_order", "company", "operation", "operation_id")
 	):
 		frappe.throw(_("Assignment movement source does not match its Job Card facts."))
+	if doc.movement_type == CONTINUATION:
+		from process_simplification.production_reporting.continuation import validate_continuation_movement
+
+		validate_continuation_movement(doc)
 	if doc.movement_type == REDISPATCH:
 		target = frappe.db.get_value(
 			"Job Card Worker Assignment",
@@ -184,7 +192,7 @@ def movement_totals(
 ) -> dict[str, frappe._dict]:
 	names = [name for name in assignments if name]
 	totals = {
-		name: frappe._dict(released_qty=0.0, redispatched_qty=0.0)
+		name: frappe._dict(released_qty=0.0, redispatched_qty=0.0, continued_qty=0.0)
 		for name in names
 	}
 	if not names:
@@ -197,6 +205,10 @@ def movement_totals(
 			totals[row.target_assignment].redispatched_qty += flt(row.qty)
 		elif row.movement_type == RELEASE_REVERSAL and row.source_assignment in totals:
 			totals[row.source_assignment].released_qty -= flt(row.qty)
+		elif row.movement_type == CONTINUATION and row.source_assignment in totals:
+			# The target's ordinary assigned_qty already contains the carried balance.
+			# Counting it again as inbound redispatch would double its entitlement.
+			totals[row.source_assignment].continued_qty += flt(row.qty)
 	return totals
 
 
@@ -212,6 +224,7 @@ def assignment_effective_qty(assignment, *, totals=None, for_update: bool = Fals
 		max(
 			flt(assignment.get("assigned_qty"), precision)
 			- flt(row.get("released_qty"), precision)
+			- flt(row.get("continued_qty"), precision)
 			+ flt(row.get("redispatched_qty"), precision),
 			0,
 		),
@@ -225,7 +238,7 @@ def assignment_material_allocation_qty(
 	totals=None,
 	for_update: bool = False,
 ) -> float:
-	"""Material ownership grows with inbound redispatch but never with replenishment."""
+	"""Carry material responsibility with unfinished work; replenishment adds none."""
 	precision = job_card_qty_precision()
 	name = assignment.get("name")
 	row = (
@@ -236,7 +249,8 @@ def assignment_material_allocation_qty(
 	return flt(
 		max(
 			flt(assignment.get("assigned_qty"), precision)
-			+ flt(row.get("redispatched_qty"), precision),
+			+ flt(row.get("redispatched_qty"), precision)
+			- flt(row.get("continued_qty"), precision),
 			0,
 		),
 		precision,

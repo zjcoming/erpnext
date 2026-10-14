@@ -164,12 +164,13 @@ def reserve_stock(sales_order: str, sales_order_item: str, qty: float | None = N
 
 @frappe.whitelist(methods=["POST"])
 @retry_request_transaction
-def create_work_order(sales_order: str, sales_order_item: str, qty: float | None = None):
+def create_work_order(sales_order: str, sales_order_item: str, qty: float | None = None,
+	return_delivery_note_item: str | None = None):
 	# The finished-stock commitment and all generated production documents are
 	# one atomic action, also when called outside Frappe's HTTP rollback wrapper.
 	frappe.db.savepoint("guided_order_plan")
 	try:
-		return _create_work_order(sales_order, sales_order_item, qty)
+		return _create_work_order(sales_order, sales_order_item, qty, return_delivery_note_item)
 	except frappe.QueryDeadlockError:
 		# InnoDB has already rolled back the transaction, including savepoints.
 		raise
@@ -178,7 +179,8 @@ def create_work_order(sales_order: str, sales_order_item: str, qty: float | None
 		raise
 
 
-def _create_work_order(sales_order: str, sales_order_item: str, qty: float | None = None):
+def _create_work_order(sales_order: str, sales_order_item: str, qty: float | None = None,
+	return_delivery_note_item: str | None = None):
 	for doctype in ("Production Plan", "Work Order"):
 		for permission_type in ("create", "submit"):
 			frappe.has_permission(doctype, permission_type, throw=True)
@@ -193,6 +195,14 @@ def _create_work_order(sales_order: str, sales_order_item: str, qty: float | Non
 		unplanned_qty = row.get("uncovered_qty")
 	if not unplanned_qty or unplanned_qty <= 0:
 		throw_chinese("该订单行已经被库存预留或生产任务覆盖，不能重复创建生产任务。")
+	return_source = None
+	current_coverage = None
+	if return_delivery_note_item:
+		from process_simplification.production_workflow.customer_returns import (
+			get_return_source, lock_current_order_coverage,
+		)
+		return_source = get_return_source(return_delivery_note_item, sales_order, sales_order_item, lock=True)
+		current_coverage = lock_current_order_coverage(sales_order, sales_order_item, return_source.item_code)
 	row = _locked_row_from_workbench(sales_order, sales_order_item)
 	unplanned_qty = row.get("unplanned_production_qty")
 	_ensure_usable_reservations(row)
@@ -214,6 +224,11 @@ def _create_work_order(sales_order: str, sales_order_item: str, qty: float | Non
 	if allocated_row:
 		_ensure_usable_reservations(allocated_row)
 	unplanned_qty = flt(allocated_row.get("unplanned_production_qty")) if allocated_row else 0
+	if current_coverage is not None:
+		from process_simplification.production_workflow.customer_returns import lock_current_reserved_qty
+		current_reserved = lock_current_reserved_qty(sales_order, sales_order_item)
+		unplanned_qty = min(unplanned_qty, max(current_coverage - current_reserved
+			- flt(allocated_row.get("available_to_reserve")), 0))
 	if unplanned_qty <= 0:
 		throw_chinese("库存分配已变化，该订单行已无需新增生产任务，请刷新。")
 
@@ -259,6 +274,11 @@ def _create_work_order(sales_order: str, sales_order_item: str, qty: float | Non
 	# Create the finished-good Work Order plus one Work Order per in-house
 	# sub-assembly level via the standard Production Plan engine, while the
 	# delivery-priority net quantity above stays authoritative.
+	replacement_args = {}
+	if return_source:
+		from process_simplification.production_workflow.customer_returns import create_replacement_request
+		replacement_args["material_request"] = create_replacement_request(return_source, qty=work_order_qty,
+			bom_no=bom_no, fg_warehouse=fg_warehouse, delivery_date=item.delivery_date)
 	result = create_work_orders_via_production_plan(
 		sales_order=sales_order,
 		sales_order_item=sales_order_item,
@@ -270,6 +290,7 @@ def _create_work_order(sales_order: str, sales_order_item: str, qty: float | Non
 		sub_assembly_warehouse=resolved_semi.warehouse,
 		source_warehouse=resolved_source.warehouse,
 		delivery_date=item.delivery_date,
+		**replacement_args,
 	)
 	work_orders = result.get("work_orders") or []
 	return {
@@ -280,6 +301,8 @@ def _create_work_order(sales_order: str, sales_order_item: str, qty: float | Non
 		"qty": work_order_qty,
 		"reserved_finished_qty": stock_qty,
 		"stock_reservation_entry": stock_reservation.name if stock_reservation else None,
+		**({"material_request": replacement_args["material_request"].name,
+			"return_delivery_note_item": return_source.return_item} if return_source else {}),
 	}
 
 
@@ -339,7 +362,23 @@ def _reserve_completed_stock(sales_order: str, sales_order_item: str, qty: float
 		if not finished_row.t_warehouse:
 			continue
 		available_qty = get_available_qty_to_reserve(item.item_code, finished_row.t_warehouse)
-		line_qty = min(qty_to_reserve, normalize_qty(finished_row.transfer_qty), available_qty)
+		source_qty = normalize_qty(finished_row.transfer_qty)
+		if not batch_managed:
+			claims = frappe.get_all(
+				"Stock Reservation Entry",
+				filters={
+					"docstatus": 1,
+					"from_voucher_type": "Stock Entry",
+					"from_voucher_no": finished_row.parent,
+					"from_voucher_detail_no": finished_row.name,
+					"item_code": item.item_code,
+				},
+				fields=["reserved_qty"],
+				limit=0,
+			)
+			# Delivered stock still claims its receipt source; only cancellation releases it.
+			source_qty = remaining_qty(source_qty, sum(flt(claim.reserved_qty) for claim in claims))
+		line_qty = min(qty_to_reserve, source_qty, available_qty)
 		batch_entries = None
 		if batch_managed and line_qty > 0:
 			# Serialize before rereading source/batch availability, including

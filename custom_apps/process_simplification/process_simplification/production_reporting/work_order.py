@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import frappe
 from frappe import _
-from frappe.utils import cint
+from frappe.utils import cint, flt
 
 
 def managed_draft_job_cards(work_order: str, *, for_update: bool = True) -> list[str]:
@@ -43,6 +45,115 @@ def assert_no_managed_draft_job_cards(work_order: str):
 		)
 
 
+_CLOSE_CONTINUATION_FLAG = "worker_reporting_unstarted_continuation_close"
+
+
+@contextmanager
+def _allow_unstarted_continuation_close(work_order: str, company: str):
+	"""Used only after the close RPC has authorized and locked JC -> WO."""
+	previous = getattr(frappe.flags, _CLOSE_CONTINUATION_FLAG, None)
+	scope = frappe._dict(work_order=work_order, company=company,
+		user=frappe.session.user, assignment_names=[])
+	setattr(frappe.flags, _CLOSE_CONTINUATION_FLAG, scope)
+	try:
+		yield scope
+	finally:
+		if previous is None:
+			frappe.flags.pop(_CLOSE_CONTINUATION_FLAG, None)
+		else:
+			setattr(frappe.flags, _CLOSE_CONTINUATION_FLAG, previous)
+
+
+def _continuation_close_scope(work_order: str):
+	scope = getattr(frappe.flags, _CLOSE_CONTINUATION_FLAG, None)
+	if scope is None:
+		return None
+	stored = frappe.db.get_value("Work Order", work_order,
+		["company", "docstatus"], as_dict=True, for_update=True)
+	if (scope.work_order != work_order or scope.user != frappe.session.user
+		or not stored or stored.company != scope.company or cint(stored.docstatus) != 1):
+		frappe.throw(_("只能在已授权的工单关闭操作中处理该工单的未开工续产任务。"), frappe.PermissionError)
+	return scope
+
+
+def assert_work_order_close_allowed(work_order: str) -> list[str]:
+	"""Only explicit close may retain untouched continuation cards as history."""
+	scope = _continuation_close_scope(work_order)
+	if scope is None:
+		assert_no_managed_draft_job_cards(work_order)
+		return []
+	from process_simplification.production_reporting import assignment_movement as movements
+	from process_simplification.production_reporting.domain import job_card_qty_precision
+
+	precision = job_card_qty_precision()
+	retiring = []
+	for name in managed_draft_job_cards(work_order, for_update=True):
+		card = frappe.db.get_value("Job Card", name, ["name", "work_order", "company",
+			"operation", "operation_id", "docstatus", "for_quantity", "total_completed_qty",
+			"process_loss_qty", "pending_qty", "actual_start_date", "actual_end_date"],
+			as_dict=True, for_update=True)
+		assignments = frappe.db.sql("""select name, job_card, work_order, company, operation,
+			operation_id, assigned_qty, status from `tabJob Card Worker Assignment`
+			where job_card=%s order by name for update""", (name,), as_dict=True)
+		names = [row.name for row in assignments]
+		rows = movements._movement_rows(assignments=names, for_update=True) if names else []
+		for row in rows:
+			# The movement helper returns linkage and quantity only; verify stored identity too.
+			stored = frappe.db.get_value("Job Card Assignment Movement", row.name,
+				["work_order", "company", "operation", "operation_id"], as_dict=True, for_update=True)
+			if not stored:
+				frappe.throw(_("续产分配记录已变化，本次工单不能关闭。"))
+			row.update(stored)
+		by_name = {row.name: row for row in assignments}
+		identity = (work_order, scope.company, card.operation, card.operation_id)
+		untouched = (card.docstatus == 0 and card.work_order == work_order
+			and card.company == scope.company and flt(card.for_quantity, precision) > 0
+			and flt(card.pending_qty, precision) == flt(card.for_quantity, precision)
+			and not flt(card.total_completed_qty) and not flt(card.process_loss_qty)
+			and not card.actual_start_date and not card.actual_end_date
+			and not frappe.db.get_value("Job Card Work Report", {"job_card": name}, "name", for_update=True)
+			and not frappe.db.get_value("Job Card Time Log", {"parent": name, "parenttype": "Job Card"}, "name", for_update=True)
+			and bool(names) and not frappe.db.get_value("Job Card Work Report", {"assignment": ["in", names]}, "name", for_update=True))
+		complete_continuation = (len(rows) == len(assignments) > 0
+			and {row.target_assignment for row in rows} == set(names)
+			and flt(sum(flt(row.assigned_qty) for row in assignments), precision) == flt(card.for_quantity, precision)
+			and all(row.status == "Active" and row.job_card == name
+				and (row.work_order, row.company, row.operation, row.operation_id) == identity for row in assignments)
+			and all(row.movement_type == movements.CONTINUATION and row.job_card != name
+				and (row.work_order, row.company, row.operation, row.operation_id) == identity
+				and row.reference_doctype == "Job Card" and row.reference_name == name
+				and flt(row.qty, precision) == flt(by_name[row.target_assignment].assigned_qty, precision)
+				for row in rows))
+		if not untouched or not complete_continuation:
+			frappe.throw(_("工单仍有已开工、报工或非完整分批承接的草稿任务，不能永久关闭：{0}").format(name))
+		retiring.extend(names)
+	scope.assignment_names = retiring
+	return retiring
+
+
+def cancel_unstarted_continuation_assignments(work_order: str, names: list[str]):
+	"""Retire only validated targets; keep every quantity and history link."""
+	scope = _continuation_close_scope(work_order)
+	if (scope is None or list(names) != scope.assignment_names
+		or frappe.db.get_value("Work Order", work_order, "status", for_update=True) != "Closed"):
+		frappe.throw(_("未开工续产任务只能随已授权工单的永久关闭一同退场。"), frappe.PermissionError)
+	for name in names:
+		doc = frappe.get_doc("Job Card Worker Assignment", name, for_update=True)
+		if doc.work_order != work_order or doc.company != scope.company or doc.status != "Active":
+			frappe.throw(_("续产分配状态已变化，本次工单关闭已回滚。"))
+		had_action = "worker_reporting_action" in doc.flags
+		previous = doc.flags.get("worker_reporting_action")
+		try:
+			doc.flags.worker_reporting_action = True
+			doc.status = "Cancelled"
+			doc.save(ignore_permissions=True)
+		finally:
+			if had_action:
+				doc.flags.worker_reporting_action = previous
+			else:
+				doc.flags.pop("worker_reporting_action", None)
+
+
 def assert_no_worker_reporting_history(work_order: str):
 	"""Read only the Work Order row; safe after Frappe has locked that row."""
 	if not frappe.db.has_column("Work Order", "custom_worker_reporting_enabled"):
@@ -65,6 +176,25 @@ def assert_no_worker_reporting_history(work_order: str):
 
 class WorkerReportingWorkOrderMixin:
 	"""Protect the native Work Order status service from stranding wage history."""
+
+	def get_status(self, status=None):
+		# Reservation callbacks must preserve a submitted Work Order's permanent closure.
+		if cint(self.docstatus) == 1 and (status or self.status) == "Closed":
+			return "Closed"
+		return super().get_status(status)
+
+	def create_job_card(self):
+		# Frappe checks the draft -> submitted transition and submit permission
+		# before on_submit calls this internal (non-whitelisted) native method.
+		if getattr(self, "_action", None) != "submit" or cint(self.docstatus) != 1 or not self.name:
+			return super().create_job_card()
+		# App managers also have a company read boundary, even when their scope
+		# comes from Employee rather than a native Company User Permission.
+		self.check_permission("read")
+		from process_simplification.api.production_plan_adapter import _allow_generated_job_cards_for
+
+		with _allow_generated_job_cards_for(self.name):
+			return super().create_job_card()
 
 	def save(self, *args, **kwargs):
 		# Job Card submission loads a fresh Work Order and therefore cannot inherit
@@ -99,7 +229,7 @@ class WorkerReportingWorkOrderMixin:
 		# Explicit close reaches this method before the native status service writes
 		# Work Order. Acquire Job Card locks first to match approval's JC -> WO order.
 		if status == "Closed":
-			assert_no_managed_draft_job_cards(self.name)
+			assert_work_order_close_allowed(self.name)
 		return super().update_status(status)
 
 	def cancel(self):

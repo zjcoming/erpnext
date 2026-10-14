@@ -450,7 +450,42 @@ class TestWorkOrderExecutionFacts(UnitTestCase):
 
 		self.assertAlmostEqual(state["issue_state"]["net_transfer_coverage_fraction"], 0.5)
 		self.assertAlmostEqual(state["issue_state"]["additional_issueable_qty"], 5)
-		self.assertFalse(state["can_dispatch"])
+		self.assertTrue(state["can_dispatch"])
+
+	def test_uneven_issued_materials_only_need_the_limiting_component_replenished(self):
+		from process_simplification.api.production_readiness import derive_work_order_flow_state
+
+		for produced_qty in (0, 2):
+			with self.subTest(produced_qty=produced_qty):
+				state = derive_work_order_flow_state(frappe._dict(
+					name="WO-UNEVEN", status="In Process", qty=6, produced_qty=produced_qty,
+					required_items=[frappe._dict(
+						item_code=code, source_warehouse="Stores", original_required_qty=6,
+						net_transferred_qty=issued, available_qty=available,
+					) for code, issued, available in (("RM-A", 4, 0), ("RM-B", 2, 2))],
+				))
+				self.assertAlmostEqual(state["issue_state"]["net_transfer_coverage_fraction"], 2 / 6)
+				self.assertEqual(state["issue_state"]["code"], "partially_ready")
+				self.assertAlmostEqual(state["issue_state"]["issueable_fraction"], 0.5)
+				self.assertAlmostEqual(state["issue_state"]["additional_issueable_qty"], 2)
+				self.assertTrue(state["can_request_issue"])
+
+	def test_uneven_coverage_respects_allocated_stock_and_calculation_blocks(self):
+		from process_simplification.api.production_readiness import derive_work_order_flow_state
+
+		for available_b, blocked_a in ((0, False), (2, True)):
+			with self.subTest(available_b=available_b, blocked_a=blocked_a):
+				state = derive_work_order_flow_state(frappe._dict(
+					status="In Process", qty=6, required_items=[
+						frappe._dict(item_code="RM-A", source_warehouse="Stores",
+							original_required_qty=6, net_transferred_qty=4,
+							available_qty=0, blocked=blocked_a),
+						frappe._dict(item_code="RM-B", source_warehouse="Stores",
+							original_required_qty=6, net_transferred_qty=2, available_qty=available_b),
+					],
+				))
+				self.assertEqual(state["issue_state"]["additional_issueable_qty"], 0)
+				self.assertFalse(state["can_request_issue"])
 
 	def test_operation_split_rows_count_aggregate_transfer_only_once(self):
 		from process_simplification.api.production_readiness import derive_work_order_flow_state
@@ -478,7 +513,7 @@ class TestWorkOrderExecutionFacts(UnitTestCase):
 		self.assertAlmostEqual(state["issue_state"]["net_transfer_coverage_fraction"], 0.6)
 		self.assertAlmostEqual(state["issue_state"]["issueable_fraction"], 1)
 		self.assertAlmostEqual(state["issue_state"]["additional_issueable_qty"], 4)
-		self.assertFalse(state["can_dispatch"])
+		self.assertTrue(state["can_dispatch"])
 
 	def test_operation_split_skip_transfer_rows_count_consumption_only_once(self):
 		from process_simplification.api.production_readiness import derive_work_order_flow_state
@@ -516,6 +551,7 @@ class TestWorkOrderExecutionFacts(UnitTestCase):
 		state = derive_work_order_flow_state(
 			frappe._dict(
 				name="WO-DONE",
+				operations=[frappe._dict(completed_qty=5), frappe._dict(completed_qty=5)],
 				status="In Process",
 				qty=5,
 				produced_qty=0,
@@ -548,6 +584,7 @@ class TestWorkOrderExecutionFacts(UnitTestCase):
 		state = derive_work_order_flow_state(
 			frappe._dict(
 				name="WO-RETURN-REISSUE",
+				operations=[frappe._dict(completed_qty=100)],
 				status="In Process",
 				qty=100,
 				produced_qty=40,
@@ -635,6 +672,67 @@ class TestWorkOrderReadiness(UnitTestCase):
 			active_bom_items=active_bom_items or set(),
 		)
 
+
+	def test_partial_dispatch_uses_only_posted_matched_component_facts(self):
+		from process_simplification.api.production_readiness import (
+			allocate_work_order_readiness,
+			attach_work_order_item_issue_warehouses,
+			attach_work_order_stock_facts,
+		)
+		from process_simplification.production_stock_facts import aggregate_work_order_stock_facts
+
+		cases = (
+			("partial_matched_batch", 12, 4, 0, 0, 1, 0.01, True),
+			("missing_required_component", 12, 0, 0, 0, 1, 0, False),
+			("all_material_returned", 12, 4, 12, 4, 1, 0, False),
+			("remaining_batch_after_return", 24, 8, 12, 4, 1, 0.01, True),
+			("unposted_issue", 12, 4, 0, 0, 0, 0, False),
+		)
+		for case, issued_a, issued_b, returned_a, returned_b, docstatus, coverage, allowed in cases:
+			with self.subTest(case=case):
+				work_orders = [frappe._dict(
+					name="WO-PARTIAL", production_item="FG", production_plan_item="PPI-1",
+					status="Not Started", qty=200, skip_transfer=0,
+					job_card_count=1, completed_job_card_count=0,
+					# These native aggregates may be stale; submitted movements win.
+					material_transferred_for_manufacturing=200,
+				)]
+				required_items = [frappe._dict(
+					name=f"WOI-{code}", parent="WO-PARTIAL", idx=index,
+					item_code=code, source_warehouse="Stores", required_qty=required,
+					transferred_qty=required, include_item_in_manufacturing=1,
+				) for index, (code, required) in enumerate((("RM-A", 1200), ("RM-B", 400)), start=1)]
+				movements = []
+				for code, issued, returned in (
+					("RM-A", issued_a, returned_a), ("RM-B", issued_b, returned_b),
+				):
+					movements.append(frappe._dict(
+						work_order="WO-PARTIAL", purpose="Material Transfer for Manufacture",
+						docstatus=docstatus, is_return=0, item_code=code,
+						s_warehouse="Stores", t_warehouse="WIP", transfer_qty=issued,
+					))
+					if returned:
+						movements.append(frappe._dict(
+							work_order="WO-PARTIAL", purpose="Material Transfer for Manufacture",
+							docstatus=1, is_return=1, item_code=code,
+							s_warehouse="WIP", t_warehouse="Stores", transfer_qty=returned,
+							custom_return_source_warehouse="Stores",
+						))
+				attach_work_order_item_issue_warehouses(work_orders, required_items)
+				attach_work_order_stock_facts(
+					work_orders, required_items, aggregate_work_order_stock_facts(movements),
+				)
+				graph = self._graph(
+					plan_name="PP-PARTIAL", planned_date="2026-08-20",
+					creation="2026-08-01 09:00:00", work_orders=work_orders,
+					required_items=required_items, active_bom_items={"FG"},
+				)
+				work_order = allocate_work_order_readiness([graph], {})[0].work_orders_by_name["WO-PARTIAL"]
+				self.assertAlmostEqual(work_order.issue_state.net_transfer_coverage_fraction, coverage)
+				self.assertEqual(work_order.can_dispatch, allowed)
+				self.assertEqual(work_order.qty, 200)
+				self.assertEqual(work_order.readiness_status, "purchase_shortage")
+
 	def test_operation_split_uses_submitted_group_fact_once_during_allocation(self):
 		from process_simplification.api.production_readiness import (
 			allocate_work_order_readiness,
@@ -689,7 +787,7 @@ class TestWorkOrderReadiness(UnitTestCase):
 		self.assertEqual(work_order.net_issued_qty, 6)
 		self.assertEqual(work_order.remaining_issue_qty, 4)
 		self.assertAlmostEqual(work_order.issue_state.net_transfer_coverage_fraction, 0.6)
-		self.assertFalse(work_order.can_dispatch)
+		self.assertTrue(work_order.can_dispatch)
 
 	def test_submitted_issue_for_one_source_does_not_cover_the_other_source(self):
 		from process_simplification.api.production_readiness import (
@@ -1693,7 +1791,7 @@ class TestWorkOrderReadiness(UnitTestCase):
 		self.assertEqual(work_order.readiness_status, "materials_transferred")
 		self.assertEqual(work_order.required_items[0].required_qty, 0)
 
-	def test_returned_material_is_removed_from_net_issue_and_must_be_issued_again(self):
+	def test_partial_return_reopens_issue_gap_and_keeps_remaining_batch_dispatchable(self):
 		from process_simplification.api.production_readiness import allocate_work_order_readiness
 
 		graph = self._graph(
@@ -1725,7 +1823,7 @@ class TestWorkOrderReadiness(UnitTestCase):
 		self.assertAlmostEqual(work_order.issue_state.net_transfer_coverage_fraction, 0.6)
 		self.assertAlmostEqual(work_order.issue_state.additional_issueable_qty, 2)
 		self.assertTrue(work_order.can_request_issue)
-		self.assertFalse(work_order.can_dispatch)
+		self.assertTrue(work_order.can_dispatch)
 
 
 class TestProductionReadinessLoading(UnitTestCase):

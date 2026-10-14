@@ -96,7 +96,7 @@ class TestV10StockNotificationSemantics(TestCase):
             self.assertIn("等待库房复核并提交", payload["description"])
             self.assertIn("提交前不会变化", payload["description"])
 
-    def test_V10_NOTICE_003_partial_net_issue_still_requires_material_and_cannot_claim_dispatch(self):
+    def test_V10_NOTICE_003_partial_net_issue_allows_dispatch_when_one_batch_is_covered(self):
         # A stale gross header says full issue; current row-level remaining=4 must win.
         work_order = frappe._dict(name="WO-CASE", qty=10, material_transferred_for_manufacturing=10)
         with patch.object(frappe, "get_doc", return_value=work_order), patch.object(workflow, "remaining_material_issue_qty", return_value=4), patch.object(notifications, "responsibility_recipients", return_value=["production-a@example.com"]), patch.object(notifications, "notify_users") as notify:
@@ -104,7 +104,9 @@ class TestV10StockNotificationSemantics(TestCase):
             payload = notify.call_args.kwargs
             self.assertIn("仍待补料", payload["subject"])
             self.assertNotIn("可派工", payload["subject"])
-            self.assertIn("补齐前不会开放正式派工", payload["description"])
+            self.assertIn("已发齐一批配套物料时可正式派工", payload["description"])
+            self.assertIn("剩余生产数量仍需继续补料", payload["description"])
+            self.assertNotIn("补齐前不会开放正式派工", payload["description"])
             self.assertEqual(payload["link"], "/app/production-workbench")
 
     def test_V10_NOTICE_003_complete_net_issue_notifies_correct_company_production_route(self):

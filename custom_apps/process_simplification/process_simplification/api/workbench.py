@@ -86,6 +86,7 @@ def order_item_priority_key(row):
 
 def _refresh_allocated_row_status(row):
 	row = frappe._dict(deepcopy(dict(row)))
+	row.pop("reservation_handoff", None)
 	for fieldname in (
 		"pending_qty",
 		"reserved_qty",
@@ -401,6 +402,44 @@ def get_material_status(item_code: str) -> str:
 	return "未检查" if get_default_bom(item_code) else "不涉及生产"
 
 
+def apply_reservation_action_permissions(rows):
+	"""Keep reservation handoffs visible without advertising an unavailable write."""
+	reservation_actions = {"reserve_stock", "reserve_completed_stock"}
+	if not any(
+		action_row.get("action") in reservation_actions and action_row.get("enabled") is not False
+		for row in rows for action_row in row.get("next_actions") or []
+	):
+		return rows
+	# The controlled action inserts and submits a native SRE. Creating a draft
+	# alone is insufficient, and these hints never replace the write-side checks.
+	if all(
+		frappe.has_permission("Stock Reservation Entry", permission)
+		for permission in ("create", "submit")
+	):
+		return rows
+	for row in rows:
+		blocked = []
+		for action_row in row.get("next_actions") or []:
+			if action_row.get("action") not in reservation_actions or action_row.get("enabled") is False:
+				continue
+			completed = action_row["action"] == "reserve_completed_stock"
+			label = "待库房预留完工成品" if completed else "待库房预留库存"
+			reason = "请库房人员或其他有权限的经办人在订单工作台为来源订单办理库存预留。"
+			action_row.update(enabled=False, label=label, reason=reason)
+			blocked.append(action_row)
+		if not blocked:
+			continue
+		handoff = next(
+			(entry for entry in blocked if entry["action"] == "reserve_completed_stock"), blocked[0]
+		)
+		row["reservation_handoff"] = {"label": handoff["label"], "reason": handoff["reason"]}
+		if row.get("status") in {"完工待预留", "待预留"}:
+			row["status"] = handoff["label"]
+		if row.get("status_code") == "awaiting_order_reservation":
+			row["status_label"] = handoff["label"]
+	return rows
+
+
 def _status_and_actions(row: WorkbenchRow, has_bom: bool):
 	if row.unsupported:
 		row.status = "不支持"
@@ -548,6 +587,7 @@ def get_order_workbench(sales_order: str):
 		)
 		rows.append(serialized)
 
+	apply_reservation_action_permissions(rows)
 	return {
 		"sales_order": so.name,
 		"customer": so.customer,
@@ -927,12 +967,19 @@ def get_fulfillment_overview(page=1, page_size=DEFAULT_WORKBENCH_PAGE_SIZE, filt
 			all_rows.append(row)
 
 	rows_by_order = defaultdict(list)
-	for row in allocate_finished_stock(all_rows):
+	for row in apply_reservation_action_permissions(allocate_finished_stock(all_rows)):
 		rows_by_order[row.get("sales_order")].append(row)
 
 	fulfillment_orders = []
 	for order_name, order in order_by_name.items():
 		fulfillment_order = build_fulfillment_order(order, rows_by_order.get(order_name) or [], today=checked_at)
+		if fulfillment_order["status_code"] == "awaiting_stock":
+			handoff = next(
+				(row["reservation_handoff"] for row in fulfillment_order["rows"] if row.get("reservation_handoff")),
+				None,
+			)
+			if handoff:
+				fulfillment_order["status_label"] = handoff["label"]
 		if fulfillment_order["pending_qty"] <= 0:
 			continue
 		fulfillment_orders.append((order, fulfillment_order))

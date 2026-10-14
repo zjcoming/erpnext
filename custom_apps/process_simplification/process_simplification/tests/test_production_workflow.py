@@ -399,8 +399,74 @@ class TestProductionWorkflowQuantities(UnitTestCase):
 		self.assertEqual(entry["items"][0].qty, 20)
 		self.assertTrue(make_entry.call_args.kwargs["is_additional_transfer_entry"])
 
+	@patch("process_simplification.production_workflow.service.make_stock_entry")
 	@patch("process_simplification.production_workflow.service.frappe.get_doc")
-	def test_worker_dispatch_is_blocked_after_material_is_returned(self, get_doc):
+	def test_uneven_component_issue_rebuilds_only_the_net_gap_without_return(self, get_doc, make_entry):
+		from process_simplification.production_workflow.service import _insert_guided_issue_stock_entry
+
+		class FakeEntry(frappe._dict):
+			def set(self, fieldname, value):
+				self[fieldname] = value
+
+			def add_to_stock_entry_detail(self, rows):
+				self["items"].extend(frappe._dict(details) for details in rows.values())
+
+			def insert(self, **kwargs):
+				self.insert_kwargs = kwargs
+
+		entry = FakeEntry(fg_completed_qty=2, items=[frappe._dict(
+			item_code=code, s_warehouse="Stores", qty=2, conversion_factor=1,
+		) for code in ("RM-A", "RM-B")])
+		get_doc.return_value = entry
+		make_entry.return_value = frappe._dict(doctype="Stock Entry")
+		work_order = frappe._dict(name="WO-UNEVEN", qty=6, wip_warehouse="WIP", required_items=[
+			frappe._dict(item_code=code, source_warehouse="Stores", required_qty=6,
+				include_item_in_manufacturing=1, stock_uom="Nos") for code in ("RM-A", "RM-B")
+		])
+		facts = {("WO-UNEVEN", code, "Stores"): frappe._dict(
+			gross_issued_qty=issued, returned_qty=0, net_issued_qty=issued,
+		) for code, issued in (("RM-A", 4), ("RM-B", 2))}
+		result = _insert_guided_issue_stock_entry(work_order, 2, facts)
+		self.assertIs(result, entry)
+		self.assertEqual([(row.item_code, row.qty) for row in entry["items"]], [("RM-B", 2)])
+		self.assertEqual(entry.fg_completed_qty, 2)
+		self.assertEqual(entry.custom_process_coverage_qty, 2)
+		self.assertFalse(make_entry.call_args.kwargs["is_additional_transfer_entry"])
+
+	@patch("process_simplification.production_workflow.service.make_stock_entry")
+	@patch("process_simplification.production_workflow.service.frappe.get_doc")
+	def test_proportional_component_issue_keeps_native_stock_units_and_metadata(self, get_doc, make_entry):
+		from process_simplification.production_workflow.service import _insert_guided_issue_stock_entry
+
+		class FakeEntry(frappe._dict):
+			def insert(self, **kwargs):
+				self.insert_kwargs = kwargs
+
+		# Two split transaction-UOM rows still describe two stock units of RM-A.
+		rows = [frappe._dict(item_code="RM-A", s_warehouse="Stores", qty=0.5,
+			conversion_factor=2, batch_no=batch, cost_center="Native Center")
+			for batch in ("LOT-A", "LOT-B")]
+		rows.append(frappe._dict(item_code="RM-B", s_warehouse="Stores", qty=2,
+			conversion_factor=1, cost_center="Native Center"))
+		entry = FakeEntry(fg_completed_qty=2, items=rows)
+		get_doc.return_value = entry
+		make_entry.return_value = frappe._dict(doctype="Stock Entry")
+		work_order = frappe._dict(name="WO-PROPORTIONAL", qty=6, wip_warehouse="WIP", required_items=[
+			frappe._dict(item_code=code, source_warehouse="Stores", required_qty=6,
+				include_item_in_manufacturing=1, stock_uom="Nos") for code in ("RM-A", "RM-B")
+		])
+		facts = {("WO-PROPORTIONAL", code, "Stores"): frappe._dict(
+			gross_issued_qty=2, returned_qty=0, net_issued_qty=2,
+		) for code in ("RM-A", "RM-B")}
+		_insert_guided_issue_stock_entry(work_order, 2, facts)
+		self.assertIs(entry["items"], rows)
+		self.assertEqual([(row.get("batch_no"), row.cost_center) for row in rows],
+			[("LOT-A", "Native Center"), ("LOT-B", "Native Center"), (None, "Native Center")])
+		self.assertEqual(entry.fg_completed_qty, 2)
+		self.assertFalse(make_entry.call_args.kwargs["is_additional_transfer_entry"])
+
+	@patch("process_simplification.production_workflow.service.frappe.get_doc")
+	def test_worker_dispatch_keeps_remaining_batch_after_partial_material_return(self, get_doc):
 		from process_simplification.production_workflow.service import (
 			assert_work_order_dispatch_ready,
 			get_work_order_dispatch_state,
@@ -419,10 +485,71 @@ class TestProductionWorkflowQuantities(UnitTestCase):
 			],
 		)
 		state = get_work_order_dispatch_state("WO-001")
-		self.assertFalse(state.can_dispatch)
-		self.assertEqual(state.block_code, "MATERIAL_NOT_FULLY_ISSUED")
-		with self.assertRaises(frappe.ValidationError):
-			assert_work_order_dispatch_ready("WO-001")
+		self.assertTrue(state.can_dispatch)
+		self.assertIsNone(state.block_code)
+		self.assertIsNone(assert_work_order_dispatch_ready("WO-001"))
+
+
+	def test_worker_dispatch_requires_a_posted_matched_component_batch(self):
+		from process_simplification.production_stock_facts import aggregate_work_order_stock_facts
+		from process_simplification.production_workflow.service import (
+			assert_work_order_dispatch_ready,
+			get_work_order_dispatch_state,
+		)
+
+		cases = (
+			("partial_matched_batch", 12, 4, 0, 0, 1, True),
+			("missing_required_component", 12, 0, 0, 0, 1, False),
+			("all_material_returned", 12, 4, 12, 4, 1, False),
+			("remaining_batch_after_return", 24, 8, 12, 4, 1, True),
+			("unposted_issue", 12, 4, 0, 0, 0, False),
+		)
+		for case, issued_a, issued_b, returned_a, returned_b, docstatus, allowed in cases:
+			with self.subTest(case=case):
+				work_order = frappe._dict(
+					name="WO-PARTIAL", qty=200, skip_transfer=0,
+					# A stale aggregate cannot replace submitted stock movement facts.
+					material_transferred_for_manufacturing=200,
+					required_items=[
+						frappe._dict(
+							item_code=code, source_warehouse="Stores", required_qty=required,
+							transferred_qty=required, include_item_in_manufacturing=1,
+						)
+						for code, required in (("RM-A", 1200), ("RM-B", 400))
+					],
+				)
+				movements = []
+				for code, issued, returned in (
+					("RM-A", issued_a, returned_a), ("RM-B", issued_b, returned_b),
+				):
+					movements.append(frappe._dict(
+						work_order=work_order.name, purpose="Material Transfer for Manufacture",
+						docstatus=docstatus, is_return=0, item_code=code,
+						s_warehouse="Stores", t_warehouse="WIP", transfer_qty=issued,
+					))
+					if returned:
+						movements.append(frappe._dict(
+							work_order=work_order.name, purpose="Material Transfer for Manufacture",
+							docstatus=1, is_return=1, item_code=code,
+							s_warehouse="WIP", t_warehouse="Stores", transfer_qty=returned,
+							custom_return_source_warehouse="Stores",
+						))
+				facts = aggregate_work_order_stock_facts(movements)
+				with (
+					patch("process_simplification.production_workflow.service.frappe.get_doc", return_value=work_order),
+					patch("process_simplification.production_workflow.service.load_work_order_stock_facts", return_value=facts),
+				):
+					state = get_work_order_dispatch_state(work_order.name)
+					self.assertEqual(state.can_dispatch, allowed)
+					if allowed:
+						self.assertIsNone(assert_work_order_dispatch_ready(work_order.name))
+					else:
+						self.assertEqual(state.block_code, "MATERIAL_NOT_FULLY_ISSUED")
+						self.assertEqual(state.block_message,
+							"请先提交领料单，至少发齐一批生产所需的配套物料后再正式派工。")
+						with self.assertRaises(frappe.ValidationError):
+							assert_work_order_dispatch_ready(work_order.name)
+				self.assertEqual(work_order.qty, 200)
 
 	@patch("process_simplification.production_workflow.service.frappe.get_doc")
 	def test_worker_dispatch_is_allowed_after_full_net_issue(self, get_doc):
@@ -449,6 +576,7 @@ class TestProductionWorkflowQuantities(UnitTestCase):
 	def test_worker_dispatch_groups_operation_split_component_rows(self, get_doc):
 		from process_simplification.production_workflow.service import (
 			assert_work_order_dispatch_ready,
+			_material_issue_coverage,
 		)
 
 		get_doc.return_value = frappe._dict(
@@ -472,8 +600,8 @@ class TestProductionWorkflowQuantities(UnitTestCase):
 				),
 			],
 		)
-		with self.assertRaises(frappe.ValidationError):
-			assert_work_order_dispatch_ready("WO-001")
+		self.assertEqual(_material_issue_coverage(get_doc.return_value)[0], 0.5)
+		self.assertIsNone(assert_work_order_dispatch_ready("WO-001"))
 
 	@patch(
 		"process_simplification.production_workflow.service._active_work_order_item_reserved_qty",

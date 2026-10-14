@@ -188,6 +188,35 @@ def _populate_raw_material_reservation_rows(plan, source_warehouse: str | None) 
 		plan.append("mr_items", row)
 
 
+def _validate_replacement_work_orders(plan, work_orders, material_request):
+	"""Native make_work_order may swallow OverProductionError: require the whole chain."""
+	orders = [frappe.get_doc("Work Order", name) for name in work_orders]
+	roots = [wo for wo in orders if not wo.production_plan_sub_assembly_item]
+	root = plan.po_items[0]
+	expected_children = {row.name: row for row in plan.sub_assembly_items or []
+		if row.type_of_manufacturing == "In House" and flt(row.qty) > 1e-8}
+	valid = len(roots) == 1 and len(orders) == 1 + len(expected_children)
+	if valid:
+		wo = roots[0]
+		valid = (wo.material_request == material_request.name
+			and wo.material_request_item == material_request.items[0].name
+			and wo.production_plan_item == root.name and wo.production_item == root.item_code
+			and wo.bom_no == root.bom_no
+			and wo.sales_order == root.sales_order and wo.sales_order_item == root.sales_order_item
+			and abs(flt(wo.qty) - flt(root.planned_qty)) <= 1e-8)
+	for name, row in expected_children.items():
+		children = [wo for wo in orders if wo.production_plan_sub_assembly_item == name]
+		valid = valid and len(children) == 1
+		if len(children) == 1:
+			wo = children[0]
+			valid = valid and (not wo.material_request and not wo.material_request_item
+				and wo.production_item == row.production_item and wo.bom_no == row.bom_no
+				and wo.sales_order == row.sales_order and wo.sales_order_item == row.sales_order_item
+				and abs(flt(wo.qty) - flt(row.qty)) <= 1e-8)
+	if not valid or any(wo.docstatus != 1 or wo.company != plan.company or wo.production_plan != plan.name for wo in orders):
+		frappe.throw("退货补产计划未完整生成对应数量的成品和子装配工单，本次操作已回滚，请检查后重试。")
+
+
 def create_work_orders_via_production_plan(
 	*,
 	sales_order: str,
@@ -200,6 +229,7 @@ def create_work_orders_via_production_plan(
 	sub_assembly_warehouse: str | None,
 	source_warehouse: str | None = None,
 	delivery_date=None,
+	material_request=None,
 ):
 	"""Create the finished-good Work Order and one Work Order per in-house
 	sub-assembly level, via a saved Production Plan.
@@ -215,6 +245,10 @@ def create_work_orders_via_production_plan(
 	# Keep per-order Work Order links: combining would drop sales_order on the
 	# aggregated sub-assembly rows.
 	plan.combine_sub_items = 0
+	if material_request:
+		plan.get_items_from = "Material Request"
+		plan.append("material_requests", {"material_request": material_request.name,
+			"material_request_date": material_request.transaction_date})
 
 	plan.append(
 		"po_items",
@@ -228,6 +262,8 @@ def create_work_orders_via_production_plan(
 			"sales_order": sales_order,
 			"sales_order_item": sales_order_item,
 			"include_exploded_items": 1,
+			**({"material_request": material_request.name,
+				"material_request_item": material_request.items[0].name} if material_request else {}),
 		},
 	)
 
@@ -235,21 +271,26 @@ def create_work_orders_via_production_plan(
 	try:
 		# Persist first so expanded sub-assembly rows receive stable names and
 		# Work Orders can keep valid Production Plan back-references.
-		plan.insert()
-		commitments = net_subassemblies(plan)
-		plan.reserve_stock = 0
-		plan.save()
-		with allow_guided_stock_reservations_for("Production Plan", plan.name):
-			plan.submit()
+		from process_simplification.production_workflow.customer_returns import allow_replacement_plan
+		with allow_replacement_plan(plan):
+			plan.insert()
+			commitments = net_subassemblies(plan)
+			plan.reserve_stock = 0
+			plan.save()
+			with allow_guided_stock_reservations_for("Production Plan", plan.name):
+				plan.submit()
 
-		with _muted_messages():
-			# Create the finished-good WO plus one WO per remaining in-house level.
-			plan.make_work_order()
+			with _muted_messages():
+				# Only the finished-good row carries MR/MRI. Child WOs retain
+				# their native plan-subassembly links and do not consume root MR qty.
+				plan.make_work_order()
 
-		work_orders = _work_orders_for_plan(plan.name)
-		_apply_guided_source_warehouse(work_orders, source_warehouse, plan=plan)
-		_submit_work_orders(work_orders)
-		commit_plan_stock(plan, work_orders, commitments)
+			work_orders = _work_orders_for_plan(plan.name)
+			_apply_guided_source_warehouse(work_orders, source_warehouse, plan=plan)
+			_submit_work_orders(work_orders)
+			if material_request:
+				_validate_replacement_work_orders(plan, work_orders, material_request)
+			commit_plan_stock(plan, work_orders, commitments)
 	except frappe.QueryDeadlockError:
 		raise
 	except Exception:

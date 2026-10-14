@@ -1434,6 +1434,80 @@ class TestWorkerReporting(IntegrationTestCase):
 			with self.assertRaisesRegex(frappe.ValidationError,"返工工单"):
 				frappe.get_doc("Stock Entry",rework_doc.stock_entry).cancel()
 
+	def test_supervisor_supplier_return_needs_only_scoped_account_selection(self):
+		from process_simplification.management_access import (
+			WAREHOUSE_OPERATOR_ROLE,
+			ensure_management_document_permissions,
+		)
+		from process_simplification.production_exceptions import handling
+
+		jc, assignment = self._setup_exception_material_flow()
+		with self.set_user("Administrator"):
+			ensure_management_document_permissions()
+			quarantine = self._ensure_warehouse("Worker Reporting Quarantine")
+			frappe.db.set_value("Company", self.TEST_COMPANY, "custom_material_quarantine_warehouse", quarantine)
+			supplier = frappe.get_doc(dict(
+				doctype="Supplier", supplier_name="WRT-RETURN-" + random_string(10),
+				supplier_group="All Supplier Groups", supplier_type="Company",
+			)).insert(ignore_permissions=True)
+			receipt = frappe.get_doc(dict(
+				doctype="Purchase Receipt", company=self.TEST_COMPANY, supplier=supplier.name,
+				posting_date=nowdate(), currency="INR", conversion_rate=1,
+				items=[dict(item_code=self.TEST_RAW_MATERIAL, qty=6, rate=1,
+					uom="Nos", stock_uom="Nos", conversion_factor=1, warehouse=self.source_warehouse)],
+			)).insert(ignore_permissions=True)
+			receipt.submit()
+			warehouse_user = self._make_user(WAREHOUSE_OPERATOR_ROLE)
+			self._grant_company(warehouse_user, self.TEST_COMPANY)
+			own_account = frappe.get_cached_value("Company", self.TEST_COMPANY, "default_payable_account")
+			other_account = frappe.get_cached_value("Company", self.OTHER_COMPANY, "default_payable_account")
+		request = self._request_material_exception(assignment, 6, cause="Material Defect")
+		entry = self._post_material_exception(request)
+		with self.set_user(self.supervisor):
+			key = handling.disposition_options(entry.name)["materials"][0].key
+			request_key = random_string(20)
+			params = dict(work_order=jc.work_order, source_stock_entry=entry.name, purchase_receipt=receipt.name)
+			doc = handling.create_request("Supplier Return", [{"material_key": key, "qty": 2}], request_key, **params)
+			self.assertEqual(doc.status, "Awaiting Stock Entry")
+			self.assertTrue(doc.purchase_return)
+			self.assertEqual(
+				handling.create_request("Supplier Return", [{"material_key": key, "qty": 2}], request_key, **params).name,
+				doc.name,
+			)
+			self.assertTrue(frappe.has_permission("Account", "select", doc=own_account))
+			self.assertFalse(frappe.has_permission("Account", "select", doc=other_account))
+			for ptype in ("read", "write", "create", "delete", "report", "export"):
+				self.assertFalse(frappe.has_permission("Account", ptype))
+			self.assertFalse(frappe.has_permission("Purchase Receipt", "submit"))
+			with self.assertRaisesRegex(frappe.PermissionError, "库房过账权限"):
+				handling.post(doc.name)
+		returned = frappe.get_doc("Purchase Receipt", doc.purchase_return)
+		self.assertEqual(returned.docstatus, 0)
+		self.assertEqual(returned.return_against, receipt.name)
+		self.assertEqual(returned.items[0].warehouse, quarantine)
+		self.assertEqual(returned.items[0].stock_qty, -2)
+		with self.set_user(warehouse_user):
+			handling.post(doc.name)
+		self.assertEqual(doc.reload().status, "Completed")
+		self.assertEqual(returned.reload().docstatus, 1)
+
+	def test_supervisor_cannot_withdraw_posted_exception_and_keeps_stock(self):
+		jc, assignment = self._setup_exception_material_flow()
+		request = self._request_material_exception(assignment, 6)
+		entry = self._post_material_exception(request)
+		with self.set_user(self.supervisor):
+			with self.assertRaisesRegex(frappe.ValidationError, "只能撤回尚未过账的申请"):
+				exception_service.withdraw_exception(request.name, "已过账不能撤回")
+		self.assertEqual(request.reload().status, COMPLETED)
+		self.assertEqual(entry.reload().docstatus, 1)
+		self.assertEqual(request.stock_entry, entry.name)
+		self.assertEqual(entry.items[0].transfer_qty, 6)
+
+	def test_withdraw_exception_without_reason_returns_business_error(self):
+		with self.set_user(self.supervisor):
+			with self.assertRaisesRegex(frappe.ValidationError, "请填写撤回原因"):
+				exception_service.withdraw_exception("not-loaded-without-reason", "  ")
+
 	def test_batch_decimal_return_and_split_disposition_keep_lot_quantities(self):
 		self._assert_tracked_return(serial=False)
 

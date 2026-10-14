@@ -23,6 +23,17 @@ QTY_EPSILON = 1e-9
 
 
 def before_submit(doc, method=None):
+	managed_cards = []
+	if doc.get("purpose") == "Manufacture" and doc.get("work_order"):
+		# Approval and assignment lock Job Card before Work Order. Take the same
+		# order before guided validation locks the parent; include unassigned cards
+		# so a concurrent assignment cannot appear between this check and posting.
+		managed_cards = frappe.db.sql(
+			"select name, custom_worker_reporting_enabled from `tabJob Card` "
+			"where work_order = %s order by name for update",
+			doc.work_order,
+			as_dict=True,
+		)
 	from process_simplification.production_exceptions.handling import validate_stock
 	validate_stock(doc)
 	if doc.get("custom_material_handling_request"):
@@ -37,15 +48,32 @@ def before_submit(doc, method=None):
 
 	mark_replenishment_receipt(doc)
 	validate_guided_stock_entry_before_submit(doc)
-	# Finished-goods posting is the only native path that can make a Work Order
-	# Completed. Do not let it strand a Draft Job Card with immutable wage history.
+	# Partial receipts may leave another batch in progress. Only the receipt
+	# completing the Work Order must not strand managed Draft Job Cards.
 	if doc.get("purpose") != "Manufacture" or not doc.get("work_order"):
 		return
 	from process_simplification.production_reporting.work_order import (
 		assert_no_managed_draft_job_cards,
 	)
 
-	assert_no_managed_draft_job_cards(doc.work_order)
+	work_order = frappe.db.get_value(
+		"Work Order", doc.work_order, ["qty", "produced_qty", "process_loss_qty"],
+		as_dict=True, for_update=True,
+	)
+	precision = frappe.get_precision("Work Order", "produced_qty")
+	if any(row.custom_worker_reporting_enabled for row in managed_cards):
+		from process_simplification.production_workflow.receipt import operation_receipt_remaining_qty
+
+		current = frappe.get_doc("Work Order", doc.work_order, for_update=True)
+		maximum = operation_receipt_remaining_qty(current)
+		if flt(doc.fg_completed_qty, precision) > flt(maximum, precision):
+			frappe.throw(frappe._("本批完工数量超过尚未入库的工序完工额度 {0}，请刷新核对；已入账损耗不能重复入库。").format(maximum))
+	posted_qty = flt(work_order.produced_qty) + flt(work_order.process_loss_qty)
+	if (
+		flt(doc.get("fg_completed_qty")) <= 0
+		or flt(posted_qty + flt(doc.fg_completed_qty), precision) >= flt(work_order.qty, precision)
+	):
+		assert_no_managed_draft_job_cards(doc.work_order)
 
 
 def on_trash(doc, method=None):

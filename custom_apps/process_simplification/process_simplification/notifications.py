@@ -878,7 +878,7 @@ def notify_production_stock_completed(doc, *, replenishment_result=None):
 			)
 		else:
 			subject = "部分发料已完成，仍待补料：{0}".format(escape_html(doc.work_order or ""))
-			description = "库房已提交部分发料单 {0}。工单仍未齐套，补齐前不会开放正式派工。".format(
+			description = "库房已提交部分发料单 {0}。已发齐一批配套物料时可正式派工，剩余生产数量仍需继续补料。".format(
 				escape_html(doc.name)
 			)
 	elif action == "Replenishment Receipt":

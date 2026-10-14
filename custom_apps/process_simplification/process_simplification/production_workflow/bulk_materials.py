@@ -73,13 +73,84 @@ def _work_order(name, scope, *, lock=False):
 		frappe.db.get_value("Work Order", name, "name", for_update=True)
 	doc = frappe.get_doc("Work Order", name, for_update=lock)
 	_check_scope(doc, scope)
-	if doc.docstatus != 1 or doc.status in service.TERMINAL_WORK_ORDER_STATUSES or not doc.production_plan:
-		_throw("仅支持有效生产计划下尚未完成的正式工单。")
+	if doc.docstatus != 1 or doc.status in service.TERMINAL_WORK_ORDER_STATUSES:
+		_throw("仅支持尚未完成的正式工单。")
+	if not doc.production_plan:
+		_validate_rework_source(doc, scope, lock=lock)
+		return doc
 	plan = frappe.get_doc("Production Plan", doc.production_plan, for_update=lock)
 	_check_scope(plan, scope)
 	if plan.docstatus != 1 or plan.company != doc.company or plan.status in {"Closed", "Cancelled"}:
 		_throw("生产计划已关闭或失效，请刷新后核对。")
 	return doc
+
+
+def _validate_rework_source(work_order, scope, *, lock=False):
+	"""Accept only a posted, single-material rework route, never a free-standing WO.
+
+	Do not call handling.lock_request here: the bulk action already locks this
+	WO, whereas that function starts with the original WO/source transfer.
+	"""
+	from process_simplification.production_exceptions.handling import valid_warehouse
+
+	names = frappe.get_all("Material Handling Request", filters={"rework_order": work_order.name},
+		pluck="name", limit=2)
+	if len(names) != 1:
+		_throw("独立工单必须关联唯一已完成的正式返工处理单。")
+	def checked_request(for_update):
+		request = frappe.get_doc("Material Handling Request", names[0], for_update=for_update)
+		_check_scope(request, scope)
+		if (request.action != "Rework" or request.status != "Completed"
+			or request.rework_order != work_order.name or request.company != work_order.company
+			or request.rework_bom != work_order.bom_no or len(request.items) != 1 or not request.stock_entry):
+			_throw("返工处理尚未完成，或工单与已确认的公司、BOM 不一致。")
+		return request
+
+	request = checked_request(False)
+	if lock:
+		# Native cancellation locks the transfer before its before_cancel hook
+		# locks the MHR. Match that order even though a submitted rework WO will
+		# eventually reject cancellation. Pending posting is excluded above.
+		transfer = request.stock_entry
+		frappe.db.get_value("Stock Entry", transfer, "name", for_update=True)
+		request = checked_request(True)
+		if request.stock_entry != transfer:
+			_throw("返工转仓关联已变化，请重新预览。")
+	item = request.items[0]
+	settings = frappe.db.get_value("Company", work_order.company,
+		["custom_material_rework_warehouse", "default_scrap_warehouse"], as_dict=True)
+	target = item.target_warehouse
+	valid_warehouse(target, work_order.company, item.source_warehouse)
+	if (not settings or target != settings.custom_material_rework_warehouse
+		or target in {item.original_source_warehouse, work_order.wip_warehouse, settings.default_scrap_warehouse}
+		or work_order.source_warehouse != target or flt(item.qty) <= 0):
+		_throw("返工料必须来自已确认的独立返工仓，且数量必须有效。")
+
+	entry = frappe.get_doc("Stock Entry", request.stock_entry, for_update=lock)
+	_check_scope(entry, scope)
+	if (entry.docstatus != 1 or entry.company != work_order.company or entry.purpose != "Material Transfer"
+		or entry.get("is_return") or entry.get("custom_material_handling_request") != request.name
+		or not entry.items or any(row.item_code != item.item_code or row.s_warehouse != item.source_warehouse
+			or row.t_warehouse != target or flt(row.transfer_qty) <= 0 for row in entry.items)
+		or abs(sum(flt(row.transfer_qty) for row in entry.items) - flt(item.qty)) > 1e-6):
+		_throw("返工转仓尚未过账，或实际转仓来源、物料和数量与处理单不一致。")
+
+	bom = frappe.get_doc("BOM", request.rework_bom)
+	if (bom.docstatus != 1 or not bom.is_active or bom.company != work_order.company
+		or bom.item != work_order.production_item or flt(bom.quantity) <= 0):
+		_throw("返工 BOM 已失效，或产出物料与已确认工单不一致。")
+	# Shared auxiliary stock has no Production Plan soft-priority allocation on
+	# this route. Keep it explicit instead of silently falling back to free stock.
+	if (not bom.items or any(row.item_code != item.item_code or row.get("bom_no")
+			or not row.get("is_stock_item") or flt(row.stock_qty) <= 0 for row in bom.items)
+		or not work_order.required_items
+		or any(row.item_code != item.item_code or row.source_warehouse != target or flt(row.required_qty) <= 0
+			for row in work_order.required_items)):
+		_throw("集中领料暂仅支持单一返工料；含其他辅料或多层 BOM 的返工请先核对物料优先权。")
+	required = sum(flt(row.stock_qty) for row in bom.items)
+	if (abs(flt(work_order.qty) - flt(item.qty) * flt(bom.quantity) / required) > 1e-6
+		or abs(sum(flt(row.required_qty) for row in work_order.required_items) - flt(item.qty)) > 1e-6):
+		_throw("返工工单数量和用料必须与已确认的返工转仓量一致。")
 
 
 def _request_state(doc, stock_facts):
@@ -224,7 +295,9 @@ def _stock_entry(name, scope, *, lock=False):
 	return doc
 
 
-def _confirmation_row(doc):
+def _confirmation_row(doc, scope=None):
+	if not frappe.db.get_value("Work Order", doc.work_order, "production_plan"):
+		_work_order(doc.work_order, scope)
 	batch = _requires_native_confirmation(doc)
 	can_submit = bool(frappe.has_permission("Stock Entry", "submit", doc=doc)
 		and frappe.has_permission("Stock Entry", "write", doc=doc))
@@ -248,20 +321,26 @@ def get_material_workbench(view=None, company=None, search=None, start=0):
 	frappe.has_permission(doctype, "read", throw=True)
 	filters = {"company": ["in", selected_companies], "docstatus": 1 if view == "request" else 0}
 	if view == "request":
-		filters.update(status=["not in", sorted(service.TERMINAL_WORK_ORDER_STATUSES)], production_plan=["is", "set"])
+		filters.update(status=["not in", sorted(service.TERMINAL_WORK_ORDER_STATUSES)])
+		rework_orders = set(frappe.get_all("Material Handling Request", filters={
+			"company": ["in", selected_companies], "action": "Rework", "status": "Completed",
+			"rework_order": ["is", "set"]}, pluck="rework_order", limit=0))
 	else:
 		filters.update(purpose=PURPOSE, is_return=0, custom_process_workflow_action=service.ISSUE_ACTION)
 	search_fields = ("name", "production_item", "item_name", "sales_order") if view == "request" else ("name", "work_order")
 	or_filters = [[doctype, key, "like", "%" + search + "%"] for key in search_fields] if search else []
 	rows, cursor, more, caps = [], start, False, {}
 	while True:
-		candidates = frappe.get_list(doctype, filters=filters, or_filters=or_filters, fields=["name", "company"],
+		fields = ["name", "company", "production_plan"] if view == "request" else ["name", "company"]
+		candidates = frappe.get_list(doctype, filters=filters, or_filters=or_filters, fields=fields,
 			order_by="creation asc, name asc", limit_start=cursor, limit_page_length=50)
 		for candidate in candidates:
 			if len(rows) == LIMIT:
 				more = True
 				break
 			cursor += 1
+			if view == "request" and not candidate.production_plan and candidate.name not in rework_orders:
+				continue
 			try:
 				doc = _work_order(candidate.name, scope) if view == "request" else _stock_entry(candidate.name, scope)
 				if view == "request":
@@ -271,7 +350,7 @@ def get_material_workbench(view=None, company=None, search=None, start=0):
 					if row["remaining_qty"] <= 1e-9 and not row.get("stock_entry"):
 						continue
 				else:
-					row = _confirmation_row(doc)
+					row = _confirmation_row(doc, scope)
 				rows.append(row)
 			except frappe.PermissionError:
 				continue
@@ -348,7 +427,7 @@ def request_material(work_order, expected_state, qty, allow_partial=0):
 
 def preview_material_submissions(stock_entries):
 	_, _, scope = _access("confirm")
-	rows = [_confirmation_row(_stock_entry(name, scope)) for name in _names(stock_entries)]
+	rows = [_confirmation_row(_stock_entry(name, scope), scope) for name in _names(stock_entries)]
 	_same_company(rows)
 	return {"rows": rows}
 

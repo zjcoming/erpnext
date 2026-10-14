@@ -415,3 +415,62 @@ test("a read-only first product does not hide another product's pending action",
 	assert.equal(orderNextActionLabel(mixed), "建生产计划");
 	assert.equal(orderNextAction({ rows: [complete] }).action.action, "view_sales_order");
 });
+
+
+test("order workbench preserves the reservation handoff without another clickable reservation", () => {
+	const handoff = { label: "待库房预留完工成品", reason: "请库房人员在订单工作台处理 <来源订单>。" };
+	const value = order('SO-"<handoff>', { rows: [{
+		item_code: "FG", item_name: "成品", sales_order_item: "SOI-1", status: handoff.label,
+		reservation_handoff: handoff,
+		next_actions: [
+			{ action: "reserve_completed_stock", label: handoff.label, enabled: false, reason: handoff.reason },
+			{ action: "reserve_stock", label: "待库房预留库存", enabled: false, reason: handoff.reason },
+			{ action: "view_sales_order", label: "查看销售订单", enabled: true },
+		],
+	}] });
+	assert.equal(orderNextActionLabel(value), handoff.label);
+	assert.equal(orderNextAction(value).action.action, "view_sales_order");
+	const html = orderOverviewHtml(value, helpers);
+	assert.match(html, /data-action="reserve_completed_stock"[^>]*disabled/);
+	assert.match(html, /data-action="reserve_stock"[^>]*disabled/);
+	assert.match(html, /fulfillment-reservation-handoff/);
+	assert.match(html, /来源订单.*SO-&quot;&lt;handoff&gt;/);
+	assert.match(html, /&lt;来源订单&gt;/);
+	assert.doesNotMatch(html, /<handoff>|<来源订单>/);
+});
+
+test("authorized order reservation retains the action without a handoff banner", () => {
+	const value = order("SO-ALLOWED", { rows: [{
+		item_code: "FG", next_actions: [{ action: "reserve_completed_stock", label: "预留完工成品", enabled: true }],
+	}] });
+	assert.equal(orderNextActionLabel(value), "预留完工成品");
+	const html = orderOverviewHtml(value, helpers);
+	assert.match(html, /btn-primary[^>]*data-action="reserve_completed_stock"/);
+	assert.doesNotMatch(html, /fulfillment-reservation-handoff|待库房/);
+});
+
+
+test("source-order handoff path normalizes to route options then focuses and expands that order", async () => {
+	const sourceOrder = 'SO-"<handoff>';
+	const previous = { get_route: frappe.get_route, set_route: frappe.set_route, route_options: frappe.route_options };
+	const routes = [];
+	const loads = [];
+	const state = { filters: { search: "STALE" }, pagination: { page: 4 }, expandedOrders: new Set(["STALE"]) };
+	const page = { fulfillment_overview: { state, loadOverview: () => loads.push(state.filters.search) } };
+	try {
+		frappe.get_route = () => ["order-workbench", sourceOrder];
+		frappe.set_route = (route, options) => { routes.push([route, options]); frappe.route_options = options; };
+		await frappe.pages["order-workbench"].refresh({ page });
+		assert.deepEqual(routes, [["order-workbench", { sales_order: sourceOrder }]]);
+		assert.equal(loads.length, 0);
+		frappe.get_route = () => ["order-workbench"];
+		await frappe.pages["order-workbench"].refresh({ page });
+		assert.deepEqual(loads, [sourceOrder]);
+		assert.equal(state.filters.search, sourceOrder);
+		assert.equal(state.pagination.page, 1);
+		assert.deepEqual([...state.expandedOrders], [sourceOrder]);
+		assert.equal(frappe.route_options.sales_order, undefined);
+	} finally {
+		Object.assign(frappe, previous);
+	}
+});

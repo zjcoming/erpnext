@@ -8,6 +8,7 @@ function workerPlannedEscape(value) {
 
 function workerPlannedStatus(task) {
 	if (task.can_start) return { label: "可以开始", indicator: "green" };
+	if (["WORK_ORDER_UNAVAILABLE", "PRODUCTION_PLAN_UNAVAILABLE", "JOB_CARD_NOT_DRAFT"].includes(task.block_code)) return { label: "暂不可执行", indicator: "gray" };
 	if (["MATERIAL_NOT_FULLY_ISSUED", "MATERIAL_NOT_TRANSFERRED", "DIRECT_MATERIAL_SHORTAGE"].includes(task.block_code)) {
 		return { label: "等待发料", indicator: "gray" };
 	}

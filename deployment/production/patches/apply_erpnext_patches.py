@@ -26,20 +26,20 @@ def apply_patches(source, *, check=False):
         else:
             raise SystemExit(f"Refusing changed or unsupported ERPNext source: {name}")
     if set(states) == {"patched"}:
-        print("ERPNext batch reorder patch already applied; all checksums verified")
+        print("ERPNext verified fixes already applied; all checksums verified")
         return
     if set(states) != {"original"}:
-        raise SystemExit("Refusing partly applied ERPNext batch reorder patch")
+        raise SystemExit("Refusing partly applied ERPNext verified fixes")
     patch = str(directory / manifest["patch"])
     subprocess.run(["git", "apply", "--check", patch], cwd=source, check=True)
     if check:
-        print("ERPNext batch reorder patch matches all pinned source checksums")
+        print("ERPNext verified fixes match all pinned source checksums")
         return
     subprocess.run(["git", "apply", patch], cwd=source, check=True)
     for name, hashes in manifest["files"].items():
         if digest(source / name) != hashes["patched"]:
             raise SystemExit(f"Patched source failed checksum verification: {name}")
-    print("ERPNext batch reorder patch applied and verified")
+    print("ERPNext verified fixes applied and verified")
 
 
 if __name__ == "__main__":

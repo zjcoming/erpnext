@@ -168,7 +168,7 @@ function productionPlanRowHtml(row, selected, disabled) {
 		MATERIAL_NOT_FULLY_ISSUED: "等待领料出库，人员无需再次安排。",
 		DIRECT_MATERIAL_SHORTAGE: "现场物料不足，补料后可开工。",
 		DIRECT_PRIORITY_CONFLICT: "物料已优先分配给其他工单，请主管核对。",
-		PREVIOUS_OPERATION_PENDING: "前序报工审核后，工人可直接开工。",
+		PREVIOUS_OPERATION_PENDING: "前序完成本批后方可开工；交接部分完工数量，还须主管确认本批完工。",
 	}[context.start_block_code] || context.start_block_message) : context.block_message;
 	return `<article class="operation-pool-row production-plan-row ${selected ? "is-selected" : ""}" data-plan-category="${category}">
 		<label class="operation-pool-check"><input type="checkbox" data-plan-select="${esc(row.job_card)}" ${selected ? "checked" : ""} ${disabled || !productionPlanSelectable(row) ? "disabled" : ""} aria-label="选择 ${esc(row.operation)} · ${esc(row.item_name || row.production_item)} · ${esc(row.job_card)}"></label>

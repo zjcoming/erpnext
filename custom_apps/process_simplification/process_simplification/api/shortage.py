@@ -20,7 +20,7 @@ from process_simplification.api.utils import (
 	normalize_qty,
 	throw_chinese,
 )
-from process_simplification.api.workbench import get_order_workbench
+from process_simplification.workbench_read import workbench_read
 
 
 class MaterialCoverageBomExpansionError(Exception):
@@ -68,13 +68,6 @@ def _selected_rows(selected_rows):
 	if not selected_rows:
 		throw_chinese("请至少选择一条订单明细。")
 	return [frappe._dict(row) for row in selected_rows]
-
-
-def _workbench_row(sales_order: str, sales_order_item: str):
-	for row in get_order_workbench(sales_order)["rows"]:
-		if row["sales_order_item"] == sales_order_item:
-			return frappe._dict(row)
-	throw_chinese("销售订单明细不存在或不属于该销售订单。")
 
 
 def get_material_stock_snapshot(item_code: str, warehouse: str | None) -> frappe._dict:
@@ -979,14 +972,126 @@ def _remaining_supply_after_plan_readiness(readiness_by_sales_order_item):
 	}
 
 
+def _require_purchase_company(company):
+	"""Authorize the aggregate without granting native sales/production reads."""
+	from process_simplification.management_access import user_company_scope
+
+	frappe.has_permission("Material Request", "read", throw=True)
+	scope = user_company_scope()
+	if not company or (scope is not None and company not in scope):
+		frappe.throw("没有该公司的缺料采购访问权限，请检查岗位的公司范围。", frappe.PermissionError)
+
+
+def _can_read_purchase_material(company, row):
+	"""Use native MR link/User Permissions, including child Warehouse scopes."""
+	if not row.get("warehouse"):
+		return False
+	if frappe.db.get_value("Warehouse", row.get("warehouse"), "company") != company:
+		return False
+	probe = frappe.get_doc({
+		"doctype": "Material Request", "company": company, "material_request_type": "Purchase",
+		"items": [{"item_code": row.get("item_code"), "warehouse": row.get("warehouse")}],
+	})
+	return bool(frappe.has_permission("Material Request", "read", doc=probe))
+
+
+def _visible_purchase_shortages(company, shortages):
+	return [row for row in shortages if _can_read_purchase_material(company, row)]
+
+
+def _purchase_production_demands(company):
+	"""Minimal, internal SO facts for purchasing; no customer or commercial fields.
+
+	All company demand participates in allocation, even when its finished-goods
+	warehouse is not the buyer's receiving warehouse. Only final purchase rows
+	within the user's native MR scope are exposed by the public endpoints.
+	"""
+	from collections import Counter
+
+	from process_simplification.api.production_readiness import _get_purchase_plan_readiness
+	from process_simplification.api.utils import pending_delivery_qty
+	from process_simplification.api.workbench import (
+		_remaining_reserved_qty, allocate_finished_stock, get_active_work_order_qty,
+	)
+	from process_simplification.batch_compat import get_available_qty, get_stock_snapshot, is_batch_item
+
+	_require_purchase_company(company)
+	orders = frappe.get_all(
+		"Sales Order",
+		filters={"company": company, "docstatus": 1, "status": ["not in", ["Closed", "Completed"]],
+			"per_delivered": ["<", 100]},
+		fields=["name", "creation", "delivery_date"], limit=0,
+	)
+	if not orders:
+		return []
+	order_by_name = {row.name: row for row in orders}
+	items = frappe.get_all(
+		"Sales Order Item", filters={"parent": ["in", list(order_by_name)]},
+		fields=["name", "parent", "idx", "item_code", "warehouse", "delivery_date",
+			"stock_qty", "qty", "delivered_qty", "conversion_factor"], limit=0,
+	)
+	work_orders = frappe.get_all(
+		"Work Order", filters={"company": company, "sales_order": ["in", list(order_by_name)], "docstatus": 1},
+		fields=["sales_order_item", "production_item", "qty", "produced_qty", "process_loss_qty", "status"],
+		limit=0,
+	)
+	by_item = {}
+	for work_order in work_orders:
+		by_item.setdefault((work_order.sales_order_item, work_order.production_item), []).append(work_order)
+	reservations = frappe.get_all(
+		"Stock Reservation Entry", filters={"company": company, "docstatus": 1,
+			"voucher_type": "Sales Order", "voucher_no": ["in", list(order_by_name)]},
+		fields=["name", "voucher_no", "voucher_detail_no", "warehouse", "reserved_qty",
+			"delivered_qty", "transferred_qty", "consumed_qty"], limit=0,
+	)
+	reservations_by_item = {}
+	for entry in reservations:
+		reservations_by_item.setdefault((entry.voucher_no, entry.voucher_detail_no), []).append(entry)
+	counts = Counter((item.parent, item.item_code) for item in items)
+	available_stock, batch_snapshots = {}, {}
+	rows = []
+	for item in items:
+		order = order_by_name[item.parent]
+		entries = reservations_by_item.get((item.parent, item.name), [])
+		reserved = sum(_remaining_reserved_qty(entry) for entry in entries)
+		if reserved > 0 and is_batch_item(item.item_code):
+			for entry in entries:
+				key = (item.item_code, entry.warehouse)
+				if key not in batch_snapshots:
+					batch_snapshots[key] = get_stock_snapshot(*key)
+			reserved = sum(normalize_qty(batch_snapshots[(item.item_code, entry.warehouse)].get(
+				"effective_reservation_qty", {}).get(entry.name, 0)) for entry in entries)
+		stock_key = (item.item_code, item.warehouse)
+		if stock_key not in available_stock:
+			available_stock[stock_key] = get_available_qty(*stock_key) if item.warehouse else 0
+		rows.append({
+			"company": company, "sales_order": item.parent, "sales_order_item": item.name,
+			"demand_key": item.name, "item_code": item.item_code, "warehouse": item.warehouse,
+			"delivery_date": str(item.delivery_date or order.delivery_date or "") or None,
+			"order_creation": str(order.creation or ""),
+			"sales_order_item_idx": item.idx, "pending_qty": pending_delivery_qty(item),
+			"reserved_qty": reserved,
+			"available_stock_snapshot_qty": available_stock[stock_key],
+			"active_work_order_qty": get_active_work_order_qty(by_item.get((item.name, item.item_code), [])),
+			"unsupported": counts[(item.parent, item.item_code)] > 1,
+		})
+	readiness = _get_purchase_plan_readiness(company)
+	allocated = allocate_finished_stock(rows)
+	for row in allocated:
+		row.production_plans = readiness.get(row.sales_order_item) or []
+		# Duplicate product lines are outside guided planning. Do not manufacture
+		# a BOM procurement suggestion for a demand the planning flow cannot accept.
+		if row.get("unsupported"):
+			row.unplanned_production_qty = 0
+	return allocated
+
+
 def _purchase_inputs_from_production_overview(company: str, demands=None):
 	"""Load planned Work Order facts and still-unplanned Sales Order demand once."""
-	from process_simplification.api.production import get_production_overview
-
 	readiness = {}
 	unplanned_demands = []
 	if demands is None:
-		demands = get_production_overview(page_size=0).get("demands") or []
+		demands = _purchase_production_demands(company)
 	from process_simplification.api.workbench import order_item_priority_key
 	for demand in sorted(demands, key=order_item_priority_key):
 		if demand.get("company") != company:
@@ -1016,6 +1121,7 @@ def _purchase_inputs_from_production_overview(company: str, demands=None):
 	return readiness, unplanned_demands
 
 
+@workbench_read
 def calculate_company_purchase_shortages(company: str, selected_sales_order_items=None, *, production_demands=None, coverage_result=None):
 	"""Combine Work Order remaining need with not-yet-planned Sales Order demand.
 
@@ -1081,14 +1187,16 @@ def get_all_material_demands(company: str):
 def check_all_shortages(company: str | None = None):
 	"""Aggregate purchase shortage across planned and still-unplanned demand."""
 	frappe.has_permission("Material Request", "read", throw=True)
-	defaults = get_company_defaults(company)
-	company = company or defaults.company
+	from erpnext import get_default_company
+
+	company = company or get_default_company()
 	if not company:
 		throw_chinese("默认公司缺失，请先设置公司。")
 
-	shortages = calculate_company_purchase_shortages(company)
+	_require_purchase_company(company)
+	shortages = _visible_purchase_shortages(company, calculate_company_purchase_shortages(company))
 	if not shortages:
-		return {"shortages": [], "message": "当前所有订单没有需要采购的缺料。"}
+		return {"shortages": [], "message": "当前公司与仓库权限范围内没有需要采购的缺料。"}
 	return {"shortages": shortages}
 
 
@@ -1096,25 +1204,26 @@ def check_all_shortages(company: str | None = None):
 def check_shortage(selected_rows, company: str | None = None):
 	frappe.has_permission("Material Request", "read", throw=True)
 	rows = _selected_rows(selected_rows)
-	validated_rows = [
-		_workbench_row(row.get("sales_order"), row.get("sales_order_item")) for row in rows
-	]
-	selected_companies = {row.get("company") for row in validated_rows if row.get("company")}
-	if len(selected_companies) > 1:
-		throw_chinese("一次只能检查同一公司的订单明细。")
-	selected_company = next(iter(selected_companies), None)
-	defaults = get_company_defaults(company or selected_company)
-	company = company or selected_company or defaults.company
+	# Resolve only the first order's company; source membership is validated
+	# below against the authorized company projection, never a supplied snapshot.
+	company = company or frappe.db.get_value("Sales Order", rows[0].get("sales_order"), "company")
+	if company:
+		_require_purchase_company(company)
+	defaults = get_company_defaults(company)
+	company = company or defaults.company
 	if not company:
 		throw_chinese("默认公司缺失，请先设置公司。")
-	if any(row.get("company") != company for row in validated_rows):
-		throw_chinese("所选订单明细不属于当前公司。")
-	selected_items = {
-		row.get("sales_order_item") for row in validated_rows if row.get("sales_order_item")
-	}
+	_require_purchase_company(company)
+	demands = _purchase_production_demands(company)
+	known_sources = {(row.get("sales_order"), row.get("sales_order_item")) for row in demands}
+	if any((row.get("sales_order"), row.get("sales_order_item")) not in known_sources for row in rows):
+		throw_chinese("所选订单明细不存在、不属于当前公司或已不再需要采购，请刷新后重试。")
+	selected_items = {row.get("sales_order_item") for row in rows}
 	# Load every company demand first so earlier orders consume shared stock and
 	# inbound supply before the selected rows are reported.
-	shortages = calculate_company_purchase_shortages(company, selected_items)
+	shortages = _visible_purchase_shortages(company, calculate_company_purchase_shortages(
+		company, selected_items, production_demands=demands,
+	))
 	if not shortages:
 		return {"shortages": [], "message": "当前选择的订单没有需要采购的缺料。"}
 	return {"shortages": shortages}
@@ -1164,9 +1273,14 @@ def revalidate_purchase_rows(shortage_rows, current_shortages):
 		(row.get("item_code"), row.get("warehouse")): frappe._dict(row) for row in current_shortages or []
 	}
 	validated = []
+	seen_keys = set()
 	for index, source_row in enumerate(shortage_rows or [], start=1):
 		row = frappe._dict(deepcopy(dict(source_row)))
-		current = current_by_key.get((row.get("item_code"), row.get("warehouse")))
+		key = (row.get("item_code"), row.get("warehouse"))
+		if key in seen_keys:
+			throw_chinese("同一物料和仓库不能重复申请，请合并数量后重试。")
+		seen_keys.add(key)
+		current = current_by_key.get(key)
 		requested_source_keys = {
 			_purchase_source_key(source)
 			for source in row.get("sources") or []
@@ -1201,6 +1315,9 @@ def revalidate_purchase_rows(shortage_rows, current_shortages):
 
 
 def _create_material_request_locked(shortage_rows, company, defaults, schedule_date=None):
+	_require_purchase_company(company)
+	if any(not _can_read_purchase_material(company, row) for row in shortage_rows):
+		frappe.throw("缺料记录超出当前岗位的物料或仓库范围，请刷新后重试。", frappe.PermissionError)
 	selected_sales_order_items = sorted(
 		{
 			source.get("sales_order_item")
@@ -1270,12 +1387,15 @@ def create_material_request(shortage_rows, company: str | None = None, schedule_
 	if len(row_companies) > 1:
 		throw_chinese("一次只能为同一公司生成采购申请。")
 	row_company = next(iter(row_companies), None)
+	if company or row_company:
+		_require_purchase_company(company or row_company)
 	defaults = get_company_defaults(company or row_company)
 	company = company or row_company or defaults.company
 	if not company:
 		throw_chinese("默认公司缺失，请先设置公司。")
 	if any(row.get("company") and row.get("company") != company for row in shortage_rows):
 		throw_chinese("缺料记录不属于当前公司。")
+	_require_purchase_company(company)
 
 	lock_name = "process_simplification:material_request:{0}".format(company)
 	with frappe.cache.lock(lock_name, timeout=120, blocking_timeout=10):

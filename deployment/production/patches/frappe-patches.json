@@ -20,7 +20,7 @@
     },
     "frappe/sessions.py": {
       "original": "6bf965d99cd9dd03d9bd212d38e9f48724d6f649c4ce1d6ad491144c8ca2c894",
-      "patched": "83d6125aedc17ae6f4242771465f7cd2049740e2a70535ff930a7adde26e1cea"
+      "patched": "e41d621396453168ba9432ebc8a47acded985ccc460dbc224d20ace8f2c91cb5"
     },
     "frappe/utils/password.py": {
       "original": "083942571bcfa0ae9642b182146f8384eaa73a0b687061fd3a26af60332c2b1b",

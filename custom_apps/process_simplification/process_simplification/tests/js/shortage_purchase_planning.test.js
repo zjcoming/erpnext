@@ -19,6 +19,24 @@ const escapeHtml = (value) =>
 		.replaceAll('"', "&quot;")
 		.replaceAll("'", "&#39;");
 
+test("purchase-only roles keep source references as escaped text without forbidden document links", () => {
+	const html = shortageRowsHtml([{ item_code: "RM", shortage_qty: 2, sources: [{
+		sales_order: "SO<1>", production_plan: "PP-1", work_order: "WO-1", required_qty: 2,
+	}] }], { escapeHtml, formatQty: String, canRead: () => false });
+	assert.match(html, /SO&lt;1&gt;/);
+	assert.match(html, /PP-1/);
+	assert.match(html, /WO-1/);
+	assert.doesNotMatch(html, /href="\/app\/(sales-order|production-plan|work-order)\//);
+});
+
+test("source navigation follows each native document read capability", () => {
+	const html = shortageRowsHtml([{ item_code: "RM", shortage_qty: 2, sources: [{
+		sales_order: "SO-1", production_plan: "PP-1", work_order: "WO-1", required_qty: 2,
+	}] }], { escapeHtml, formatQty: String, canRead: (doctype) => doctype === "Sales Order" });
+	assert.match(html, /href="\/app\/sales-order\/SO-1"/);
+	assert.doesNotMatch(html, /href="\/app\/(production-plan|work-order)\//);
+});
+
 test("purchase input removes arithmetic residue and never renders an exponent", () => {
 	const rows = preparePurchaseRows([
 		{ item_code: "NO-GAP", shortage_qty: 7.247535904753022e-13, quantity_precision: 2 },

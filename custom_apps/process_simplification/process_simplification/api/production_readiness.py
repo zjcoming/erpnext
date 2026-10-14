@@ -13,6 +13,8 @@ from process_simplification.production_stock_facts import (
 	load_work_order_stock_facts,
 )
 
+from process_simplification.production_workflow.receipt import operation_receipt_remaining_qty
+
 TERMINAL_WORK_ORDER_STATUSES = {"Completed", "Stopped", "Closed", "Cancelled"}
 COMPLETED_JOB_CARD_STATUS = "Completed"
 MANUFACTURE_PURPOSE = "Manufacture"
@@ -162,10 +164,10 @@ def attach_work_order_execution_facts(
 ):
 	"""Attach batch-loaded Job Card and draft Stock Entry facts to Work Orders."""
 	operation_facts_loaded = work_order_operations is not None
-	operation_count_by_work_order = defaultdict(int)
+	operations_by_work_order = defaultdict(list)
 	for operation in work_order_operations or []:
 		if operation.get("parent"):
-			operation_count_by_work_order[operation.get("parent")] += 1
+			operations_by_work_order[operation.get("parent")].append(operation)
 
 	job_cards_by_work_order = defaultdict(list)
 	for source in job_cards or []:
@@ -195,9 +197,10 @@ def attach_work_order_execution_facts(
 			for row in cards
 			if row.get("status") in {"Work In Progress", "On Hold", COMPLETED_JOB_CARD_STATUS}
 		]
-		work_order["operation_count"] = operation_count_by_work_order.get(
-			work_order.get("name"),
-			0 if operation_facts_loaded else len(cards),
+		if operation_facts_loaded:
+			work_order["operations"] = operations_by_work_order.get(work_order.get("name"), [])
+		work_order["operation_count"] = (
+			len(work_order["operations"]) if operation_facts_loaded else len(cards)
 		)
 		work_order["job_card_count"] = len(cards)
 		work_order["completed_job_card_count"] = len(completed_cards)
@@ -339,7 +342,7 @@ def _source_reserved_qty(item) -> float:
 	return max(flt(value), 0)
 
 
-def _load_active_replenishment_work_orders(target_work_orders):
+def _load_active_replenishment_work_orders(target_work_orders, *, query=None):
 	if not target_work_orders:
 		return []
 	meta = frappe.get_meta("Work Order")
@@ -349,7 +352,7 @@ def _load_active_replenishment_work_orders(target_work_orders):
 	}
 	if not all(meta.has_field(fieldname) for fieldname in required_fields):
 		return []
-	return frappe.get_list(
+	return (query or frappe.get_list)(
 		"Work Order",
 		filters={
 			"docstatus": 1,
@@ -833,15 +836,20 @@ def derive_work_order_flow_state(work_order) -> dict:
 		group for group in material_groups if group.remaining_qty > 0
 	]
 	if remaining_items and not any(group.blocked for group in remaining_items):
-		issueable_fraction = min(
-			min(
-				group.available_qty / group.remaining_qty,
-				1,
-			)
-			for group in remaining_items
+		potential_coverage_fraction = min(
+			min((group.net_qty + group.available_qty) / group.required_qty, 1)
+			for group in material_groups
+		)
+		additional_coverage_fraction = max(
+			potential_coverage_fraction - net_transfer_coverage_fraction, 0
 		)
 	else:
-		issueable_fraction = 0
+		additional_coverage_fraction = 0
+	remaining_coverage_fraction = max(1 - net_transfer_coverage_fraction, 0)
+	issueable_fraction = (
+		min(additional_coverage_fraction / remaining_coverage_fraction, 1)
+		if remaining_coverage_fraction > 0 else 0
+	)
 	materials_available_now = bool(remaining_items) and issueable_fraction + QTY_EPSILON >= 1
 	materials_partially_available = bool(remaining_items) and (
 		QTY_EPSILON < issueable_fraction < 1 - QTY_EPSILON
@@ -853,7 +861,7 @@ def derive_work_order_flow_state(work_order) -> dict:
 	if remaining_finished_qty_to_issue <= QTY_EPSILON:
 		remaining_finished_qty_to_issue = 0
 	additional_issueable_qty = min(
-		remaining_finished_qty_to_issue * issueable_fraction,
+		flt(work_order.get("qty")) * additional_coverage_fraction,
 		remaining_finished_qty_to_issue,
 	)
 	has_issue_draft = bool(work_order.get("draft_issue_stock_entry"))
@@ -894,12 +902,14 @@ def derive_work_order_flow_state(work_order) -> dict:
 		and not has_issue_draft
 		and issue_code in {"ready", "partially_ready"}
 	)
-	# Standard Work Orders dispatch only after posted net issue. Direct-consumption
+	# Standard Work Orders may dispatch after a partial, matched BOM issue.
+	# Reporting still caps output by the posted material coverage. Direct-consumption
 	# Work Orders have no issue document, but still need full on-site coverage.
 	can_dispatch = bool(
 		not terminal
 		and (
 			all_materials_issued
+			or (not work_order.get("skip_transfer") and net_transfer_coverage_fraction > 1e-6)
 			or (
 				work_order.get("skip_transfer")
 				and (not material_groups or materials_available_now)
@@ -919,20 +929,22 @@ def derive_work_order_flow_state(work_order) -> dict:
 	if receipt_remaining_qty <= QTY_EPSILON:
 		receipt_remaining_qty = 0
 	has_receipt_draft = bool(work_order.get("draft_receipt_stock_entry"))
-	operations_completed = operation_code in {"completed", "not_applicable"}
+	requestable_receipt_qty = min(
+		receipt_remaining_qty, operation_receipt_remaining_qty(work_order)
+	)
 	if completed_work_order:
 		receipt_code = "received"
 	elif terminal:
 		receipt_code = "not_ready"
 	elif has_receipt_draft:
 		receipt_code = "draft_pending"
-	elif operations_completed and receipt_remaining_qty > 0:
+	elif requestable_receipt_qty > 0 and not work_order.get("track_semi_finished_goods"):
 		receipt_code = "requestable"
 	else:
 		receipt_code = "not_ready"
 	receipt_state = frappe._dict(
 		code=receipt_code,
-		remaining_qty=receipt_remaining_qty,
+		remaining_qty=requestable_receipt_qty,
 		produced_qty=flt(work_order.get("produced_qty")),
 		process_loss_qty=flt(work_order.get("process_loss_qty")),
 	)
@@ -1331,6 +1343,28 @@ def _serialize_readiness_plan(plan, sales_order_item=None):
 
 
 def get_production_plan_readiness(company=None, sales_order_items=None):
+	return _get_production_plan_readiness(company, sales_order_items, query=frappe.get_list)
+
+
+def _get_purchase_plan_readiness(company):
+	"""Internal company-wide allocation facts; never return this graph to buyers.
+
+	Purchasing does not grant native SO/WO/Plan read. The shortage service checks
+	its own company boundary and exposes only permitted material-request rows.
+	Loading the whole company graph keeps shared stock/inbound allocation intact.
+	"""
+	from process_simplification.api.shortage import _require_purchase_company
+
+	_require_purchase_company(company)
+
+	def company_query(doctype, **kwargs):
+		kwargs["filters"] = {**kwargs.get("filters", {}), "company": company}
+		return frappe.get_all(doctype, **kwargs)
+
+	return _get_production_plan_readiness(company, query=company_query)
+
+
+def _get_production_plan_readiness(company=None, sales_order_items=None, *, query):
 	"""Return Work Order readiness grouped by Sales Order Item.
 
 	Stock and inbound supply are allocated globally by Sales Order Item delivery
@@ -1343,7 +1377,7 @@ def get_production_plan_readiness(company=None, sales_order_items=None):
 	}
 	if company:
 		work_order_filters["company"] = company
-	work_orders = frappe.get_list(
+	work_orders = query(
 		"Work Order",
 		filters=work_order_filters,
 		fields=[
@@ -1358,6 +1392,7 @@ def get_production_plan_readiness(company=None, sales_order_items=None):
 			"company",
 			"status",
 			"skip_transfer",
+			"track_semi_finished_goods",
 			"from_wip_warehouse",
 			"qty",
 			"produced_qty",
@@ -1444,7 +1479,7 @@ def get_production_plan_readiness(company=None, sales_order_items=None):
 	work_order_operations = frappe.get_all(
 		"Work Order Operation",
 		filters={"parent": ["in", work_order_names]},
-		fields=["name", "parent", "idx"],
+		fields=["name", "parent", "idx", "completed_qty", "process_loss_qty"],
 		limit=0,
 	)
 	draft_stock_entries = frappe.get_all(
@@ -1466,9 +1501,9 @@ def get_production_plan_readiness(company=None, sales_order_items=None):
 	)
 	attach_replenishment_work_orders(
 		required_items,
-		_load_active_replenishment_work_orders(work_order_names),
+		_load_active_replenishment_work_orders(work_order_names, query=query),
 	)
-	plans = frappe.get_list(
+	plans = query(
 		"Production Plan",
 		filters={"name": ["in", plan_names]},
 		fields=["name", "company", "posting_date", "creation", "status"],
@@ -1533,7 +1568,7 @@ def get_production_plan_readiness(company=None, sales_order_items=None):
 		| {row.get("parent") for row in order_items if row.get("parent")}
 	)
 	orders = (
-		frappe.get_list(
+		query(
 			"Sales Order",
 			filters={"name": ["in", linked_order_names]},
 			fields=["name", "creation"],

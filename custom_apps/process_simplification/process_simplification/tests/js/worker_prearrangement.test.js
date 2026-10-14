@@ -173,31 +173,86 @@ test("waiting on a start response is bounded without pretending the server abort
 
 function mountedQueue({ planned = true, fail = false, assignments = [], tasks = [task()], mode = "queue" } = {}) {
 	const html = new Map(), visible = new Map(), properties = new Map(), handlers = new Map(), queries = [];
+	const scheduled = new Map(), pageEvents = new Map(), visibilityListeners = new Set(), nodes = new Map();
+	const dialogs = [], writes = [], messages = [], buttons = [];
+	let now = 0, nextTimer = 0, readOverride = null;
+	const document = {
+		hidden: false,
+		addEventListener(_name, handler) { visibilityListeners.add(handler); },
+		removeEventListener(_name, handler) { visibilityListeners.delete(handler); },
+	};
+	const button = () => ({ disabled: false, label: "结束并报工", prop(name, value) { this[name] = value; return this; },
+		text(value) { if (value === undefined) return this.label; this.label = value; return this; } });
 	const root = {
+		0: { querySelectorAll() { return [...nodes.values()]; } },
 		on(_event, selector, handler) { handlers.set(selector, handler); },
+		off() { handlers.clear(); },
 		find(selector) { return {
-			html(value) { html.set(selector, value); }, toggle(value) { visible.set(selector, value); },
+			html(value) {
+				html.set(selector, value);
+				if (selector === ".worker-active-list") {
+					nodes.clear();
+					for (const match of value.matchAll(/data-worker-timer="([^"]+)"[^>]*>([^<]*)/g)) {
+						nodes.set(match[1], { dataset: { workerTimer: match[1] }, textContent: match[2] });
+					}
+				}
+			}, toggle(value) { visible.set(selector, value); },
 			prop(name, value) { properties.set(`${selector}:${name}`, value); },
 		}; },
 	};
 	const page = {
+		wrapper: { 0: {}, on(name, handler) { pageEvents.set(name, handler); }, off() { pageEvents.clear(); } },
 		add_custom_menu_item() { return { addClass() {} }; },
 		menu_btn_group: { addClass() {}, find() { return { attr() {} }; } },
 	};
 	const frappe = {
 		utils: { escape_html: String }, datetime: { str_to_user: String }, session: { user: "worker@example.com" },
 		container: { page: { page } },
+		msgprint(message) { messages.push(message); }, show_alert() {}, confirm(_message, action) { return action(); },
+		async call(request) {
+			writes.push(request);
+			if (/pause_work_session$/.test(request.method)) assignments = assignments.map((row) => ({ ...row, timer_paused_at: "paused", active_minutes: 2 }));
+			if (/resume_work_session$/.test(request.method)) assignments = assignments.map((row) => ({ ...row, timer_paused_at: null }));
+			if (/finish_work_session$|cancel_work_session$/.test(request.method)) assignments = [];
+			return { message: {} };
+		},
+		ui: { Dialog: class {
+			constructor(options) {
+				this.options = options; this.values = {}; this.fields_dict = {}; this.changed = []; this.primary = button();
+				for (const field of options.fields) {
+					this.values[field.fieldname] = field.default;
+					this.fields_dict[field.fieldname] = { df: { ...field }, $wrapper: { html() {} } };
+				}
+				dialogs.push(this);
+			}
+			get_value(name) { return this.values[name]; }
+			set_value(name, value) {
+				this.values[name] = value; this.changed.push(name);
+				this.fields_dict[name].df.onchange?.();
+			}
+			set_df_property(name, property, value) { this.fields_dict[name].df[property] = value; }
+			get_primary_btn() { return this.primary; }
+			set_secondary_action(callback) { this.secondary = callback; }
+			set_secondary_action_label() {}
+			show() { this.display = true; }
+			hide() { this.display = false; this.options.on_hide?.(); }
+		} },
 		async ps_read_page(_page, options) {
 			queries.push(options);
 			if (fail) throw new Error("读取失败");
+			if (readOverride) return readOverride(options);
 			const dashboard = { assignments, reports: [] };
 			options.apply({ message: options.requests ? { dashboard, planned: { tasks } } : dashboard });
 			return true;
 		},
 	};
 	const context = vm.createContext({
-		frappe, __: (text) => text, flt: (value) => Number(value || 0), format_number: String,
-		window: { process_simplification: {} }, setTimeout, clearTimeout,
+		frappe, __: (text, values = []) => text.replace(/\{(\d+)\}/g, (_, index) => values[index]),
+		flt: (value) => Number(value || 0), format_number: (value) => Number(value).toFixed(2),
+		window: { process_simplification: {}, document }, performance: { now: () => now },
+		$: (element) => element,
+		setTimeout(callback) { const id = ++nextTimer; scheduled.set(id, callback); return id; },
+		clearTimeout(id) { scheduled.delete(id); },
 	});
 	vm.runInContext(fs.readFileSync(path.resolve(__dirname, "../../public/js/worker_reporting.js"), "utf8"), context);
 	context.window.process_simplification.worker_reporting.mountWorkerReportingPage({ page, root, mode });
@@ -205,7 +260,22 @@ function mountedQueue({ planned = true, fail = false, assignments = [], tasks = 
 		vm.runInContext(fs.readFileSync(path.resolve(__dirname, "../../public/js/worker_prearrangement.js"), "utf8"), context);
 		context.window.process_simplification.worker_prearrangement.mountWorkerPrearrangement({ page, root });
 	}
-	return { page, html, visible, properties, handlers, queries };
+	return {
+		page, html, visible, properties, handlers, queries, scheduled, nodes, dialogs, writes, messages, buttons, document, visibilityListeners,
+		setAssignments(value) { assignments = value; }, setFailure(value) { fail = value; }, setRead(value) { readOverride = value; },
+		advance(ms) { now += ms; const pending = [...scheduled.values()]; scheduled.clear(); pending.forEach((tick) => tick()); },
+		async click(selector, data = {}) {
+			const target = Object.assign(button(), { data: (name) => data[name] });
+			buttons.push(target);
+			await handlers.get(selector)({ currentTarget: target });
+			return target;
+		},
+		event(name, target = page.wrapper[0]) { pageEvents.get(`${name}.worker-reporting-timer`)?.({ target }); },
+		async visibility(hidden) { document.hidden = hidden; await Promise.all([...visibilityListeners].map((listener) => listener())); },
+		leave() { this.event("hide"); frappe.container.page = null; },
+		enter() { frappe.container.page = { page }; this.event("show"); },
+		remount() { context.window.process_simplification.worker_reporting.mountWorkerReportingPage({ page, root, mode }); },
+	};
 }
 
 test("queue refresh reads formal and planned tasks as one tracked page batch", async () => {
@@ -307,4 +377,262 @@ test("refresh disables starts in place before the shared reader captures expande
 	f.page.worker_prearrangement.accept({ tasks: [task()] });
 	assert.match(f.html.get(".worker-assignment-list"), /worker-planned-start/);
 	assert.equal(f.page.worker_reporting.canStartTask("planned", "PLAN-1"), true);
+});
+
+function timedAssignment(overrides = {}) {
+	return {
+		name: "ACTIVE", active_report: "REPORT", active_minutes: 0.006,
+		active_started_at: "2026-10-10 13:26:11", job_card: "JC-1", operation: "加工",
+		can_finish: true, reportable_qty: 2, wage_type: "Piecework", rate: 3,
+		wage_options: [{ wage_type: "Piecework", rate: 3 }, { wage_type: "Time", rate: 30 }],
+		time_manual_entry_available: true, ...overrides,
+	};
+}
+
+test("active timer advances by elapsed time without more reads or whole-page renders", async () => {
+	const f = mountedQueue({ mode: "active", assignments: [timedAssignment()] });
+	await f.page.worker_reporting.load();
+	const originalHtml = f.html.get(".worker-active-list");
+	f.advance(90000);
+	assert.equal(f.nodes.get("ACTIVE").textContent, "1.51 分钟");
+	assert.equal(f.html.get(".worker-active-list"), originalHtml);
+	assert.equal(f.queries.length, 1);
+	assert.equal(f.scheduled.size, 1);
+	assert.equal(f.page.worker_reporting.state.data.assignments[0].active_minutes, 0.006);
+});
+
+test("pause freezes the display and resume reanchors without counting the break", async () => {
+	const f = mountedQueue({ mode: "active", assignments: [timedAssignment()] });
+	await f.page.worker_reporting.load();
+	f.advance(120000);
+	await f.click(".worker-timer-action", { assignment: "ACTIVE", action: "pause" });
+	f.advance(600000);
+	assert.equal(f.nodes.get("ACTIVE").textContent, "2.00 分钟");
+	assert.equal(f.scheduled.size, 0);
+	await f.click(".worker-timer-action", { assignment: "ACTIVE", action: "resume" });
+	f.advance(60000);
+	assert.equal(f.nodes.get("ACTIVE").textContent, "3.00 分钟");
+	assert.equal(f.scheduled.size, 1);
+	assert.equal(f.writes.length, 2);
+});
+
+test("refresh and a new active report replace the clock anchor without adding timers", async () => {
+	const f = mountedQueue({ mode: "active", assignments: [timedAssignment()] });
+	await f.page.worker_reporting.load();
+	f.advance(120000);
+	f.setAssignments([timedAssignment({ active_report: "REPORT-2", active_minutes: 0.5 })]);
+	await f.page.worker_reporting.load();
+	f.page.worker_reporting.render(); f.page.worker_reporting.render();
+	f.advance(60000);
+	assert.equal(f.nodes.get("ACTIVE").textContent, "1.50 分钟");
+	assert.equal(f.scheduled.size, 1);
+	f.setAssignments([]);
+	await f.page.worker_reporting.load();
+	assert.equal(f.scheduled.size, 0);
+});
+
+test("finish reads a fresh snapshot and updates only the read-only minute field", async () => {
+	const f = mountedQueue({ mode: "active", assignments: [timedAssignment()] });
+	await f.page.worker_reporting.load();
+	f.setAssignments([timedAssignment({ active_minutes: 2 })]);
+	await f.click(".worker-report-action", { assignment: "ACTIVE" });
+	const dialog = f.dialogs[0];
+	assert.equal(dialog.values.captured_minutes, 2);
+	assert.equal(dialog.fields_dict.captured_minutes.df.precision, 2);
+	dialog.set_value("completed_qty", 1.5);
+	dialog.set_value("wage_type", "计时 · 30.00/小时");
+	dialog.set_value("reported_minutes", 45);
+	dialog.changed.length = 0;
+	f.advance(90000);
+	assert.equal(dialog.values.captured_minutes, 3.5);
+	assert.equal(f.nodes.get("ACTIVE").textContent, "3.50 分钟");
+	assert.equal(dialog.values.completed_qty, 1.5);
+	assert.equal(dialog.values.wage_type, "计时 · 30.00/小时");
+	assert.equal(dialog.values.reported_minutes, 45);
+	assert.deepEqual(dialog.changed, ["captured_minutes"]);
+	assert.equal(f.queries.length, 2, "ticks must never read the dashboard");
+	assert.equal(f.dialogs.length, 1);
+});
+
+test("finish waits for a merged read and suppresses a second open while loading", async () => {
+	const f = mountedQueue({ mode: "active", assignments: [timedAssignment()] });
+	await f.page.worker_reporting.load();
+	let resolve, opts;
+	f.setRead((options) => { opts = options; return new Promise((done) => { resolve = done; }); });
+	const pending = f.click(".worker-report-action", { assignment: "ACTIVE" });
+	await f.click(".worker-report-action", { assignment: "ACTIVE" });
+	assert.equal(f.buttons[0].disabled, true);
+	assert.match(f.buttons[0].label, /正在读取计时/);
+	assert.equal(f.dialogs.length, 0);
+	assert.equal(f.queries.length, 2);
+	assert.match(opts.freeze_message, /正在读取/);
+	opts.apply({ message: { assignments: [timedAssignment({ active_minutes: 4 })] } });
+	resolve(true);
+	const button = await pending;
+	assert.equal(f.dialogs.length, 1);
+	assert.equal(f.dialogs[0].values.captured_minutes, 4);
+	assert.equal(button.disabled, false);
+	assert.equal(button.label, "结束并报工");
+});
+
+test("failed or unapplied finish reads never open an old row and release the loading guard", async () => {
+	for (const outcome of ["throw", "false", "true-without-apply", "different-report"]) {
+		const f = mountedQueue({ mode: "active", assignments: [timedAssignment()] });
+		await f.page.worker_reporting.load();
+		f.setRead((options) => {
+			if (outcome === "throw") throw new Error("读取失败");
+			if (outcome === "different-report") options.apply({ message: { assignments: [timedAssignment({ active_report: "OTHER" })] } });
+			return outcome !== "false";
+		});
+		const button = await f.click(".worker-report-action", { assignment: "ACTIVE" });
+		assert.equal(f.dialogs.length, 0, outcome);
+		assert.equal(button.disabled, false, outcome);
+		assert.equal(f.messages.length, 1, outcome);
+		assert.equal(f.writes.length, 0);
+		f.setRead(null); f.setAssignments([timedAssignment()]);
+		await f.page.worker_reporting.load();
+		await f.click(".worker-report-action", { assignment: "ACTIVE" });
+		assert.equal(f.dialogs.length, 1, "worker can retry explicitly after a read failure");
+	}
+});
+
+test("leaving and returning during a finish read cannot open a delayed dialog", async () => {
+	const f = mountedQueue({ mode: "active", assignments: [timedAssignment()] });
+	await f.page.worker_reporting.load();
+	let resolve, opts;
+	f.setRead((options) => { opts = options; return new Promise((done) => { resolve = done; }); });
+	const pending = f.click(".worker-report-action", { assignment: "ACTIVE" });
+	f.leave(); f.enter();
+	opts.apply({ message: { assignments: [timedAssignment()] } });
+	resolve(true); await pending;
+	assert.equal(f.dialogs.length, 0);
+	assert.equal(f.writes.length, 0);
+});
+
+test("hidden pages stop ticks and visibility resumes with one fresh read without erasing inputs", async () => {
+	const f = mountedQueue({ mode: "active", assignments: [timedAssignment()] });
+	await f.page.worker_reporting.load();
+	await f.click(".worker-report-action", { assignment: "ACTIVE" });
+	const dialog = f.dialogs[0];
+	dialog.set_value("completed_qty", 1.5);
+	await f.visibility(true);
+	assert.equal(f.scheduled.size, 0);
+	f.setAssignments([timedAssignment({ active_minutes: 12 })]);
+	await f.visibility(false);
+	assert.equal(f.queries.length, 3);
+	assert.equal(dialog.values.captured_minutes, 12);
+	assert.equal(dialog.values.completed_qty, 1.5);
+	assert.equal(f.scheduled.size, 1);
+	assert.equal(f.dialogs.length, 1);
+	await f.visibility(true); f.setFailure(true);
+	await f.visibility(false);
+	assert.equal(f.scheduled.size, 0);
+	assert.equal(dialog.values.completed_qty, 1.5);
+	assert.match(f.messages.at(-1), /读取当前计时失败/);
+});
+
+test("an externally replaced active report disables the existing dialog without erasing it", async () => {
+	const f = mountedQueue({ mode: "active", assignments: [timedAssignment()] });
+	await f.page.worker_reporting.load(); await f.click(".worker-report-action", { assignment: "ACTIVE" });
+	const dialog = f.dialogs[0];
+	dialog.set_value("completed_qty", 1);
+	f.setAssignments([timedAssignment({ active_report: "OTHER" })]);
+	await f.page.worker_reporting.load();
+	assert.equal(dialog.primary.disabled, true);
+	assert.match(dialog.fields_dict.captured_minutes.df.description, /任务状态已改变/);
+	assert.equal(dialog.values.completed_qty, 1);
+	await dialog.options.primary_action(dialog.values);
+	assert.equal(f.writes.length, 0);
+});
+
+test("page hide and remount clean timers and listeners while child hide is ignored", async () => {
+	const f = mountedQueue({ mode: "active", assignments: [timedAssignment()] });
+	await f.page.worker_reporting.load();
+	f.event("hide", {});
+	assert.equal(f.scheduled.size, 1);
+	f.leave();
+	assert.equal(f.scheduled.size, 0);
+	assert.equal(f.visibilityListeners.size, 0);
+	const oldText = f.nodes.get("ACTIVE").textContent;
+	f.advance(60000);
+	assert.equal(f.nodes.get("ACTIVE").textContent, oldText);
+	f.enter();
+	assert.equal(f.queries.length, 1, "show leaves the read to the existing page refresh");
+	await f.page.worker_reporting.load();
+	assert.equal(f.visibilityListeners.size, 1);
+	f.remount();
+	assert.equal(f.scheduled.size, 0);
+	await f.page.worker_reporting.load();
+	assert.equal(f.scheduled.size, 1);
+	assert.equal(f.visibilityListeners.size, 1);
+	f.page.worker_reporting.dispose();
+	assert.equal(f.scheduled.size, 0);
+	assert.equal(f.visibilityListeners.size, 0);
+});
+
+test("a disposed page instance cannot apply a delayed response over the replacement instance", async () => {
+	const f = mountedQueue({ mode: "active", assignments: [timedAssignment()] });
+	await f.page.worker_reporting.load();
+	let resolve, oldOptions;
+	f.setRead((options) => { oldOptions = options; return new Promise((done) => { resolve = done; }); });
+	const pending = f.page.worker_reporting.load();
+	f.remount(); f.setRead(null);
+	f.setAssignments([timedAssignment({ active_report: "NEW", active_minutes: 3 })]);
+	await f.page.worker_reporting.load();
+	const html = f.html.get(".worker-active-list");
+	assert.equal(oldOptions.apply({ message: { assignments: [] } }), false);
+	resolve(false); await pending;
+	assert.equal(f.html.get(".worker-active-list"), html);
+	assert.equal(f.page.worker_reporting.state.data.assignments[0].active_report, "NEW");
+	assert.equal(f.scheduled.size, 1);
+});
+
+test("visibility recovery stops the display if an applied stale response is reported unsuccessful", async () => {
+	const f = mountedQueue({ mode: "active", assignments: [timedAssignment()] });
+	await f.page.worker_reporting.load(); await f.visibility(true);
+	f.setRead((options) => {
+		options.apply({ message: { assignments: [timedAssignment({ active_minutes: 8 })], _refresh_stale: true } });
+		return false;
+	});
+	await f.visibility(false);
+	assert.equal(f.scheduled.size, 0);
+	assert.match(f.messages.at(-1), /计时状态未能更新/);
+	const text = f.nodes.get("ACTIVE").textContent;
+	f.advance(60000);
+	assert.equal(f.nodes.get("ACTIVE").textContent, text);
+});
+
+test("dialog close detaches its clock while finish preserves the server-authoritative payload", async () => {
+	const f = mountedQueue({ mode: "active", assignments: [timedAssignment()] });
+	await f.page.worker_reporting.load(); await f.click(".worker-report-action", { assignment: "ACTIVE" });
+	const old = f.dialogs[0], previous = old.values.captured_minutes;
+	old.hide(); f.advance(60000);
+	assert.equal(old.values.captured_minutes, previous);
+	assert.equal(f.scheduled.size, 1);
+	await f.click(".worker-report-action", { assignment: "ACTIVE" });
+	const dialog = f.dialogs[1];
+	dialog.set_value("completed_qty", 1.5);
+	dialog.set_value("wage_type", "计时 · 30.00/小时");
+	dialog.set_value("reported_minutes", 45);
+	f.advance(90000);
+	await dialog.options.primary_action(dialog.values);
+	assert.equal(f.writes.length, 1);
+	assert.deepEqual(Object.keys(f.writes[0].args).sort(), ["completed_qty", "report", "reported_minutes", "request_id", "wage_type"]);
+	assert.equal(f.writes[0].args.reported_minutes, 45);
+	assert.equal(f.writes[0].args.wage_type, "Time");
+	assert.equal(f.writes[0].args.completed_qty, 1.5);
+	assert.equal(f.scheduled.size, 0);
+	assert.equal(dialog.display, false);
+});
+
+test("canceling a session stops its display without adding timing fields to the request", async () => {
+	const f = mountedQueue({ mode: "active", assignments: [timedAssignment()] });
+	await f.page.worker_reporting.load(); await f.click(".worker-report-action", { assignment: "ACTIVE" });
+	f.dialogs[0].secondary();
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(f.writes.length, 1);
+	assert.match(f.writes[0].method, /cancel_work_session$/);
+	assert.deepEqual(Object.keys(f.writes[0].args), ["report"]);
+	assert.equal(f.scheduled.size, 0);
+	assert.equal(f.dialogs[0].display, false);
 });

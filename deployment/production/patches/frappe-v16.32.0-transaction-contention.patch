@@ -163,18 +163,76 @@
  
  	def resume(self):
  		"""non-login request: load a session"""
-@@ -426,6 +429,10 @@
+@@ -360,6 +363,19 @@
+ 		if data:
+ 			data = frappe._dict(data)
+ 			session_data = data.get("data", {})
++
++			# A concurrent logout can delete the DB row before an in-flight
++			# refresh publishes its cache. Cached data alone cannot restore it.
++			sessions = frappe.qb.DocType("Sessions")
++			users = (
++				frappe.qb.from_(sessions)
++				.select(sessions.user)
++				.where(sessions.sid == self.sid)
++				.where(sessions.lastupdate > get_expired_threshold())
++			).run(pluck=True)
++			if not users or users[0] != data.get("user") or users[0] != session_data.get("user"):
++				frappe.cache.hdel("session", self.sid)
++				return None
+ 
+ 			# set user for correct timezone
+ 			self.time_diff = frappe.utils.time_diff_in_seconds(
+@@ -426,7 +442,30 @@
  			self.data.data.lang = str(frappe.lang)
  			self.data.data.session_ip = frappe.local.request_ip
  
-+			# Match login/password-reset lock order before updating a Sessions row.
-+			from frappe.utils.password import _lock_user_password_owner
-+
-+			_lock_user_password_owner("User", frappe.session.user)
++			# Match login/password-reset lock order. Activity metadata may have
++			# changed since Desk established its snapshot; only this lock uses
++			# a current read. Session writes retain the snapshot conflict guard.
++			if frappe.db.db_type == "mariadb":
++				frappe.db.sql(
++					"SET STATEMENT innodb_snapshot_isolation=OFF FOR "
++					"SELECT name FROM tabUser WHERE name=%s FOR UPDATE",
++					(frappe.session.user,),
++				)
  			Sessions = frappe.qb.DocType("Sessions")
++			# Verify existence under the same row lock as the update. An UPDATE
++			# of a concurrently deleted SID can succeed without changing a row.
++			if not (
++				frappe.qb.from_(Sessions)
++				.select(Sessions.sid)
++				.where(Sessions.sid == self.data["sid"])
++				.for_update()
++			).run():
++				frappe.cache.hdel("session", self.sid)
++				if force:
++					frappe.throw(_("Session Expired"), frappe.AuthenticationError)
++				# The default update runs after the response; let destroy release
++				# the transaction rather than raising from its cleanup callbacks.
++				return False
  			# update sessions table
  			(
-@@ -460,12 +467,12 @@
+ 				frappe.qb.update(Sessions)
+@@ -438,7 +477,16 @@
+ 				.set(Sessions.lastupdate, now)
+ 			).run()
+ 
+-			update_user_metadata(frappe.session.user, last_active=now, last_ip=frappe.local.request_ip)
++			if frappe.db.db_type == "mariadb":
++				# Keep the current-read scope to these two activity fields. Login,
++				# password and authentication writes keep their original guards.
++				frappe.db.sql(
++					"SET STATEMENT innodb_snapshot_isolation=OFF FOR "
++					"UPDATE tabUser SET last_active=%s, last_ip=COALESCE(%s, last_ip) WHERE name=%s",
++					(now, frappe.local.request_ip, frappe.session.user),
++				)
++			else:
++				update_user_metadata(frappe.session.user, last_active=now, last_ip=frappe.local.request_ip)
+ 
+ 			frappe.db.commit(chain=True)
+ 			updated_in_db = True
+@@ -460,12 +508,12 @@
  	last_active: str | None = None,
  	run_notifications: bool = False,
  ):
@@ -193,7 +251,7 @@
  	"""
  	values = {}
  	if last_login is not None:
-@@ -478,7 +485,8 @@
+@@ -478,7 +526,8 @@
  	if user == "Guest" or not values:
  		return
  

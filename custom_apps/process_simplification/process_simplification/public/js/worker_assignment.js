@@ -19,6 +19,7 @@ function workerAssignmentStatusMeta(status, translate = (message) => message) {
 function workerAssignmentMaterialStatusMeta(status, translate = (message) => message) {
 	const statuses = {
 		READY_TO_REPORT: { label: translate("可报工"), indicator: "green" },
+		PREVIOUS_OPERATION_PENDING: { label: translate("等待前序"), indicator: "gray" },
 		MATERIAL_NOT_TRANSFERRED: { label: translate("等待发料"), indicator: "orange" },
 		COMPLETED: { label: translate("已完成"), indicator: "gray" },
 	};
@@ -118,7 +119,7 @@ function workerAssignmentBlockMessage(row = {}, translate = (message) => message
 		NO_REMAINING_QTY: "生产任务单已没有剩余可报数量。",
 		RATE_MISSING: "请先为该工序配置当前有效的计价规则。",
 		RATE_CONFLICT: "该工序当前存在多条有效计价规则，请先处理冲突。",
-		MATERIAL_NOT_FULLY_ISSUED: "物料尚未全部发到在制品仓，当前只能查看派工记录。",
+		MATERIAL_NOT_FULLY_ISSUED: "尚未发齐一批生产所需的配套物料，请先提交领料单。",
 		MATERIAL_NOT_READY: "物料尚未满足正式派工条件，当前只能查看派工记录。",
 		DIRECT_MATERIAL_SHORTAGE: "直耗料现场库存不足，补料或锁料完成前不能新增派工。",
 		DIRECT_PRIORITY_CONFLICT: "直耗料已优先分配给其他工单，当前不能新增派工。",
@@ -253,7 +254,9 @@ function workOrderAssignmentContextHtml(context = {}, helpers) {
 	const t = helpers.translate;
 	const workOrder = context.work_order || {};
 	const cards = (context.job_cards || []).map((row) => {
-		const material = workerAssignmentMaterialStatusMeta(row.material_status, t);
+		const material = workerAssignmentMaterialStatusMeta(
+			row.block_code === "PREVIOUS_OPERATION_PENDING" ? row.block_code : row.material_status, t
+		);
 		const assignments = (row.assignments || []).length
 			? (row.assignments || [])
 					.map((assignment) => {
@@ -273,12 +276,20 @@ function workOrderAssignmentContextHtml(context = {}, helpers) {
 		const redispatchAction = row.can_redispatch
 			? `<button class="btn btn-xs btn-primary worker-assignment-redispatch" data-job-card="${esc(row.name || "")}">${esc(t("重新派工剩余 {0} 件")).replace("{0}", number(row.redispatchable_qty))}</button>`
 			: "";
+		const continuationAction = row.can_finalize_partial
+			? `<button class="btn btn-xs btn-primary worker-assignment-finalize-partial" data-job-card="${esc(row.name || "")}">${esc(t("确认本批完工"))}</button>`
+			: "";
+		const continued = Number(row.continued_qty || 0) > 0
+			? `<p class="text-info">${esc(t("已交后续任务"))} ${number(row.continued_qty)} · ${esc(row.continued_to || "")}</p>`
+			: "";
 		return `<article class="worker-assignment-job-card${row.can_assign ? "" : " is-blocked"}">
 			<div class="worker-assignment-job-heading"><a href="/app/job-card/${encodeURIComponent(row.name || "")}" target="_blank"><strong>${esc(row.name || "")}</strong></a><span>${esc(row.operation || "")}</span><span class="indicator-pill ${esc(material.indicator)}">${esc(material.label)}</span></div>
 			<div class="worker-assignment-job-facts"><span>${esc(t("工作站"))}：${esc(row.workstation || t("未设置"))}</span><span>${esc(t("任务量"))}：${number(row.for_quantity)}</span><span>${esc(t("原派合计"))}：${number(row.assigned_total_qty)}</span><span>${esc(t("当前分配合计"))}：${number(row.effective_assigned_total_qty ?? row.assigned_total_qty)}</span><span>${esc(t("已完成"))}：${number(row.completed_qty)}</span><span>${esc(t("剩余"))}：${number(row.remaining_qty)}</span><span>${esc(t("当前可报"))}：${number(row.available_reportable_qty)}</span>${Number(row.released_pool_qty || 0) ? `<span>${esc(t("待重新派工"))}：${number(row.released_pool_qty)}</span>` : ""}<span>${esc(t("审核主管"))}：${esc(row.display_supervisor || row.assignment_supervisor || "")}</span></div>
 			<div class="worker-assignment-people">${assignments}</div>
 			${blockMessage ? `<p class="${blockClass} worker-assignment-block">${esc(blockMessage)}</p>` : ""}
-			${redispatchAction ? `<div class="worker-assignment-actions">${redispatchAction}</div>` : ""}
+			${continued}
+			${row.partial_completion_block_message ? `<p class="text-muted">${esc(t(row.partial_completion_block_message))}</p>` : ""}
+			${redispatchAction || continuationAction ? `<div class="worker-assignment-actions">${redispatchAction}${continuationAction}</div>` : ""}
 		</article>`;
 	}).join("");
 	return `<div class="worker-assignment-context">
@@ -584,6 +595,38 @@ function openWorkerAssignmentDialog(options = {}) {
 		}
 		dialog = new frappe.ui.Dialog(dialogOptions);
 		dialog.$wrapper.addClass("ps-worker-assignment-dialog");
+		const continuationRequests = new Map();
+		dialog.$wrapper.on("click", ".worker-assignment-finalize-partial", (event) => {
+			const $button = $(event.currentTarget);
+			const row = (context?.job_cards || []).find((item) => item.name === String($button.data("job-card") || ""));
+			if (!row?.can_finalize_partial) return;
+			frappe.confirm(__(
+				"确认本批已完成 {0}，剩余 {1} 由原工人继续？已审核报工的数量、工价和工资保持不变；后续报工按开工时工价计薪。确认后，全部工序达到对应数量时即可申请入库。",
+				[format_number(flt(row.completed_qty), null, 2), format_number(flt(row.remaining_qty), null, 2)]
+			), async () => {
+				if (!continuationRequests.has(row.name)) {
+					continuationRequests.set(row.name, globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`);
+				}
+				$button.prop("disabled", true).text(__("处理中..."));
+				try {
+					await frappe.call({
+						method: "process_simplification.production_reporting.continuation.finalize_partial_job_card",
+						type: "POST",
+						args: {
+							job_card: row.name, request_id: continuationRequests.get(row.name),
+							expected_completed_qty: row.completed_qty,
+							expected_remaining_qty: row.remaining_qty,
+						},
+						freeze: true,
+					});
+					dialog.hide();
+					frappe.show_alert({ message: __("本批已确认，剩余任务已交原工人继续。"), indicator: "green" });
+					await options.on_success?.();
+				} finally {
+					$button.prop("disabled", false).text(__("确认本批完工"));
+				}
+			});
+		});
 		dialog.$wrapper.on("click", ".worker-assignment-redispatch", (event) => {
 			const jobCard = String($(event.currentTarget).data("job-card") || "");
 			const row = (context?.job_cards || []).find((item) => item.name === jobCard);

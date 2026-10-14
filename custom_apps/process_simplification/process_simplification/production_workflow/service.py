@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from math import isfinite
+
 import frappe
 from frappe import _
 from frappe.utils import flt, nowdate
@@ -17,6 +19,7 @@ from process_simplification.production_stock_facts import (
 	get_work_order_stock_fact,
 	load_work_order_stock_facts,
 )
+from process_simplification.production_workflow.receipt import operation_receipt_remaining_qty
 from process_simplification.request_transaction import retry_request_transaction
 
 RECEIPT_ACTION = "Receipt Request"
@@ -205,14 +208,13 @@ def _evaluate_work_order_dispatch(doc):
 	issued_fraction, _potential_fraction = _material_issue_coverage(
 		doc, stock_facts=stock_facts if facts_loaded else None
 	)
-	if issued_fraction + 1e-6 < 1:
+	# A posted, complete set of BOM components may cover only the first batch.
+	# Worker start/report/approval keep the existing material quantity caps.
+	if issued_fraction <= 1e-6:
 		return _dispatch_state(
 			False,
 			"MATERIAL_NOT_FULLY_ISSUED",
-			_(
-				"Materials must be fully issued to WIP before formal worker assignment. "
-				"Create and submit the material issue request first."
-			),
+			_("请先提交领料单，至少发齐一批生产所需的配套物料后再正式派工。"),
 		)
 	return _dispatch_state(True)
 
@@ -321,10 +323,13 @@ def receipt_remaining_qty(work_order, stock_facts=None) -> float:
 			work_order, stock_facts=stock_facts
 		)
 		transfer_base = flt(work_order.get("qty")) * current_coverage
-	return max(
-		transfer_base - flt(work_order.get("produced_qty"))
-		- flt(work_order.get("process_loss_qty")),
-		0,
+	return min(
+		max(
+			transfer_base - flt(work_order.get("produced_qty"))
+			- flt(work_order.get("process_loss_qty")),
+			0,
+		),
+		operation_receipt_remaining_qty(work_order),
 	)
 
 
@@ -566,9 +571,8 @@ def _guided_component_issue_quantities(
 ) -> dict:
 	"""Return component quantities that raise the minimum net BOM coverage.
 
-	This differs from ERPNext's normal pending calculation only after a material
-	return: core stores gross transfer and return separately, so the normal
-	``required - transferred`` expression no longer exposes the net gap.
+	Previously issued components can cover different quantities after uneven
+	issues or returns. Raise only the limiting components to the target coverage.
 	"""
 	groups = {
 		key: group
@@ -592,7 +596,7 @@ def _guided_component_issue_quantities(
 
 
 def _insert_guided_issue_stock_entry(work_order, finished_qty: float, stock_facts=None):
-	"""Create a transfer draft, rebuilding rows from net coverage after returns."""
+	"""Create a transfer draft, rebuilding uneven component rows from net coverage."""
 	has_return_gap = _has_material_return_gap(work_order, stock_facts)
 	entry = frappe.get_doc(
 		make_stock_entry(
@@ -613,10 +617,20 @@ def _insert_guided_issue_stock_entry(work_order, finished_qty: float, stock_fact
 	entry.remarks = _("Created from the simplified production hand-off workflow.")
 	if has_return_gap:
 		entry.fg_completed_qty = 0
+	quantities = _guided_component_issue_quantities(work_order, finished_qty, stock_facts)
+	native_quantities = {}
+	for row in entry.get("items") or []:
+		quantity = flt(row.qty) * flt(row.get("conversion_factor") or 1)
+		if row.get("s_warehouse") and quantity > 1e-9:
+			key = (row.item_code, row.s_warehouse)
+			native_quantities[key] = native_quantities.get(key, 0) + quantity
+	needs_net_rows = set(native_quantities) != set(quantities) or any(
+		abs(native_quantities.get(key, 0) - details.qty) > 1e-6
+		for key, details in quantities.items()
+	)
+	if has_return_gap or needs_net_rows:
 		entry.set("items", [])
-		for (_item_code, _warehouse), details in _guided_component_issue_quantities(
-			work_order, finished_qty, stock_facts
-		).items():
+		for (_item_code, _warehouse), details in quantities.items():
 			template = details.template
 			entry.add_to_stock_entry_detail(
 				{
@@ -635,29 +649,42 @@ def _insert_guided_issue_stock_entry(work_order, finished_qty: float, stock_fact
 				}
 			)
 		if not entry.items:
-			_throw("退料后的净发料缺口无法生成库存明细，请刷新工单后重试。")
+			_throw("本次净发料缺口无法生成库存明细，请刷新工单后重试。")
 	entry.insert(ignore_permissions=True)
 	return entry
 
 
 @frappe.whitelist(methods=["POST"])
-def request_manufacture(work_order: str):
+def request_manufacture(work_order: str, qty: float | str | None = None):
 	"""Create or reuse a draft Manufacture Stock Entry for warehouse review."""
 	doc = _work_order_for_action(work_order)
+	if qty not in (None, ""):
+		qty = flt(qty)
+		if not isfinite(qty) or qty <= 0:
+			_throw("请输入大于零的有效入库数量。")
 	existing = _existing_draft_stock_entry(doc.name, "Manufacture", RECEIPT_ACTION)
 	if existing:
+		if qty not in (None, "") and abs(flt(qty) - flt(existing.fg_completed_qty)) > 1e-9:
+			_throw("已有不同数量的入库申请，请先让库房处理或撤回原申请。")
 		validate_guided_stock_entry_before_submit(frappe.get_doc("Stock Entry", existing.name))
 		return {"stock_entry": existing.name, "reused": True}
 	if doc.status == "Completed":
 		_throw("当前工单已经完成入库。")
 	if doc.get("track_semi_finished_goods"):
 		_throw("该工单按工序跟踪半成品，请继续使用 Job Card 的标准半成品入库路径。")
-	if not _all_operations_completed(doc):
-		_throw("尚有工序未完成，不能发起完工入库申请。")
 	stock_facts = load_work_order_stock_facts([doc.name])
-	qty = receipt_remaining_qty(doc, stock_facts)
-	if qty <= 0:
-		_throw("当前没有可申请入库的完工数量。")
+	maximum = receipt_remaining_qty(doc, stock_facts)
+	if maximum <= 0:
+		_throw("当前没有可申请入库的完工数量，请先完成相应数量的工序并审核报工。")
+	qty = maximum if qty in (None, "") else flt(qty)
+	if not isfinite(qty) or qty <= 0 or qty > maximum + 1e-9:
+		_throw("申请数量超过工单当前可入库数量，请刷新后重试。")
+	pending_loss = max(
+		max((flt(row.get("process_loss_qty")) for row in doc.get("operations") or []), default=0)
+		- flt(doc.process_loss_qty), 0,
+	)
+	if qty <= pending_loss:
+		frappe.throw(_("本批完工数量必须大于待入账损耗 {0}，请核对数量后再申请成品入库。").format(pending_loss))
 	entry = _insert_guided_stock_entry(doc, "Manufacture", qty, RECEIPT_ACTION)
 	from process_simplification.notifications import notify_production_stock_request
 
@@ -960,8 +987,6 @@ def validate_guided_stock_entry_before_submit(stock_entry):
 	if action == RECEIPT_ACTION:
 		if stock_entry.purpose != "Manufacture":
 			_throw("完工入库申请不能改为其他库存用途。")
-		if not _all_operations_completed(work_order):
-			_throw("工序状态已经变化，全部工序完成前不能提交入库。")
 		_validate_guided_receipt_rows(stock_entry, work_order)
 		maximum = receipt_remaining_qty(work_order, stock_facts)
 		if flt(stock_entry.fg_completed_qty) <= 0 or flt(stock_entry.fg_completed_qty) > maximum + 1e-9:

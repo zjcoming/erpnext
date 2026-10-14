@@ -5,6 +5,18 @@
     "erpnext/stock/reorder_item.py": {
       "original": "f2bf32ab5b24dbddcc127b60c1ebd05b88349f6007277d1201ce498d12d2a25e",
       "patched": "1faea6e05eda3231c6bfdd5a44889aab27b0e16934bc0bd410817ccfebf6e389"
+    },
+    "erpnext/manufacturing/doctype/job_card/job_card.py": {
+      "original": "2f48a6078ee4b4571ca4dd9ab73c4494b73dc780312ce4d893a21a5bd1cdbc86",
+      "patched": "ff62aadfff2b43181363c747ae7254d4c15ddf204b85b8dfa19bdffbcbc8f608"
+    },
+    "erpnext/stock/doctype/stock_entry_type/stock_entry_type.py": {
+      "original": "110b4c9fa19d44e6db7989dfbcbe62efbcea5c0e0a658652ce8505bb5794bc37",
+      "patched": "836402d533cdc9113847ed5c07fc88274780ad0f3ebed27ca46c60571acf5e6e"
     }
+  },
+  "upstream_fixes": {
+    "58467": "https://github.com/frappe/erpnext/pull/58467",
+    "59945": "https://github.com/frappe/erpnext/pull/59945"
   }
 }

@@ -16,6 +16,42 @@ class SimplifiedFlowJobCardMixin:
 			kwargs["ignore_permissions"] = True
 		return super().insert(*args, **kwargs)
 
+	def get_current_operation_data(self):
+		data = super().get_current_operation_data()
+		if not data or not self.work_order or not self.operation_id or not frappe.db.table_exists(
+			"Job Card Assignment Movement"
+		):
+			return data
+		movement = frappe.qb.DocType("Job Card Assignment Movement")
+		source = frappe.qb.DocType("Job Card").as_("continued_source")
+		target = frappe.qb.DocType("Job Card").as_("continued_target")
+		carried = (
+			frappe.qb.from_(movement)
+			.join(source).on(movement.job_card == source.name)
+			.join(target).on(movement.reference_name == target.name)
+			.select(source.name, source.pending_qty).distinct()
+			.where(
+				(movement.movement_type == "Continuation")
+				& (movement.reference_doctype == "Job Card")
+				& (movement.work_order == self.work_order)
+				& (movement.operation_id == self.operation_id)
+				& (source.work_order == self.work_order)
+				& (source.operation_id == self.operation_id)
+				& (source.docstatus == 1)
+				& (source.is_corrective_job_card == 0)
+				& (target.work_order == self.work_order)
+				& (target.operation_id == self.operation_id)
+				& (target.docstatus == 1)
+				& (target.is_corrective_job_card == 0)
+			).run(as_dict=True)
+		)
+		if carried:
+			# A submitted successor now owns the source's pending balance. Keep
+			# every card's historical fields, but count the balance only once.
+			# DISTINCT prevents one movement per worker from deducting it twice.
+			data[0].pending_qty = flt(data[0].pending_qty) - sum(flt(row.pending_qty) for row in carried)
+		return data
+
 
 def _tables_ready() -> bool:
 	return frappe.db.table_exists("Job Card Worker Assignment") and frappe.db.table_exists(
@@ -315,6 +351,10 @@ def before_submit(doc, method=None):
 	pending = len(_report_rows(doc.name, "Pending Approval", exclude_report=in_flight))
 	if pending:
 		frappe.throw(_("Cannot submit Job Card while {0} work reports await review.").format(pending))
+	from process_simplification.production_reporting.continuation import is_partial_submission
+
+	if is_partial_submission(doc):
+		return
 	precision = doc.precision("total_completed_qty")
 	if flt(
 		flt(doc.total_completed_qty, precision) + flt(doc.process_loss_qty, precision),
@@ -335,6 +375,13 @@ def on_submit(doc, method=None):
 		"Completed",
 		update_modified=False,
 	)
+	from process_simplification.production_reporting.continuation import is_partial_submission
+
+	# The continuation service creates the remaining assignments after native
+	# submission. Its ordinary assignment notification is sent in this transaction;
+	# declaring the entire operation completed here would be misleading.
+	if is_partial_submission(doc):
+		return
 	from process_simplification.notifications import notify_operation_completed
 
 	notify_operation_completed(doc)
@@ -343,6 +390,9 @@ def on_submit(doc, method=None):
 def before_cancel(doc, method=None):
 	if not _tables_ready() or not _is_managed(doc):
 		return
+	from process_simplification.production_reporting.continuation import assert_card_not_continuation_target
+
+	assert_card_not_continuation_target(doc.name)
 	if any(
 		row.status in {"In Progress", "Pending Approval", "Approved"}
 		for row in _report_rows(doc.name)

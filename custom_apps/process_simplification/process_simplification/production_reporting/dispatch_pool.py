@@ -55,6 +55,27 @@ _REPORT_EXISTS = "exists (select 1 from `tabJob Card Work Report` r where r.job_
 _TIME_EXISTS = "exists (select 1 from `tabJob Card Time Log` t where t.parent = jc.name and t.parenttype = 'Job Card')"
 _MOVEMENT_EXISTS = "exists (select 1 from `tabJob Card Assignment Movement` m where m.job_card = jc.name)"
 
+# Sub-assembly Work Orders do not inherit expected_delivery_date in ERPNext.
+# Resolve the exact linked sales line for display and sorting, without changing
+# the Work Order or falling back to another line of the same item/order.
+_DELIVERY_DATE_JOINS = """
+	left join `tabProduction Plan Item` delivery_ppi
+		on delivery_ppi.name = wo.production_plan_item and delivery_ppi.parent = wo.production_plan
+		and delivery_ppi.parenttype = 'Production Plan'
+	left join `tabProduction Plan Sub Assembly Item` delivery_sub
+		on delivery_sub.name = wo.production_plan_sub_assembly_item and delivery_sub.parent = wo.production_plan
+		and delivery_sub.parenttype = 'Production Plan'
+	left join `tabSales Order Item` delivery_soi
+		on delivery_soi.name = coalesce(nullif(wo.sales_order_item, ''),
+			nullif(delivery_ppi.sales_order_item, ''), delivery_sub.sales_order_item)
+		and delivery_soi.parenttype = 'Sales Order'
+	left join `tabSales Order` delivery_so
+		on delivery_so.name = delivery_soi.parent and delivery_so.company = wo.company
+		and delivery_so.name = coalesce(nullif(wo.sales_order, ''),
+			nullif(delivery_ppi.sales_order, ''), nullif(delivery_sub.sales_order, ''), delivery_so.name)
+"""
+_DELIVERY_DATE = "coalesce(wo.expected_delivery_date, case when delivery_so.name is not null then delivery_soi.delivery_date end)"
+
 
 def _pool_query_scope(filters, companies):
 	conditions = [
@@ -90,7 +111,7 @@ def _pool_query_scope(filters, companies):
 		inner join `tabProduction Plan` pp on pp.name = wo.production_plan
 		left join `tabItem` item on item.name = jc.production_item
 	"""
-	return joins + " where " + " and ".join(conditions), values
+	return joins + _DELIVERY_DATE_JOINS + " where " + " and ".join(conditions), values
 
 
 def get_operation_dispatch_pool(page=1, page_length=20, filters=None):
@@ -108,12 +129,12 @@ def get_operation_dispatch_pool(page=1, page_length=20, filters=None):
 			jc.production_item, item.item_name, item.description, item.stock_uom,
 			jc.operation, jc.operation_id, jc.workstation, jc.sequence_id,
 			jc.for_quantity, jc.total_completed_qty as completed_qty, jc.process_loss_qty,
-			wo.production_plan, wo.sales_order, wo.expected_delivery_date as delivery_date,
+			wo.production_plan, wo.sales_order, {_DELIVERY_DATE} as delivery_date,
 			{_ASSIGNMENT_EXISTS} as has_assignment_history,
 			({_REPORT_EXISTS} or {_TIME_EXISTS}) as has_work_history,
 			{_MOVEMENT_EXISTS} as has_movement_history
 		{scope}
-		order by jc.operation, ifnull(wo.expected_delivery_date, '9999-12-31'), wo.name, jc.sequence_id, jc.name
+		order by jc.operation, ifnull({_DELIVERY_DATE}, '9999-12-31'), wo.name, jc.sequence_id, jc.name
 		limit %(page_length)s offset %(offset)s""",
 		values, as_dict=True,
 	)

@@ -102,7 +102,7 @@ function workReportBlockMessage(assignment, translate = (message) => message) {
 		RATE_MISSING: translate("当前日期没有有效计价规则，请联系主管。"),
 		DAILY_MINUTES_LIMIT: translate("今日计薪分钟已达到上限。"),
 		MATERIAL_NOT_TRANSFERRED: translate("物料尚未发放到在制仓，发料后才能开始报工。"),
-		PREVIOUS_OPERATION_PENDING: translate("前序工序尚无可接续的已完成数量，请等待主管审核前序报工。"),
+		PREVIOUS_OPERATION_PENDING: translate("前序尚无可接续的已完成数量，请主管审核前序报工；如需交接部分完工数量，还须确认本批完工。"),
 		ACTIVE_WORK_SESSION: translate("请先结束当前正在进行的任务，再开始这项工作。"),
 	};
 	return messages[assignment.block_code] || assignment.block_message || "";
@@ -194,6 +194,12 @@ function workReportFinishDialogStartedAt(assignment) {
 	return normalizeFrappeDateTime(assignment?.active_started_at);
 }
 
+function workReportDisplayMinutes(row, snapshotAt, now) {
+	if (!row?.active_report) return 0;
+	const minutes = Math.max(0, Number(row.active_minutes) || 0);
+	return minutes + (row.timer_paused_at ? 0 : Math.max(0, now - snapshotAt) / 60000);
+}
+
 function addWorkerRefreshMenu(page, { load = () => page.worker_reporting?.load?.(), label = __("刷新任务与通知") } = {}) {
 	page.add_custom_menu_item(
 		page.menu, label, () => {
@@ -251,6 +257,8 @@ function shouldOpenWaitingMaterialGroup(partitions = {}) {
 function workerQueueGroup(row, action = {}) {
 	if (["starting", "uncertain", "checking"].includes(action.status)) return "attention";
 	if (row.can_start) return "ready";
+	if (!row.active_report && !row.has_pending_report && !Number(row.pending_qty || 0)
+		&& ["WORK_ORDER_UNAVAILABLE", "PRODUCTION_PLAN_UNAVAILABLE", "JOB_CARD_NOT_DRAFT"].includes(row.block_code)) return "unavailable";
 	if (row.block_code === "PREVIOUS_OPERATION_PENDING") return "previous";
 	if (["MATERIAL_NOT_TRANSFERRED", "MATERIAL_NOT_FULLY_ISSUED", "DIRECT_MATERIAL_SHORTAGE"].includes(row.block_code)) return "material";
 	return "attention";
@@ -258,7 +266,7 @@ function workerQueueGroup(row, action = {}) {
 
 function buildWorkerTaskQueue(assignments = [], plannedState = {}) {
 	const active = assignments.filter((row) => row.active_report);
-	const groups = { ready: [], previous: [], material: [], attention: [] };
+	const groups = { ready: [], previous: [], material: [], attention: [], unavailable: [] };
 	const plans = plannedState.tasks || [];
 	const actions = plannedState.actions || new Map();
 	const pending = (row) => ["starting", "uncertain", "checking"].includes(actions.get(row.name)?.status);
@@ -293,13 +301,15 @@ function workerTaskQueueHtml(queue, helpers = {}) {
 		previous: ["等待前序", "前序完成并审核后，再查看任务是否可以开始。"],
 		material: ["等待发料", "物料满足开工条件后，再开始计时。"],
 		attention: ["需处理", "按任务提示处理，或联系主管。"],
+		unavailable: ["暂不可执行", "工单已停止、结束或失效，请联系主管；原任务记录保留。"],
 	};
 	return Object.entries(descriptions).map(([key, [label, description]]) => {
-		const rows = queue.groups[key];
+		const rows = queue.groups[key] || [];
 		if (!rows.length) return "";
 		const cards = rows.map(({ source, row }) => source === "planned"
 			? helpers.plannedCard(row)
 			: workerAssignmentCardHtml(row, helpers)).join("");
+		if (key === "unavailable") return `<details class="worker-assignment-group worker-queue-group is-${key}-group" data-task-group="${key}"><summary>${translate(label)} <span>${rows.length}</span></summary><p class="text-muted">${translate(description)}</p><div class="worker-assignment-grid">${cards}</div></details>`;
 		return `<section class="worker-assignment-group worker-queue-group is-${key}-group" data-task-group="${key}"><div class="worker-queue-group-heading"><h5>${translate(label)} <span>${rows.length}</span></h5><p>${translate(description)}</p></div><div class="worker-assignment-grid">${cards}</div></section>`;
 	}).join("") || `<div class="text-muted worker-reporting-empty">${translate("当前没有待开始的任务。")}</div>`;
 }
@@ -369,12 +379,13 @@ function workerAssignmentCardHtml(row, helpers = {}) {
 			? translate("可以开始")
 			: workerQueueGroup(row) === "material"
 				? translate("等待发料")
-				: workerQueueGroup(row) === "previous" ? translate("等待前序") : translate("需处理");
+				: workerQueueGroup(row) === "previous" ? translate("等待前序")
+					: workerQueueGroup(row) === "unavailable" ? translate("暂不可执行") : translate("需处理");
 	const stateIndicator = row.active_report
 		? (row.timer_paused_at ? "orange" : "blue")
 		: row.can_start
 			? "green"
-			: ["material", "previous"].includes(workerQueueGroup(row))
+			: ["material", "previous", "unavailable"].includes(workerQueueGroup(row))
 				? "gray"
 				: "orange";
 	return `<article class="worker-assignment-card ${stateClass}" data-assignment="${escapeHtml(row.name)}">
@@ -383,7 +394,7 @@ function workerAssignmentCardHtml(row, helpers = {}) {
 			<span><small>${translate("当前可报")}</small><strong>${formatNumber(row.reportable_qty)}</strong></span>
 			<span><small>${translate("本人完成 / 派工")}</small><strong>${formatNumber(row.completed_qty)} / ${formatNumber(currentAssigned)}</strong></span>
 			${row.active_report
-				? `<span><small>${translate("有效计时")}</small><strong>${formatNumber(row.active_minutes)} ${translate("分钟")}</strong></span>`
+				? `<span><small>${translate("有效计时")}</small><strong data-worker-timer="${escapeHtml(row.name)}">${formatNumber(helpers.timerMinutes?.(row) ?? row.active_minutes)} ${translate("分钟")}</strong></span>`
 				: `<span><small>${translate("工序进度")}</small><strong>${formatNumber(row.job_card_completed_qty)} / ${formatNumber(row.for_quantity)}</strong></span>`}
 		</div>
 		${blockMessage ? `<p class="worker-assignment-block-message">${escapeHtml(blockMessage)}</p>` : ""}
@@ -411,8 +422,14 @@ function workerAssignmentCardHtml(row, helpers = {}) {
 }
 
 function mountWorkerReportingPage({ page, root, mode = "queue" }) {
+	page.worker_reporting?.dispose?.();
 	const $root = root;
 	const state = { data: { assignments: [], reports: [] }, starting: false };
+	const doc = window.document;
+	let active = frappe.container?.page?.page === page, disposed = false, activation = 0;
+	let timer = null, snapshotAt = 0, snapshotRevision = 0, finishView = null, openingFinish = false;
+	const isCurrent = () => !disposed && active && frappe.container?.page?.page === page;
+	const timerMinutes = (row) => workReportDisplayMinutes(row, snapshotAt, performance.now());
 	const esc = (value) => frappe.utils.escape_html(String(value ?? ""));
 	const number = (value) => format_number(flt(value), null, 2);
 	const dateTime = (value) =>
@@ -422,7 +439,72 @@ function mountWorkerReportingPage({ page, root, mode = "queue" }) {
 		escapeHtml: esc,
 		formatNumber: number,
 		formatDateTime: dateTime,
+		timerMinutes,
 	};
+
+	function stopDisplayTimer() {
+		if (timer !== null) clearTimeout(timer);
+		timer = null;
+	}
+
+	function refreshTimerDisplay() {
+		stopDisplayTimer();
+		if (!isCurrent() || doc?.hidden || !snapshotRevision) return;
+		const rows = state.data.assignments || [];
+		for (const node of $root[0]?.querySelectorAll("[data-worker-timer]") || []) {
+			const row = rows.find((item) => item.name === node.dataset.workerTimer);
+			if (row?.active_report) node.textContent = `${number(timerMinutes(row))} ${__("分钟")}`;
+		}
+		if (finishView) {
+			const row = rows.find((item) => item.name === finishView.assignment && item.active_report === finishView.report);
+			if (!row) {
+				finishView.stale = true;
+				finishView.dialog.get_primary_btn().prop("disabled", true);
+				finishView.dialog.set_df_property("captured_minutes", "description", __("任务状态已改变，请关闭后重新打开报工窗口。"));
+			} else if (!finishView.stale) {
+				const value = Number(timerMinutes(row).toFixed(2));
+				if (value !== finishView.minutes) {
+					finishView.minutes = value;
+					finishView.dialog.set_value("captured_minutes", value);
+				}
+			}
+		}
+		if (rows.some((row) => row.active_report && !row.timer_paused_at)) {
+			timer = setTimeout(refreshTimerDisplay, 1000);
+		}
+	}
+
+	async function visibilityChanged() {
+		stopDisplayTimer();
+		if (!isCurrent() || doc?.hidden) return;
+		try {
+			if (await load() !== true && isCurrent()) {
+				stopDisplayTimer();
+				frappe.msgprint(__("计时状态未能更新，请刷新任务后再试。"));
+			}
+		} catch (error) {
+			if (isCurrent()) {
+				stopDisplayTimer();
+				frappe.msgprint(__("读取当前计时失败，请刷新任务后再试。"));
+			}
+		}
+	}
+
+	function deactivate() {
+		active = false;
+		activation++;
+		stopDisplayTimer();
+		doc?.removeEventListener("visibilitychange", visibilityChanged);
+		finishView?.dialog.hide();
+		finishView = null;
+	}
+
+	function dispose() {
+		deactivate();
+		disposed = true;
+		page.wrapper?.off(".worker-reporting-timer");
+		$root.off(".worker-reporting");
+	}
 
 	function queueModel() {
 		return buildWorkerTaskQueue(state.data.assignments || [], page.worker_prearrangement?.state);
@@ -445,9 +527,10 @@ function mountWorkerReportingPage({ page, root, mode = "queue" }) {
 	}
 
 	function renderSummary(partitions, queue) {
+		const unavailable = queue?.groups.unavailable.length || 0;
 		const focus = mode === "active"
 			? `${__("正在做")} ${partitions.active.length} ${__("项")}`
-			: `${__("待开始任务")} ${queue.total} ${__("项")}`;
+			: `${__("待开始任务")} ${queue.total - unavailable} ${__("项")}${unavailable ? ` · ${__("暂不可执行")} ${unavailable} ${__("项")}` : ""}`;
 		$root.find(".worker-reporting-summary").html(
 			`<div><strong>${esc(focus)}</strong><span>${__("今日计薪分钟")}：${number(state.data.daily_minutes_used)} / ${number(state.data.daily_minutes_limit)}</span></div>`
 		);
@@ -496,6 +579,7 @@ function mountWorkerReportingPage({ page, root, mode = "queue" }) {
 		renderSummary(partitions, queue);
 		if (mode === "active") renderActive(partitions);
 		else renderQueue(queue);
+		refreshTimerDisplay();
 	}
 
 	function load(options = {}) {
@@ -513,7 +597,10 @@ function mountWorkerReportingPage({ page, root, mode = "queue" }) {
 			background: options.background && !pendingFocus,
 			freeze_message: mode === "active" ? __("正在读取进行中的任务...") : __("正在读取当前派工..."),
 			apply(response) {
+				if (!isCurrent()) return false;
 				state.data = (planned ? response.message?.dashboard : response.message) || { assignments: [], reports: [] };
+				snapshotAt = performance.now();
+				snapshotRevision++;
 				planned?.accept(response.message?.planned);
 				planned?.reconcile(state.data);
 				render();
@@ -584,6 +671,29 @@ function mountWorkerReportingPage({ page, root, mode = "queue" }) {
 		await load();
 	}
 
+	async function prepareFinishDialog(row, $button) {
+		if (openingFinish || finishView || !isCurrent()) return;
+		openingFinish = true;
+		const label = $button.text();
+		$button.prop("disabled", true).text(__("正在读取计时..."));
+		const revision = snapshotRevision, entered = activation;
+		try {
+			const applied = await load();
+			if (!isCurrent() || activation !== entered) return;
+			const current = state.data.assignments?.find((item) => item.name === row.name && item.active_report === row.active_report);
+			if (applied !== true || snapshotRevision <= revision || !current) {
+				frappe.msgprint(__("任务状态未能更新或已改变，请刷新任务后再试。"));
+				return;
+			}
+			openFinishDialog(current);
+		} catch (error) {
+			if (isCurrent()) frappe.msgprint(__("读取当前计时失败，请刷新任务后再试。"));
+		} finally {
+			openingFinish = false;
+			$button.prop("disabled", false).text(label);
+		}
+	}
+
 	function openFinishDialog(row) {
 		const requestId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
 		const wageOptions = workReportWageOptions(row);
@@ -635,7 +745,7 @@ function mountWorkerReportingPage({ page, root, mode = "queue" }) {
 			{ fieldname: "job_card", fieldtype: "Data", label: __("Job Card"), read_only: 1, default: row.job_card },
 			{ fieldname: "operation", fieldtype: "Data", label: __("工序"), read_only: 1, default: row.operation },
 			{ fieldname: "started_at", fieldtype: "Datetime", label: __("实际开始时间"), read_only: 1, default: workReportFinishDialogStartedAt(row) },
-			{ fieldname: "captured_minutes", fieldtype: "Float", label: __("当前有效计时分钟"), read_only: 1, default: row.active_minutes },
+			{ fieldname: "captured_minutes", fieldtype: "Float", label: __("当前有效计时分钟"), read_only: 1, precision: 2, default: Number(timerMinutes(row).toFixed(2)) },
 		];
 		if (wageOptions.length > 1) {
 			fields.push({
@@ -679,6 +789,10 @@ function mountWorkerReportingPage({ page, root, mode = "queue" }) {
 			fields,
 			primary_action_label: __("提交主管审核"),
 			primary_action: async (values) => {
+				if (!isCurrent() || finishView?.dialog !== dialog || finishView.stale) {
+					frappe.msgprint(__("任务状态已改变，请关闭后重新打开报工窗口。"));
+					return;
+				}
 				const wageType = selectedWageType();
 				if (!wageType) {
 					frappe.msgprint(__("请选择有效的计价方式。"));
@@ -714,9 +828,10 @@ function mountWorkerReportingPage({ page, root, mode = "queue" }) {
 					frappe.show_alert({ message: __("报工已提交主管审核。"), indicator: "green" });
 					await load();
 				} finally {
-					$button.prop("disabled", false).text(__("提交主管审核"));
+					$button.prop("disabled", Boolean(finishView?.stale) || !row.can_finish).text(__("提交主管审核"));
 				}
 			},
+			on_hide() { if (finishView?.dialog === dialog) finishView = null; },
 		});
 		dialog.set_secondary_action(() => {
 			frappe.confirm(__("确定取消本次计时吗？未提交的计时记录将被删除。"), async () => {
@@ -731,6 +846,7 @@ function mountWorkerReportingPage({ page, root, mode = "queue" }) {
 			});
 		});
 		dialog.set_secondary_action_label(__("取消本次计时"));
+		finishView = { dialog, assignment: row.name, report: row.active_report, minutes: Number(timerMinutes(row).toFixed(2)), stale: false };
 		dialog.show();
 		if (wageOptions.length > 1) dialog.set_value("wage_type", defaultOptionLabel);
 		refreshWageFields();
@@ -880,35 +996,47 @@ function mountWorkerReportingPage({ page, root, mode = "queue" }) {
 		refreshMaterialChoices();
 	}
 
-	$root.on("click", ".worker-report-action", (event) => {
+	$root.on("click.worker-reporting", ".worker-report-action", (event) => {
 		const row = (state.data.assignments || []).find(
 			(item) => item.name === $(event.currentTarget).data("assignment")
 		);
 		const action = row ? workReportButtonMeta(row, __).action : null;
-		if (action === "start") startWork(row);
-		if (action === "finish") openFinishDialog(row);
+		if (action === "start") return startWork(row);
+		if (action === "finish") return prepareFinishDialog(row, $(event.currentTarget));
 	});
-	$root.on("click", ".worker-timer-action", (event) => {
+	$root.on("click.worker-reporting", ".worker-timer-action", (event) => {
 		const row = (state.data.assignments || []).find(
 			(item) => item.name === $(event.currentTarget).data("assignment")
 		);
 		const action = $(event.currentTarget).data("action");
-		if (row && ["pause", "resume"].includes(action)) changeTimerState(row, action);
+		if (row && ["pause", "resume"].includes(action)) return changeTimerState(row, action);
 	});
-	$root.on("click", ".worker-exception-action", (event) => {
+	$root.on("click.worker-reporting", ".worker-exception-action", (event) => {
 		const row = (state.data.assignments || []).find(
 			(item) => item.name === $(event.currentTarget).data("assignment")
 		);
 		if (row) openExceptionDialog(row);
 	});
-	$root.on("click", ".worker-open-active", () => frappe.set_route("active-production-work"));
-	$root.on("click", ".worker-open-queue", () => frappe.set_route("my-production-reporting"));
-	$root.on("click", ".worker-task-nav-item", (event) => {
+	$root.on("click.worker-reporting", ".worker-open-active", () => frappe.set_route("active-production-work"));
+	$root.on("click.worker-reporting", ".worker-open-queue", () => frappe.set_route("my-production-reporting"));
+	$root.on("click.worker-reporting", ".worker-task-nav-item", (event) => {
 		const route = $(event.currentTarget).data("route");
 		if (route) frappe.set_route(route);
 	});
+	page.wrapper?.on("hide.worker-reporting-timer", (event) => {
+		if (event.target === page.wrapper[0]) deactivate();
+	});
+	page.wrapper?.on("show.worker-reporting-timer", (event) => {
+		if (event.target !== page.wrapper[0] || disposed) return;
+		active = true;
+		activation++;
+		stopDisplayTimer();
+		doc?.removeEventListener("visibilitychange", visibilityChanged);
+		doc?.addEventListener("visibilitychange", visibilityChanged);
+	});
+	if (active) doc?.addEventListener("visibilitychange", visibilityChanged);
 	addWorkerRefreshMenu(page);
-	page.worker_reporting = { state, load, render, canStartTask, disableStarts };
+	page.worker_reporting = { state, load, render, canStartTask, disableStarts, dispose };
 	return page.worker_reporting;
 }
 
@@ -930,6 +1058,7 @@ const workerReportingApi = {
 	workReportWageLabel,
 	normalizeFrappeDateTime,
 	workReportFinishDialogStartedAt,
+	workReportDisplayMinutes,
 	runWorkerReportingToolbarLoad,
 	addWorkerRefreshMenu,
 	workerAssignmentPriority,

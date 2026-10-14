@@ -47,7 +47,7 @@
    "fieldname": "movement_type",
    "fieldtype": "Select",
    "label": "移动类型",
-   "options": "Release\nRedispatch\nRelease Reversal",
+   "options": "Release\nRedispatch\nRelease Reversal\nContinuation",
    "read_only": 1,
    "reqd": 1,
    "in_list_view": 1,

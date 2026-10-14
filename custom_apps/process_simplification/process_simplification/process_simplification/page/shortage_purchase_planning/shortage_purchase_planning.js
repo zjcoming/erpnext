@@ -5,6 +5,7 @@ const shortageItemIdentity = typeof module !== "undefined" && module.exports
 function shortageDocumentLink(doctype, name, helpers) {
 	if (!name) return "";
 	const esc = helpers.escapeHtml;
+	if (!helpers.canRead?.(doctype)) return esc(name);
 	const route = encodeURIComponent(String(name));
 	const slug = String(doctype || "").toLowerCase().replaceAll(" ", "-");
 	return `<a href="/app/${slug}/${route}">${esc(name)}</a>`;
@@ -327,6 +328,7 @@ frappe.pages["shortage-purchase-planning"].on_page_load = function (wrapper) {
 			escapeHtml: frappe.utils.escape_html,
 			formatQty: fmt,
 			translate: __,
+			canRead: (doctype) => Boolean(frappe.model.can_read?.(doctype)),
 		}));
 		$root.find(".shortage-table-wrap").toggle(Boolean(entries.length));
 		if (state.loaded && !entries.length) renderStatus(state.rows.length ? "filtered" : "empty");

@@ -303,6 +303,23 @@ test("my reporting removes recent history while the history card exposes escaped
 	assert.match(html, /驳回原因.*数量不符/);
 });
 
+test("worker history distinguishes approved wages from pending and rejected report amounts", () => {
+	const labels = {
+		Approved: "计薪金额",
+		"Pending Approval": "待审核金额",
+		Rejected: "报工金额（不计薪）",
+	};
+	for (const [status, label] of Object.entries(labels)) {
+		const row = { status, wage_amount: 15 };
+		const html = workerHistoryPage.workerReportHistoryCardHtml(row, {
+			formatNumber: (value) => Number(value || 0).toFixed(2),
+		});
+		assert.ok(html.includes(`<small>${label}</small><strong>15.00</strong>`));
+		if (status !== "Approved") assert.doesNotMatch(html, /<small>计薪金额<\/small>/);
+		assert.equal(row.wage_amount, 15);
+	}
+});
+
 test("plain text rejection reasons stay escaped in worker history and supervisor details", () => {
 	const reason = '甲 & 乙 <b>仅作文字</b>；字面 &amp; 和 "引号" <img src=x onerror="alert(1)">';
 	const esc = (value) => String(value ?? "")
@@ -390,6 +407,15 @@ test("worker and review pages strip database microseconds before Frappe datetime
 		"2026-08-27 23:31:23"
 	);
 	assert.equal(reviewPage.normalizeFrappeDateTime(value), "2026-08-27 23:31:23");
+});
+
+test("effective timer display advances from a server snapshot and freezes while paused", () => {
+	const row = { active_report: "REPORT-1", active_minutes: 0.006 };
+	assert.equal(workerPage.workReportDisplayMinutes(row, 1000, 91000).toFixed(2), "1.51");
+	assert.equal(workerPage.workReportDisplayMinutes({ ...row, timer_paused_at: "paused" }, 1000, 601000), 0.006);
+	assert.equal(workerPage.workReportDisplayMinutes(row, 1000, 500), 0.006);
+	assert.equal(workerPage.workReportDisplayMinutes({ active_minutes: 20 }, 1000, 91000), 0);
+	assert.equal(row.active_minutes, 0.006, "display must not mutate the server snapshot");
 });
 
 test("capacity conflict disables whole approval but still permits rejection", () => {
@@ -630,7 +656,7 @@ test("completed assignment context is read-only, retains history, and explains t
 		workerAssignment.workerAssignmentBlockMessage({
 			block_code: "MATERIAL_NOT_FULLY_ISSUED",
 		}),
-		"物料尚未全部发到在制品仓，当前只能查看派工记录。"
+		"尚未发齐一批生产所需的配套物料，请先提交领料单。"
 	);
 	assert.equal(
 		workerAssignment.workerAssignmentBlockMessage({ block_code: "ASSIGNMENT_PLAN_LOCKED" }),
@@ -888,4 +914,22 @@ test("workers can withdraw only pending exceptions and request IDs are escaped",
     for (const status of ['Awaiting Stock Entry','Completed','Withdrawn']) {
         assert.ok(!workerHistoryPage.workerExceptionHistoryCardHtml({name:'safe',status}).includes('worker-withdraw-exception'));
     }
+});
+
+
+test("partial batch action is explicit and completed continuation remains traceable", () => {
+	const helpers = { translate: (text) => text,
+		escapeHtml: (text) => String(text ?? "").replaceAll("<", "&lt;").replaceAll(">", "&gt;"),
+		formatNumber: (value) => String(Number(value || 0)) };
+	const context = { work_order: { name: "WO", status: "In Process", qty: 4 },
+		job_cards: [{ name: "JC-4", completed_qty: 2, remaining_qty: 2, can_finalize_partial: true }] };
+	const html = workerAssignment.workOrderAssignmentContextHtml(context, helpers);
+	assert.match(html, /worker-assignment-finalize-partial/);
+	assert.match(html, /确认本批完工/);
+	context.job_cards[0] = { name: "JC-4", completed_qty: 2, remaining_qty: 0,
+		can_finalize_partial: false, continued_qty: 2, continued_to: "<JC-NEXT>" };
+	const done = workerAssignment.workOrderAssignmentContextHtml(context, helpers);
+	assert.doesNotMatch(done, /worker-assignment-finalize-partial/);
+	assert.match(done, /已交后续任务/);
+	assert.match(done, /&lt;JC-NEXT&gt;/);
 });

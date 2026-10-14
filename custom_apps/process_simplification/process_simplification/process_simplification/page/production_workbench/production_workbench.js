@@ -130,7 +130,10 @@ function workOrderNextActionMeta(workOrder = {}, translate = (message) => messag
 		return { label: translate("查看入库申请"), action: "open_stock_entry", document: receipt.draft_entry.name, withdrawalDocument: receipt.draft_entry.name };
 	}
 	if (receipt.code === "requestable" || workOrder.flow_status === "awaiting_receipt_request") {
-		return { label: translate("申请入库"), action: "request_manufacture", primary: true };
+		return {
+			label: translate("申请入库"), action: "request_manufacture", primary: true,
+			qty: Number(receipt.remaining_qty || 0) || undefined,
+		};
 	}
 	if (issue.code === "draft_pending" && issue.draft_entry?.name) {
 		return { label: translate("查看发料申请"), action: "open_stock_entry", document: issue.draft_entry.name, withdrawalDocument: issue.draft_entry.name };
@@ -167,7 +170,10 @@ function workOrderNextActionMeta(workOrder = {}, translate = (message) => messag
 
 function workOrderActionConfirmation(action, workOrder = {}, translate = (message) => message) {
 	if (action === "request_manufacture") {
-		return translate("确认发起完工入库申请？本操作只创建入库待办，库存将在库房提交入库单后增加。");
+		const qty = Number(workOrder.requested_receipt_qty ?? workOrder.receipt_state?.remaining_qty);
+		const quantity = Number.isFinite(qty) && qty > 0
+			? `${translate("本批完工数量（含损耗）")}：${qty}。` : "";
+		return quantity + translate("确认发起完工入库申请？成品数量会扣除本批损耗，请在入库单中核对。本操作只创建入库待办，库存将在库房提交入库单后增加。");
 	}
 	if (action === "request_material_issue_override") {
 		return translate("确认优先为本工单申请当前可锁定的用料？这会调整按交期的建议分配，可能使其他工单缺料；已正式预留给其他单据的库存不会被占用。申请成功后正式预留本次用料，库房提交发料单后再扣库存。");
@@ -582,7 +588,7 @@ function productionOrderShortcutsHtml(demand, helpers, currentTask, primaryActio
 		&& !["completed", "not_applicable"].includes(row.operation_state?.code) && !["requestable", "draft_pending", "received"].includes(row.receipt_state?.code));
 	const taskIsArrangement = currentTask?.action === "assign" && canArrange && !Number(currentTask.workOrder.worker_assignment_history_count || 0);
 	if (currentTask && !taskIsArrangement) buttons.push(productionTaskButtonHtml(currentTask, helpers));
-	else if (!currentTask && primaryAction) buttons.push(`<button type="button" class="btn btn-primary production-action" data-action="${esc(primaryAction.action)}" data-sales-order="${esc(demand.sales_order)}" data-row="${esc(demand.sales_order_item)}">${esc(t(primaryAction.label))}</button>`);
+	else if (!currentTask && primaryAction && primaryAction.enabled !== false) buttons.push(`<button type="button" class="btn btn-primary production-action" data-action="${esc(primaryAction.action)}" data-sales-order="${esc(demand.sales_order)}" data-row="${esc(demand.sales_order_item)}">${esc(t(primaryAction.label))}</button>`);
 	if (canArrange) buttons.push(`<button type="button" class="btn ${buttons.length ? "btn-default" : "btn-primary"} production-open-view" data-open-view="operations" data-search="${esc(demand.sales_order)}">${esc(t("安排人员"))}<span aria-hidden="true"> →</span></button>`);
 	if (active && demand.sales_order && helpers.canIssue && (demand.work_orders || []).some((row) =>
 		!["Completed", "Stopped", "Closed", "Cancelled"].includes(row.status) && Number(row.docstatus) !== 2
@@ -807,9 +813,11 @@ function productionDemandHtml(demand, helpers) {
 	const actions = (demand.next_actions || [])
 		.map(
 			(row) =>
-				`<button class="btn btn-sm btn-default production-action" data-action="${esc(row.action)}" data-sales-order="${esc(demand.sales_order)}" data-row="${esc(demand.sales_order_item)}" ${row.enabled === false ? "disabled" : ""}>${esc(t(row.label))}</button>`
+				`<button class="btn btn-sm btn-default production-action" data-action="${esc(row.action)}" data-sales-order="${esc(demand.sales_order)}" data-row="${esc(demand.sales_order_item)}" ${row.enabled === false ? "disabled" : ""} title="${esc(row.reason || "")}">${esc(t(row.label))}</button>`
 		)
 		.join(" ");
+	const handoff = demand.reservation_handoff;
+	const reservationHandoff = handoff ? `<div class="production-reservation-handoff alert alert-info"><strong>${esc(t(handoff.label))}</strong><p>${esc(t(handoff.reason))}</p><a href="/desk/order-workbench/${encodeURIComponent(demand.sales_order || "")}">${esc(t("查看来源订单的预留待办"))} · ${esc(demand.sales_order || "")}</a></div>` : "";
 	const hasProductionPlan = (demand.production_plans || []).length > 0;
 	const productionPlans = hasProductionPlan
 		? (demand.production_plans || [])
@@ -841,6 +849,7 @@ function productionDemandHtml(demand, helpers) {
 		? t("安排人员") : currentTask?.label;
 	const nextActionLabel = (currentTask ? `${currentTask.workOrder.production_item_name || currentTask.workOrder.production_item} · ${taskLabel}` : null)
 		|| primaryAction?.label
+		|| handoff?.label
 		|| productionStatusMeta(demand.status_code).label
 		|| demand.status_label
 		|| t("查看详情");
@@ -873,6 +882,7 @@ function productionDemandHtml(demand, helpers) {
 				<details class="production-purchase-summary production-secondary-details"><summary>${esc(t("底层采购物料汇总"))}</summary><p class="text-muted">${esc(t("只汇总采购件；半成品在上方生产执行链中由下级工单供应。采购动作提交前会再次复核。"))}</p>${purchaseMaterials}</details>
 			</div>
 		</details>
+		${reservationHandoff}
 		${productionOrderShortcutsHtml(demand, helpers, currentTask, primaryAction)}
 		</article>`;
 }
@@ -922,6 +932,119 @@ function runProductionWorkbenchToolbarLoad(loadOverview) {
 	loadOverview();
 }
 
+function promptReturnReplacementQuantity(demand, submit, ui, translate, beforeShow = () => {}) {
+	const maximum = Number(demand?.unplanned_production_qty ?? demand?.uncovered_qty);
+	if (!Number.isFinite(maximum) || maximum <= 0) {
+		ui.msgprint(translate("当前没有可安排的生产数量，请刷新后重试。"));
+		return Promise.resolve(null);
+	}
+	return ui.call({
+		method: "process_simplification.production_workflow.customer_returns.get_replacement_options",
+		type: "GET", freeze: true, freeze_message: translate("正在核对退货来源…"),
+		args: { sales_order: demand.sales_order, sales_order_item: demand.sales_order_item },
+	}).then((response) => {
+		const sources = (response?.message?.options || []).filter((row) =>
+			row.return_item && Number.isFinite(Number(row.remaining_qty)) && Number(row.remaining_qty) > 0);
+		if (!sources.length) {
+			ui.msgprint(translate("没有尚可补产的有效退货数量，请核对退货单及已安排的补产任务。"));
+			return null;
+		}
+		let submitted = false;
+		const dialog = new ui.ui.Dialog({
+			title: translate("按退货补产"),
+			fields: [
+				{ fieldtype: "HTML", options: ui.utils.escape_html(translate(
+					"确认按所选退货另制产品，用于原订单补发。补产数量同时受未安排需求和退货剩余数量限制。")) },
+				{
+					fieldname: "return_item", fieldtype: "Select", label: translate("退货来源"), reqd: 1,
+					options: [{ label: translate("请选择退货来源"), value: "" }, ...sources.map((row) => ({
+						value: row.return_item,
+						label: [row.return_delivery, row.return_row ? translate("第 {0} 行", [row.return_row]) : "",
+							row.posting_date, row.warehouse, translate("可补产 {0}", [row.remaining_qty])].filter(Boolean).join(" · "),
+					}))],
+					default: sources.length === 1 ? sources[0].return_item : "",
+				},
+				{
+					fieldname: "qty", fieldtype: "Float", label: translate("本次补产数量"), reqd: 1,
+					default: sources.length === 1 ? Math.min(maximum, Number(sources[0].remaining_qty)) : maximum,
+					description: translate("按产品库存单位填写，当前未安排 {0}。", [maximum]),
+				},
+			],
+			primary_action_label: translate("确认补产"),
+			primary_action(values) {
+				if (submitted) return;
+				const source = sources.find((row) => row.return_item === values.return_item);
+				if (!source) return ui.msgprint(translate("请选择有效的退货来源。"));
+				const limit = Math.min(maximum, Number(source.remaining_qty));
+				const qty = Number(values.qty);
+				if (!Number.isFinite(qty) || qty <= 0 || qty > limit) {
+					return ui.msgprint(translate("本次补产数量必须大于零，且不能超过 {0}。", [limit]));
+				}
+				submitted = true;
+				dialog.get_primary_btn().prop("disabled", true);
+				dialog.hide();
+				return submit(qty, source.return_item);
+			},
+		});
+		beforeShow();
+		dialog.show();
+		return dialog;
+	}, () => {
+		ui.msgprint(translate("退货来源未能确认，请刷新后重新核对；本次没有创建补产计划。"));
+		return null;
+	});
+}
+
+function promptProductionPlanQuantity(demand, submit, ui, translate) {
+	const maximum = Number(demand?.unplanned_production_qty ?? demand?.uncovered_qty);
+	if (!Number.isFinite(maximum) || maximum <= 0) {
+		return ui.msgprint(translate("当前没有可安排的生产数量，请刷新后重试。"));
+	}
+	let submitted = false;
+	let loadingReturns = false;
+	const hasProductionHistory = (demand.work_orders || []).some((row) =>
+		row.status === "Completed" || Number(row.produced_qty) > 0);
+	const dialog = new ui.ui.Dialog({
+		title: translate("创建生产计划"),
+		fields: [
+			{ fieldtype: "HTML", options: ui.utils.escape_html(productionWorkbenchItemIdentity.itemIdentityText(
+				demand.item_code, demand.item_name, translate, translate("产品编码"))) },
+			{
+				fieldname: "qty", fieldtype: "Float", label: translate("本次计划数量"),
+				reqd: 1, default: maximum,
+				description: translate("按产品库存单位填写，当前未安排 {0}。可减量创建，剩余数量可稍后继续安排。", [maximum]),
+			},
+			...(hasProductionHistory ? [{ fieldtype: "HTML", options: ui.utils.escape_html(translate(
+				"已有完成的生产记录。若本次为客户退回后另制，请选择“按退货补产”并核对退货来源。")) }] : []),
+		],
+		...(hasProductionHistory ? {
+			secondary_action_label: translate("按退货补产"),
+			secondary_action() {
+				if (submitted || loadingReturns) return;
+				loadingReturns = true;
+				return promptReturnReplacementQuantity(demand, submit, ui, translate, () => {
+					submitted = true;
+					dialog.hide();
+				}).finally(() => { loadingReturns = false; });
+			},
+		} : {}),
+		primary_action_label: translate("创建生产计划"),
+		primary_action(values) {
+			if (submitted || loadingReturns) return;
+			const qty = Number(values.qty);
+			if (!Number.isFinite(qty) || qty <= 0 || qty > maximum) {
+				return ui.msgprint(translate("请输入大于零且不超过当前未安排数量的数值。"));
+			}
+			submitted = true;
+			dialog.get_primary_btn().prop("disabled", true);
+			dialog.hide();
+			return submit(qty);
+		},
+	});
+	dialog.show();
+	return dialog;
+}
+
 const productionWorkbenchApi = {
 	productionCenterNavigationHtml,
 	productionOrderShortcutsHtml,
@@ -950,6 +1073,7 @@ const productionWorkbenchApi = {
 	productionActiveFiltersHtml,
 	refreshProductionOverview,
 	runProductionWorkbenchToolbarLoad,
+	promptReturnReplacementQuantity,
 };
 
 if (typeof module !== "undefined" && module.exports) {
@@ -1211,25 +1335,32 @@ if (typeof frappe !== "undefined") {
 			};
 			if (!methods[action]) return;
 			const demand = (state.data.demands || []).find((row) => row.sales_order_item === salesOrderItem);
-			const message = action === "create_work_order"
-				? `${__("确认按当前未安排数量创建生产计划并生成层级工单？")}<br>${frappe.utils.escape_html(productionWorkbenchItemIdentity.itemIdentityText(demand?.item_code, demand?.item_name, __, __("产品编码")))} · ${format_number(flt(demand?.unplanned_production_qty), null, 2)}`
-				: __("确认将当前可用完工成品预留给来源订单？");
-			frappe.confirm(message, () => {
-				frappe.call({ method: methods[action], type: "POST", args: { sales_order: salesOrder, sales_order_item: salesOrderItem }, freeze: true }).then((r) => {
-					const created = (r && r.message) || {};
-					let done = __("操作完成，已按最新数据重新检查。");
-					if (action === "create_work_order") {
-						const total = (created.work_orders || []).length;
-						const sub = flt(created.sub_assembly_count);
-						const plan = created.production_plan || "";
-						done = sub > 0
-							? __("已创建生产计划 {0}，并生成 {1} 个工单（含 {2} 个半成品工单），已按最新数据重新检查。", [plan, total, sub])
-							: __("已创建生产计划 {0}，并生成 {1} 个工单，已按最新数据重新检查。", [plan, total]);
-					}
-					frappe.show_alert({ message: done, indicator: "green" });
-					loadOverview();
+			const submit = (qty, returnItem) => frappe.call({
+				method: methods[action], type: "POST", freeze: true,
+				args: { sales_order: salesOrder, sales_order_item: salesOrderItem, ...(qty !== undefined ? { qty } : {}),
+					...(returnItem ? { return_delivery_note_item: returnItem } : {}) },
+			}).then((r) => {
+				const created = (r && r.message) || {};
+				let done = __("操作完成，已按最新数据重新检查。");
+				if (action === "create_work_order") {
+					const total = (created.work_orders || []).length;
+					const sub = flt(created.sub_assembly_count);
+					const plan = created.production_plan || "";
+					done = sub > 0
+						? __("已创建生产计划 {0}，并生成 {1} 个工单（含 {2} 个半成品工单），已按最新数据重新检查。", [plan, total, sub])
+						: __("已创建生产计划 {0}，并生成 {1} 个工单，已按最新数据重新检查。", [plan, total]);
+				}
+				frappe.show_alert({ message: done, indicator: "green" });
+				loadOverview();
+			}, action === "create_work_order" ? () => {
+				frappe.msgprint({
+					title: __("请先核对创建结果"), indicator: "orange",
+					message: __("未能确认本次创建结果，已请求刷新总览。请先核对生产计划与工单，勿重复创建；如刷新未完成，请手动刷新后核对。"),
 				});
-			});
+				return loadOverview();
+			} : undefined);
+			if (action === "create_work_order") return promptProductionPlanQuantity(demand, submit, frappe, __);
+			return frappe.confirm(__("确认将当前可用完工成品预留给来源订单？"), () => submit());
 		}
 
 		function runWorkOrderAction(action, workOrder, options = {}) {
@@ -1247,36 +1378,54 @@ if (typeof frappe !== "undefined") {
 			const target = (state.data.demands || [])
 				.flatMap((demand) => demand.work_orders || [])
 				.find((row) => row.name === workOrder) || {};
-			const message = action === "request_material_issue_override"
-				? workOrderPriorityIssueConfirmationHtml(target, helpers())
-				: workOrderActionConfirmation(action, target, __);
-			frappe.confirm(message, () => {
-				frappe.call({
-					method: methods[action],
-					type: "POST",
-					args: {
-						...(action === "withdraw_stock_request" ? { stock_entry: options.document } : { work_order: workOrder }),
-						...(options.workOrderItem ? { work_order_item: options.workOrderItem } : {}),
-						...(options.allowPartial ? { allow_partial: 1 } : {}),
-						...(options.overridePriority || action === "request_material_issue_override" ? { override_priority: 1 } : {}),
-						...(options.qty ? { qty: options.qty } : {}),
-					},
-					freeze: true,
-				}).then((response) => {
-					const result = response.message || {};
-					const sourceDemand = (state.data.demands || []).find((demand) =>
-						(demand.work_orders || []).some((row) => row.name === workOrder));
-					frappe.show_alert({
-						message: action === "create_replenishment"
-							? frappe.utils.escape_html(replenishmentCreatedFeedback(result, sourceDemand, state, __))
-							: result.withdrawn
-							? __("申请已撤回，关联库存预留已释放。")
-							: result.reused ? __("已存在待处理单据，未重复创建。") : __("已创建待处理任务。"),
-						indicator: "green",
+			const confirmAndRun = (receiptQty) => {
+				const message = action === "request_material_issue_override"
+					? workOrderPriorityIssueConfirmationHtml(target, helpers())
+					: workOrderActionConfirmation(action, { ...target, requested_receipt_qty: receiptQty }, __);
+				frappe.confirm(message, () => {
+					frappe.call({
+						method: methods[action],
+						type: "POST",
+						args: {
+							...(action === "withdraw_stock_request" ? { stock_entry: options.document } : { work_order: workOrder }),
+							...(options.workOrderItem ? { work_order_item: options.workOrderItem } : {}),
+							...(options.allowPartial ? { allow_partial: 1 } : {}),
+							...(options.overridePriority || action === "request_material_issue_override" ? { override_priority: 1 } : {}),
+							...(options.qty ? { qty: options.qty } : {}),
+							...(receiptQty !== undefined ? { qty: receiptQty } : {}),
+						},
+						freeze: true,
+					}).then((response) => {
+						const result = response.message || {};
+						const sourceDemand = (state.data.demands || []).find((demand) =>
+							(demand.work_orders || []).some((row) => row.name === workOrder));
+						frappe.show_alert({
+							message: action === "create_replenishment"
+								? frappe.utils.escape_html(replenishmentCreatedFeedback(result, sourceDemand, state, __))
+								: result.withdrawn
+								? __("申请已撤回，关联库存预留已释放。")
+								: result.reused ? __("已存在待处理单据，未重复创建。") : __("已创建待处理任务。"),
+							indicator: "green",
+						});
+						loadOverview();
 					});
-					loadOverview();
 				});
-			});
+			};
+			if (action === "request_manufacture") {
+				const maximum = Number(target.receipt_state?.remaining_qty || 0);
+				return frappe.prompt([{
+					fieldname: "qty", fieldtype: "Float", label: __("本批完工数量（含损耗）"),
+					reqd: 1, default: maximum,
+					description: __("当前可登记完工 {0}；有损耗时，实际成品入库数量会相应减少。", [maximum]),
+				}], (values) => {
+					const qty = Number(values.qty);
+					if (!Number.isFinite(qty) || qty <= 0 || qty > maximum) {
+						return frappe.msgprint(__("请输入大于零且不超过当前可入库数量的数值。"));
+					}
+					confirmAndRun(qty);
+				}, __("申请完工入库"), __("确认数量"));
+			}
+			return confirmAndRun();
 		}
 
 		let orderSearchTimer = null;

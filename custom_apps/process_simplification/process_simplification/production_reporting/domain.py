@@ -304,10 +304,12 @@ def job_card_block(
 			for_update=for_update,
 		)
 		if work_order_status in {"Closed", "Stopped", "Completed", "Cancelled"}:
+			status_label = {"Closed": _("已关闭"), "Stopped": _("已停止"),
+				"Completed": _("已完成"), "Cancelled": _("已取消")}[work_order_status]
 			return frappe._dict(
 				code="WORK_ORDER_UNAVAILABLE",
-				message=_("The Work Order is not executable while its status is {0}.").format(
-					work_order_status
+				message=_("生产工单{0}，当前不能开工；请联系主管。").format(
+					status_label
 				),
 			)
 	if job_card.get("sequence_id") and job_card.docstatus == 0:
@@ -318,7 +320,7 @@ def job_card_block(
 		if remaining is not None and remaining <= 0:
 			return frappe._dict(
 				code="PREVIOUS_OPERATION_PENDING",
-				message=_("前序工序尚无可接续的已完成数量，请等待主管审核前序报工。"),
+				message=_("前序尚无可接续的已完成数量，请主管审核前序报工；如需交接部分完工数量，还须确认本批完工。"),
 			)
 	return None
 
@@ -409,6 +411,8 @@ def assignment_reported_qty(
 
 
 def reportable_qty(job_card: frappe._dict, *, for_update: bool = False) -> float:
+	if cint(job_card.get("docstatus")) != 0:
+		return 0.0
 	precision = job_card_qty_precision()
 	return flt(
 		max(
@@ -512,20 +516,70 @@ def work_order_material_capacity(
 	)
 
 
+def operation_reporting_used_qty(job_card: frappe._dict, *, for_update: bool = False) -> float:
+	"""Reserve each managed operation's issued quantity once across its cards.
+
+	Mutation callers already own JC -> WO locks. Read report/exception rows
+	directly, rather than locking sibling cards after WO (which reverses that
+	lock order). Both services lock WO before changing these immutable facts.
+	"""
+	local_used = (
+		flt(job_card.total_completed_qty) + flt(job_card.process_loss_qty)
+		+ pending_report_qty(job_card.name, for_update=for_update)
+	)
+	if not (job_card.get("work_order") and job_card.get("operation_id")):
+		return local_used
+	report = frappe.qb.DocType("Job Card Work Report")
+	query = frappe.qb.from_(report).select(report.completed_qty).where(
+		(report.work_order == job_card.work_order)
+		& (report.operation_id == job_card.operation_id)
+		& (report.status.isin(["Approved", "Pending Approval"]))
+	)
+	if for_update:
+		query = query.for_update()
+	used = sum(flt(row.completed_qty) for row in query.run(as_dict=True))
+	if frappe.db.table_exists("Production Exception Request"):
+		from process_simplification.production_exceptions.constants import APPLIED, PROCESS_LOSS
+
+		request = frappe.qb.DocType("Production Exception Request")
+		query = frappe.qb.from_(request).select(request.qty).where(
+			(request.work_order == job_card.work_order)
+			& (request.operation_id == job_card.operation_id)
+			& (request.request_type == PROCESS_LOSS)
+			& (request.status == APPLIED)
+		)
+		if for_update:
+			query = query.for_update()
+		used += sum(flt(row.qty) for row in query.run(as_dict=True))
+	return flt(max(local_used, used), job_card_qty_precision())
+
+
+def previous_operation_capacity(job_card: frappe._dict, *, for_update: bool = False) -> float | None:
+	if not (job_card.get("work_order") and flt(job_card.get("sequence_id")) > 0):
+		return None
+	operation = frappe.qb.DocType("Work Order Operation")
+	query = frappe.qb.from_(operation).select(operation.completed_qty).where(
+		(operation.parent == job_card.work_order)
+		& (operation.sequence_id < job_card.sequence_id)
+	)
+	if for_update:
+		query = query.for_update()
+	rows = query.run(as_dict=True)
+	return min((flt(row.completed_qty) for row in rows), default=None)
+
+
 def material_reportable_qty(job_card: frappe._dict, *, for_update: bool = False) -> float:
-	"""Apply both Job Card quantity and issued-material boundaries."""
+	"""Apply card, shared operation material, and predecessor quantity boundaries."""
 	precision = job_card_qty_precision()
 	job_card_remaining = reportable_qty(job_card, for_update=for_update)
 	material_capacity = work_order_material_capacity(job_card, for_update=for_update)
-	if material_capacity is None:
+	previous_capacity = previous_operation_capacity(job_card, for_update=for_update)
+	capacities = [value for value in (material_capacity, previous_capacity) if value is not None]
+	if not capacities:
 		return job_card_remaining
-	used = (
-		flt(job_card.total_completed_qty, precision)
-		+ flt(job_card.process_loss_qty, precision)
-		+ pending_report_qty(job_card.name, for_update=for_update)
-	)
+	used = operation_reporting_used_qty(job_card, for_update=for_update)
 	return flt(
-		max(0.0, min(job_card_remaining, flt(material_capacity, precision) - used)),
+		max(0.0, min(job_card_remaining, flt(min(capacities), precision) - used)),
 		precision,
 	)
 

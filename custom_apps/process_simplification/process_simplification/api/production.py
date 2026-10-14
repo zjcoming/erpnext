@@ -13,6 +13,7 @@ from process_simplification.api.shortage import (
 from process_simplification.api.workbench import (
 	DEFAULT_WORKBENCH_PAGE_SIZE,
 	_delivery_timing,
+	apply_reservation_action_permissions,
 	get_fulfillment_overview,
 	get_work_orders,
 	order_item_priority_key,
@@ -843,6 +844,7 @@ def get_production_overview(page=1, page_size=DEFAULT_WORKBENCH_PAGE_SIZE, filte
 		# resulting materials use the Sales Order Item delivery priority above.
 		covered_demands.extend(legacy_demands)
 
+	apply_reservation_action_permissions(covered_demands)
 	covered_demands.sort(key=production_sort_key)
 	filtered_demands = filter_production_demands(covered_demands, filters)
 	paged_demands, pagination = paginate_workbench_rows(filtered_demands, page=page, page_size=page_size)

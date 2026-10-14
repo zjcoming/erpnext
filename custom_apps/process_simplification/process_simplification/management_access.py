@@ -260,6 +260,8 @@ WAREHOUSE_OPERATOR_PERMISSIONS = {
 
 PRODUCTION_MANAGER_PERMISSIONS = {
 	**{doctype: {"read", "select"} for doctype in REFERENCE_READ_DOCTYPES},
+	# Native supplier-return validation selects the company's payable account.
+	"Account": {"select"},
 	"Sales Order": {"read", "select"},
 	"Production Plan": {"read", "select", "create", "write", "submit"},
 	"Work Order": {"read", "select", "create", "write", "submit"},

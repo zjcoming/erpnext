@@ -1525,7 +1525,7 @@ def withdraw_exception(name: str, reason: str):
 		if doc.status not in {PENDING_APPROVAL, WITHDRAWN}:
 			frappe.throw("主管已处理此申请，请联系主管撤回。")
 	else:
-		_, doc = _lock_request_for_review(name)
+		_job_card, doc = _lock_request_for_review(name)
 	if doc.status == WITHDRAWN:
 		return doc
 	if doc.status not in OPEN_MATERIAL_STATUSES:

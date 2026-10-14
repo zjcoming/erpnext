@@ -46,16 +46,16 @@ def _saved_pool(page, page_length, filters):
 		inner join `tabJob Card` jc on jc.name = p.job_card
 		inner join `tabWork Order` wo on wo.name = jc.work_order
 		left join `tabItem` item on item.name = jc.production_item
-		where """ + " and ".join(conditions)
+		""" + dispatch_pool._DELIVERY_DATE_JOINS + " where " + " and ".join(conditions)
 	page, page_length = max(cint(page), 1), min(max(cint(page_length), 1), 20)
 	total = cint(frappe.db.sql("select count(*) " + scope, values)[0][0])
 	values.update(offset=(page - 1) * page_length, page_length=page_length)
 	rows = frappe.db.sql(f"""select jc.name as job_card, jc.work_order, jc.company,
 		jc.production_item, item.item_name, item.stock_uom, jc.operation, jc.operation_id,
 		jc.workstation, jc.sequence_id, jc.for_quantity, jc.total_completed_qty as completed_qty,
-		wo.production_plan, wo.sales_order, wo.expected_delivery_date as delivery_date,
+		wo.production_plan, wo.sales_order, {dispatch_pool._DELIVERY_DATE} as delivery_date,
 		{dispatch_pool._ASSIGNMENT_EXISTS} as has_assignment_history
-		{scope} order by jc.operation, wo.name, jc.sequence_id, jc.name
+		{scope} order by jc.operation, ifnull({dispatch_pool._DELIVERY_DATE}, '9999-12-31'), wo.name, jc.sequence_id, jc.name
 		limit %(page_length)s offset %(offset)s""", values, as_dict=True)
 	company_filters = {"name": ["in", sorted(companies)]} if companies is not None else {}
 	return {"rows": rows, "filters": filters,
