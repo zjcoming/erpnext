@@ -180,7 +180,7 @@ function workOrderActionConfirmation(action, workOrder = {}, translate = (messag
 	}
 	if (action === "request_material_issue") {
 		if (workOrder.issue_state?.code === "partially_ready") {
-			return translate("确认按建议数量申请部分发料？申请成功后正式预留本次用料，剩余缺料未补齐前不会允许正式派工。");
+			return translate("确认按建议数量申请部分发料？申请成功后正式预留本次用料；库房发齐一批生产所需的配套物料后即可正式派工，剩余用料可后续补领。");
 		}
 		return translate("确认发起生产发料申请？提交前会重新检查实际库存和硬预留；库房完成发料前不会通知工人开工。");
 	}
