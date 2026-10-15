@@ -150,3 +150,59 @@ class TestRequestTransaction(TestCase):
 				self.assertEqual(create.call_count, 2)
 				self.db.rollback.assert_called_once_with()
 				self.db.commit.assert_not_called()
+
+	def test_stock_reservation_rpc_recalculates_budgets_after_conflict(self):
+		from process_simplification.api import actions
+		from process_simplification.api.utils import SimplifiedFlowError
+
+		self.local.form_dict["cmd"] = f"{actions.__name__}.reserve_stock"
+		for exhausted in ("stock", "order"):
+			with self.subTest(exhausted=exhausted):
+				self.db.reset_mock()
+				state = {"reloaded": False}
+				booked = int(exhausted == "order")
+				fresh_row = frappe._dict(pending_qty=1, reserved_qty=booked, booked_reserved_qty=booked)
+
+				def read_row(*args):
+					if not state["reloaded"]:
+						raise frappe.QueryDeadlockError(1020, "SRE snapshot changed")
+					return fresh_row
+
+				def reject(message):
+					raise SimplifiedFlowError(message)
+
+				self.db.rollback.side_effect = lambda: state.update(reloaded=True)
+				with (
+					patch.object(frappe, "has_permission", return_value=True) as permission,
+					patch.object(frappe, "get_doc", return_value=SimpleNamespace(company="Factory")),
+					patch.object(actions, "_row_from_workbench", side_effect=read_row) as rows,
+					patch.object(actions, "_locked_row_from_workbench", return_value=fresh_row),
+					patch.object(actions, "get_sales_order_item", return_value=SimpleNamespace(item_code="FG", warehouse="FG-WH")),
+					patch.object(actions, "get_available_qty_to_reserve", return_value=0 if exhausted == "stock" else 1),
+					patch.object(actions, "_new_sre") as reserve,
+					patch.object(actions, "throw_chinese", side_effect=reject),
+				):
+					# The ordinary UI omits qty: retry must calculate it from fresh budgets.
+					with self.assertRaisesRegex(SimplifiedFlowError, "当前没有可预留库存"):
+						actions.reserve_stock("SO", "ROW")
+				self.assertEqual(rows.call_count, 2)
+				self.assertEqual(permission.call_count, 2)
+				self.db.rollback.assert_called_once_with()
+				self.db.commit.assert_not_called()
+				reserve.assert_not_called()
+
+	def test_stock_reservation_internal_call_leaves_transaction_to_its_owner(self):
+		from process_simplification.api import actions
+
+		self.local.form_dict["cmd"] = "another.transaction.owner"
+		with (
+			patch.object(frappe, "has_permission", return_value=True),
+			patch.object(actions, "_row_from_workbench", side_effect=frappe.QueryDeadlockError(1020)) as rows,
+			patch.object(actions, "_new_sre") as reserve,
+		):
+			with self.assertRaises(frappe.QueryDeadlockError):
+				actions.reserve_stock("SO", "ROW")
+		self.assertEqual(rows.call_count, 1)
+		self.db.rollback.assert_not_called()
+		self.db.commit.assert_not_called()
+		reserve.assert_not_called()

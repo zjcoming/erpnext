@@ -129,6 +129,7 @@ def _new_sre(
 
 
 @frappe.whitelist(methods=["POST"])
+@retry_request_transaction
 def reserve_stock(sales_order: str, sales_order_item: str, qty: float | None = None, warehouse: str | None = None):
 	frappe.has_permission("Stock Reservation Entry", "create", throw=True)
 	row = _row_from_workbench(sales_order, sales_order_item)
