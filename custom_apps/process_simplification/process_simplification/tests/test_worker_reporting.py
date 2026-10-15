@@ -3392,6 +3392,50 @@ class TestWorkerReporting(IntegrationTestCase):
 	def test_month_close_waits_for_paused_session_and_can_then_complete(self):
 		self._check_month_close_with_unfinished_session(paused=True)
 
+	def test_monthly_summary_preserves_fractional_timer_minutes_after_reload(self):
+		previous_month = add_months(get_first_day(nowdate()), -1)
+		started = datetime.combine(add_days(previous_month, 14), time(9, 30, 0, 123456))
+		with self.change_settings("Process Simplification Settings", {"allow_manual_time_entry": 0}):
+			with self.freeze_time(started):
+				_, assignment = self._setup_flow(
+					qty=1, wage_type="Time", rate=20, valid_from=previous_month
+				)
+				with self.set_user(self.worker_user):
+					report = service.start_work_session(assignment.name, "fractional-summary-start", started_at=started)
+					report = service.finish_work_session(
+						report.name, 1, "fractional-summary-finish",
+						ended_at=started + timedelta(seconds=135, microseconds=774000),
+					)
+				report.reload()
+				self.assertFalse(report.manual_time_entry)
+				self.assertFalse(report.time_manual_entry_snapshot)
+				self.assertEqual(flt(report.reported_minutes, 6), 2.2629)
+				self.assertEqual(flt(report.wage_amount), 0.75)
+				self._approve(report)
+
+		with self.set_user(self.wage_manager):
+			summary_name = None
+			for _ in range(2):
+				result = summary.build_monthly_summaries(self.TEST_COMPANY, previous_month, self.worker)
+				self.assertEqual(len(result["summaries"]), 1)
+				if summary_name:
+					self.assertEqual(result["summaries"][0], summary_name)
+				summary_name = result["summaries"][0]
+				doc = frappe.get_doc("Monthly Worker Wage Summary", summary_name)
+				doc.reload()
+				self.assertEqual(len(doc.details), 1)
+				self.assertEqual(doc.details[0].source_report, report.name)
+				self.assertEqual(flt(doc.details[0].reported_minutes, 6), flt(report.reported_minutes, 6))
+				self.assertEqual(flt(doc.details[0].amount), flt(report.wage_amount))
+				self.assertEqual(flt(doc.time_amount), 0.75)
+				self.assertEqual(flt(doc.total_amount), 0.75)
+			confirmed = summary.confirm_monthly_summary(summary_name)
+			confirmed.reload()
+			report.reload()
+			self.assertEqual(confirmed.docstatus, 1)
+			self.assertEqual(flt(confirmed.details[0].reported_minutes, 6), flt(report.reported_minutes, 6))
+			self.assertEqual(report.monthly_summary, summary_name)
+
 	def test_monthly_summary_contains_approved_reports(self):
 		previous_month = add_months(get_first_day(nowdate()), -1)
 		production_day = add_days(previous_month, 14)

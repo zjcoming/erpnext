@@ -13,7 +13,7 @@
   {"fieldname": "labor_date", "fieldtype": "Date", "label": "生产日期", "read_only": 1, "in_list_view": 1},
   {"fieldname": "wage_type", "fieldtype": "Select", "label": "计价方式", "options": "Piecework\nTime", "read_only": 1, "in_list_view": 1},
   {"fieldname": "completed_qty", "fieldtype": "Float", "label": "数量", "read_only": 1, "in_list_view": 1},
-  {"fieldname": "reported_minutes", "fieldtype": "Int", "label": "分钟", "read_only": 1, "in_list_view": 1},
+  {"fieldname": "reported_minutes", "fieldtype": "Float", "precision": "6", "label": "分钟", "read_only": 1, "in_list_view": 1},
   {"fieldname": "rate", "fieldtype": "Currency", "label": "单价", "read_only": 1},
   {"fieldname": "amount", "fieldtype": "Currency", "label": "金额", "read_only": 1, "in_list_view": 1}
  ],
