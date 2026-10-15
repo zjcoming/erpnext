@@ -83,6 +83,7 @@ boot_session = [
 ]
 
 doctype_js = {
+	"Delivery Note": "public/js/delivery_note.js",
 	"Purchase Receipt": "public/js/purchase_receipt.js",
 	"Company": "public/js/company_manufacturing.js",
 	"Material Request": "public/js/material_request_purchasing.js",
