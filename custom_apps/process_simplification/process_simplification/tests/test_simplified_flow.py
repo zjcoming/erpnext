@@ -841,7 +841,7 @@ class TestSimplifiedFlow(UnitTestCase):
 	@patch("process_simplification.api.actions.make_delivery_note")
 	@patch("process_simplification.api.actions.get_sales_order_item")
 	@patch("process_simplification.api.actions.frappe.get_doc")
-	@patch("process_simplification.api.actions.frappe.get_all")
+	@patch("process_simplification.api.actions.frappe.db.get_values")
 	@patch("process_simplification.api.actions.frappe.db.get_value")
 	@patch("process_simplification.api.actions.frappe.has_permission")
 	@patch("process_simplification.api.actions._row_from_workbench")
@@ -850,7 +850,7 @@ class TestSimplifiedFlow(UnitTestCase):
 		row_from_workbench,
 		has_permission,
 		get_value,
-		get_all,
+		get_values,
 		get_doc,
 		get_sales_order_item,
 		make_delivery_note,
@@ -862,7 +862,7 @@ class TestSimplifiedFlow(UnitTestCase):
 		# A draft Delivery Note can consume the effective reservation shown by the workbench.
 		# Retrying the action must still reopen that draft instead of reporting no reservation.
 		row_from_workbench.return_value = frappe._dict({"reserved_qty": 0})
-		get_all.return_value = [frappe._dict({"parent": "DN-DRAFT-001"})]
+		get_values.return_value = [frappe._dict({"parent": "DN-DRAFT-001"})]
 		existing_draft = MagicMock(name="existing_delivery_note")
 		existing_draft.name = "DN-DRAFT-001"
 		existing_draft.docstatus = 0
@@ -880,6 +880,10 @@ class TestSimplifiedFlow(UnitTestCase):
 			result,
 			{"delivery_note": "DN-DRAFT-001", "docstatus": 0, "reused": True},
 		)
+		self.assertTrue(get_values.call_args.kwargs["for_update"])
+		self.assertFalse(get_values.call_args.kwargs["wait"])
+		get_value.assert_any_call("Delivery Note", "DN-DRAFT-001", "name", for_update=True, wait=False)
+		get_doc.assert_called_once_with("Delivery Note", "DN-DRAFT-001", for_update=True)
 
 	@patch("process_simplification.api.actions.make_delivery_note")
 	@patch("process_simplification.api.actions.get_sales_order_item")

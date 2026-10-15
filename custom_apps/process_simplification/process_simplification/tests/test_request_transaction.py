@@ -136,3 +136,17 @@ class TestRequestTransaction(TestCase):
 		reserve.assert_called_once()
 		self.assertEqual(reserve.call_args.kwargs["qty"], 2)
 		self.assertEqual(reserve.call_args.kwargs["from_voucher_detail_no"], "MFG-ROW")
+
+	def test_delivery_draft_rpc_restarts_after_conflict_and_reuses_committed_draft(self):
+		from process_simplification.api import actions
+
+		self.local.form_dict["cmd"] = f"{actions.__name__}.create_delivery_note"
+		existing = {"delivery_note": "DN-EXISTING", "docstatus": 0, "reused": True}
+		for error, errno in ((frappe.QueryDeadlockError, 1020), (frappe.QueryTimeoutError, 1205)):
+			with self.subTest(error=error.__name__):
+				self.db.reset_mock()
+				with patch.object(actions, "_create_delivery_note", side_effect=[error(errno), existing]) as create:
+					self.assertEqual(actions.create_delivery_note("SO", "ROW"), existing)
+				self.assertEqual(create.call_count, 2)
+				self.db.rollback.assert_called_once_with()
+				self.db.commit.assert_not_called()

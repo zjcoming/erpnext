@@ -411,21 +411,27 @@ def _reserve_completed_stock(sales_order: str, sales_order_item: str, qty: float
 
 
 def _get_existing_draft_delivery_note(sales_order: str, sales_order_item: str):
-	rows = frappe.get_all(
+	# The order-row lock does not refresh an earlier REPEATABLE READ snapshot.
+	rows = frappe.db.get_values(
 		"Delivery Note Item",
 		filters={
 			"against_sales_order": sales_order,
 			"so_detail": sales_order_item,
 			"docstatus": 0,
 		},
-		fields=["parent"],
+		fieldname=["parent"],
 		order_by="creation desc",
 		limit=1,
+		as_dict=True,
+		for_update=True,
+		wait=False,
 	)
 	if not rows:
 		return None
 
-	delivery_note = frappe.get_doc("Delivery Note", rows[0].parent)
+	# Yield to native Submit, which locks the parent before its child rows.
+	frappe.db.get_value("Delivery Note", rows[0].parent, "name", for_update=True, wait=False)
+	delivery_note = frappe.get_doc("Delivery Note", rows[0].parent, for_update=True)
 	if delivery_note.docstatus != 0:
 		return None
 	delivery_note.check_permission("read")
@@ -433,11 +439,12 @@ def _get_existing_draft_delivery_note(sales_order: str, sales_order_item: str):
 
 
 @frappe.whitelist(methods=["POST"])
+@retry_request_transaction
 def create_delivery_note(sales_order: str, sales_order_item: str):
 	frappe.db.savepoint("batch_delivery_draft")
 	try:
 		return _create_delivery_note(sales_order, sales_order_item)
-	except frappe.QueryDeadlockError:
+	except (frappe.QueryDeadlockError, frappe.QueryTimeoutError):
 		raise
 	except Exception:
 		frappe.db.rollback(save_point="batch_delivery_draft")
