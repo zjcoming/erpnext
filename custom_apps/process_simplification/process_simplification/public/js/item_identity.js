@@ -90,7 +90,7 @@ if (typeof frappe !== "undefined" && frappe.ui?.form?.on) {
 					frm.set_df_property("stock_levels_section", "depends_on", "eval:false");
 					frm.toggle_display("stock_levels_section", false);
 					intro += `<br><small>${frappe.utils.escape_html(__(
-						"当前岗位无法在此页查看库存数量，请由库房人员在库房工作台核对实际可用量。"
+						"本页未显示库存数量，请到库房工作台或有权限的库存报表核对实际可用量。"
 					))}</small>`;
 				}
 				frm.set_intro(
