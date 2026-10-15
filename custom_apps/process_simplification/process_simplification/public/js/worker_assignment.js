@@ -413,6 +413,44 @@ function openWorkerAssignmentDialog(options = {}) {
 		const defaultRow = context
 			? (context.job_cards || []).find((row) => row.name === defaultJobCard)
 			: null;
+		let selectionRevision = 0;
+		let selectionClosed = false;
+		let selectionLoading = false;
+		let loadedJobCard = defaultJobCard;
+		let selectionLock;
+		const currentSelection = (revision, jobCard) => !selectionClosed
+			&& revision === selectionRevision && String(dialog.get_value("job_card") || "") === jobCard;
+		function syncSelectionLock() {
+			const field = dialog.fields_dict.allocations;
+			const area = field.$wrapper;
+			const primary = dialog.get_primary_btn();
+			const locked = selectionLoading || !loadedJobCard;
+			area.attr("aria-busy", String(selectionLoading));
+			area.find(".grid-description").text(selectionLoading ? __("正在读取派工信息…") : field.df.description);
+			if (locked) {
+				if (!selectionLock) {
+					selectionLock = { inert: Boolean(area.prop("inert")), primary: primary.prop("disabled"), buttons: [] };
+					area.find(".grid-add-row, .grid-add-multiple-rows, .grid-duplicate-rows").each((_, button) => {
+						selectionLock.buttons.push([button, button.disabled]);
+						button.disabled = true;
+					});
+				}
+				area.prop("inert", true);
+				primary.prop("disabled", true);
+			} else if (selectionLock) {
+				area.prop("inert", selectionLock.inert);
+				selectionLock.buttons.forEach(([button, disabled]) => { button.disabled = disabled; });
+				primary.prop("disabled", selectionLock.primary);
+				selectionLock = null;
+			}
+		}
+		function setAllocationRows(row) {
+			dialog.set_value("task_qty", Number(row?.for_quantity || 0));
+			const field = dialog.fields_dict.allocations;
+			field.df.data = workerAssignmentPlanRows(row);
+			field.grid.refresh();
+			dialog.worker_load?.schedule();
+		}
 		const fields = [];
 		if (context) {
 			fields.push({
@@ -433,33 +471,51 @@ function openWorkerAssignmentDialog(options = {}) {
 				reqd: 1,
 				default: defaultJobCard,
 				onchange: async () => {
-					const jobCard = dialog.get_value("job_card");
-					let row = (context?.job_cards || []).find((item) => item.name === jobCard);
-					if (!row && jobCard) {
-						const values = await frappe.db.get_value(
-							"Job Card",
-							jobCard,
-							["work_order", "for_quantity"]
-						);
-						const workOrder = values?.message?.work_order;
-						if (workOrder) {
-							const result = await frappe.call({
-								method: "process_simplification.api.production_reporting.get_work_order_assignment_context",
-								args: { work_order: workOrder },
-							});
-							context = result.message || context;
-							row = (context?.job_cards || []).find((item) => item.name === jobCard);
+					const jobCard = String(dialog.get_value("job_card") || "");
+					const revision = ++selectionRevision;
+					loadedJobCard = "";
+					selectionLoading = true;
+					syncSelectionLock();
+					try {
+						if (!jobCard) {
+							if (!options.work_order) context = null;
+							setAllocationRows(null);
+							return;
 						}
-						if (!row) row = { name: jobCard, for_quantity: values?.message?.for_quantity };
+						let row = (context?.job_cards || []).find((item) => item.name === jobCard);
+						if (!row) {
+							const values = await frappe.db.get_value("Job Card", jobCard, ["work_order", "for_quantity"]);
+							if (!currentSelection(revision, jobCard)) return;
+							const workOrder = values?.message?.work_order;
+							if (workOrder) {
+								const result = await frappe.call({
+									method: "process_simplification.api.production_reporting.get_work_order_assignment_context",
+									args: { work_order: workOrder },
+								});
+								if (!currentSelection(revision, jobCard)) return;
+								context = result.message || context;
+								row = (context?.job_cards || []).find((item) => item.name === jobCard);
+							}
+							if (!row) row = { name: jobCard, for_quantity: values?.message?.for_quantity };
+						}
+						if (!currentSelection(revision, jobCard)) return;
+						setAllocationRows(row);
+						loadedJobCard = jobCard;
+						if (context?.can_choose_supervisor && dialog.fields_dict.supervisor) {
+							dialog.set_value("supervisor", row?.assignment_supervisor || "");
+							dialog.set_df_property("supervisor", "read_only", !row?.can_choose_supervisor);
+						}
+					} catch (error) {
+						if (!currentSelection(revision, jobCard)) return;
+						if (!options.work_order) context = null;
+						setAllocationRows(null);
+						frappe.msgprint(__("派工信息读取失败，请重新选择任务单。"));
+					} finally {
+						if (currentSelection(revision, jobCard)) {
+							selectionLoading = false;
+							syncSelectionLock();
+						}
 					}
-					dialog.set_value("task_qty", Number(row?.for_quantity || 0));
-					const allocationField = dialog.fields_dict.allocations;
-					allocationField.df.data = workerAssignmentPlanRows(row);
-					allocationField.grid.refresh();
-					dialog?.worker_load?.schedule();
-					if (!context?.can_choose_supervisor || !dialog.fields_dict.supervisor) return;
-					dialog.set_value("supervisor", row?.assignment_supervisor || "");
-					dialog.set_df_property("supervisor", "read_only", !row?.can_choose_supervisor);
 				},
 				get_query: () => ({
 					query: "process_simplification.api.production_reporting.search_draft_job_cards",
@@ -555,6 +611,10 @@ function openWorkerAssignmentDialog(options = {}) {
 		if (canSubmit) {
 			dialogOptions.primary_action_label = __("确认派工");
 			dialogOptions.primary_action = async (values) => {
+				if (selectionClosed || selectionLoading || !loadedJobCard || loadedJobCard !== values.job_card) {
+					frappe.msgprint(__("请先选择并读取生产任务单。"));
+					return;
+				}
 				const selected = context
 					? (context.job_cards || []).find((row) => row.name === values.job_card)
 					: null;
@@ -594,6 +654,13 @@ function openWorkerAssignmentDialog(options = {}) {
 			};
 		}
 		dialog = new frappe.ui.Dialog(dialogOptions);
+		if (canSubmit) {
+			syncSelectionLock();
+			dialog.$wrapper.on("hide.bs.modal.worker-assignment-selection", () => {
+				selectionClosed = true;
+				selectionRevision++;
+			});
+		}
 		dialog.$wrapper.addClass("ps-worker-assignment-dialog");
 		const continuationRequests = new Map();
 		dialog.$wrapper.on("click", ".worker-assignment-finalize-partial", (event) => {
