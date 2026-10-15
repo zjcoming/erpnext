@@ -166,9 +166,11 @@ def _request_state(doc, stock_facts):
 
 
 def _draft_state(doc):
-	# Include every persisted field, not just the displayed quantities: changed
-	# posting date, accounts or extra costs must also invalidate confirmation.
-	return _hash(doc.as_dict())
+	# Parent idx is a background link counter; child order and all other fields
+	# still belong to the reviewed draft.
+	state = dict(doc.as_dict())
+	state.pop("idx", None)
+	return _hash(state)
 
 
 def _existing_draft(doc, scope, *, lock=False):

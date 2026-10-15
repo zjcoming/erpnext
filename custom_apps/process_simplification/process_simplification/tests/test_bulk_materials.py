@@ -1,4 +1,5 @@
 from contextlib import ExitStack
+from copy import deepcopy
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
@@ -163,10 +164,42 @@ class TestBulkMaterials(TestCase):
 		with self.assertRaises(frappe.ValidationError):
 			bulk._same_company([{"company": "A"}, {"company": "B"}])
 
+	def test_draft_hash_ignores_parent_link_count_without_mutating_input(self):
+		doc = MagicMock()
+		data = {"idx": 0, "items": [{"idx": 1, "qty": 10}]}
+		doc.as_dict.return_value = data
+		before = deepcopy(data)
+		old = bulk._draft_state(doc)
+		self.assertEqual(data, before)
+		data["idx"] = 5
+		before = deepcopy(data)
+		self.assertEqual(old, bulk._draft_state(doc))
+		self.assertEqual(data, before)
+
 	def test_draft_hash_includes_warehouses_posting_date_and_quantity(self):
 		doc = MagicMock()
-		data = {"posting_date": "2026-09-30", "items": [{"s_warehouse": "Stores", "qty": 10}]}
+		data = {
+			"idx": 0, "modified": "2026-09-30 09:00:00", "posting_date": "2026-09-30",
+			"items": [{"idx": 1, "s_warehouse": "Stores", "t_warehouse": "WIP", "qty": 10,
+				"expense_account": "Stock Adjustment", "cost_center": "Main"}],
+			"additional_costs": [{"description": "Freight", "amount": 1}],
+		}
 		doc.as_dict.return_value = data
 		old = bulk._draft_state(doc)
-		data["items"][0]["s_warehouse"] = "Other"
-		self.assertNotEqual(old, bulk._draft_state(doc))
+		for fieldname, value in {
+			"modified": "2026-09-30 09:01:00", "posting_date": "2026-10-01",
+			"_assign": '["other@example.com"]',
+			"additional_costs": [{"description": "Freight", "amount": 2}],
+		}.items():
+			with self.subTest(parent_field=fieldname):
+				doc.as_dict.return_value = {**data, fieldname: value}
+				self.assertNotEqual(old, bulk._draft_state(doc))
+		for fieldname, value in {
+			"idx": 2, "s_warehouse": "Other Stores", "t_warehouse": "Other WIP", "qty": 11,
+			"expense_account": "Other Expense", "cost_center": "Other Center",
+		}.items():
+			with self.subTest(child_field=fieldname):
+				changed = deepcopy(data)
+				changed["items"][0][fieldname] = value
+				doc.as_dict.return_value = changed
+				self.assertNotEqual(old, bulk._draft_state(doc))
