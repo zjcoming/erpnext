@@ -223,3 +223,32 @@ test("failed dispatch overlapping clear and reselect cannot cache a temporary pr
 	assert.equal(dialog.primary.prop("disabled"), false, "the temporary POST lock must not survive a completed selection");
 	assert.equal(disabledWhileContextPending, true, "POST finally must keep the pending selection locked");
 });
+
+test("repeated loaded Job Card change preserves edits and pending native Add Row focus", async () => {
+	const context = assignmentContext("WO110", "JC122", 2);
+	context.job_cards[0].assignments = [{ employee: "EMP1", assigned_qty: 1, notes: "Existing allocation", assignment_status: "Active" }];
+	context.job_cards.push({ name: "JC123", for_quantity: 3, can_assign: true, assignments: [] });
+	const environment = createEnvironment(context), dialog = await environment.open();
+	const field = dialog.fields_dict.allocations, grid = field.grid;
+	assert.equal(grid.get_data().length, 1);
+	assert.equal(field.clickAdd(), true);
+	const rows = grid.get_data(), original = rows[0], added = rows[1];
+	Object.assign(original, { assigned_qty: 0.75, notes: "Edited existing allocation" });
+	Object.assign(added, { employee: "EMP2", assigned_qty: 1.25, notes: "New allocation before Link blur" });
+	await select(dialog, "JC122");
+	assert.equal(grid.get_data(), rows, "the loaded selection must keep the editable row array");
+	assert.equal(grid.grid_rows[0].doc, original); assert.equal(grid.grid_rows[1].doc, added);
+	assert.equal(original.assigned_qty, 0.75); assert.equal(original.notes, "Edited existing allocation");
+	assert.equal(added.employee, "EMP2"); assert.equal(added.assigned_qty, 1.25); assert.equal(added.notes, "New allocation before Link blur");
+	assert.deepEqual(environment.focusErrors(), [], "the pending native focus must still find the added row");
+	assert.equal(environment.lookups.size, 0); assert.equal(environment.contexts.size, 0);
+	assert.equal(dialog.primary.prop("disabled"), false);
+	await select(dialog, "JC123");
+	assert.equal(dialog.values.task_qty, 3); assert.equal(grid.get_data().length, 0);
+	await select(dialog, "JC122");
+	assert.equal(grid.get_data().length, 1); assert.equal(grid.get_data()[0].assigned_qty, 1);
+	assert.equal(grid.get_data()[0].notes, "Existing allocation");
+	await select(dialog, "");
+	assert.equal(dialog.values.task_qty, 0); assert.equal(grid.get_data().length, 0);
+	assert.equal(dialog.primary.prop("disabled"), true);
+});

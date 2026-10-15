@@ -472,6 +472,7 @@ function openWorkerAssignmentDialog(options = {}) {
 				default: defaultJobCard,
 				onchange: async () => {
 					const jobCard = String(dialog.get_value("job_card") || "");
+					if (jobCard && jobCard === loadedJobCard && !selectionLoading) return;
 					const revision = ++selectionRevision;
 					loadedJobCard = "";
 					selectionLoading = true;
