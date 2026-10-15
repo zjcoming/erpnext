@@ -228,6 +228,7 @@ SALES_OPERATOR_PERMISSIONS = {
 
 WAREHOUSE_OPERATOR_PERMISSIONS = {
 	**{doctype: {"read", "select"} for doctype in REFERENCE_READ_DOCTYPES},
+	"Territory": {"select"},
 	# Native selectors create/revise bundles and stock posting submits them. Batch master-data
 	# changes (expiry/disabled) remain with an explicitly authorized administrator.
 	"Batch": {"select", "create"},
