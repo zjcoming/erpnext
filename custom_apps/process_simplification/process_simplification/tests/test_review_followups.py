@@ -1,10 +1,12 @@
 from datetime import date
+from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import patch
 
 import frappe
 
 from process_simplification.production_reporting import summary
+from process_simplification.management_access import OWNER_ROLE, PRODUCTION_MANAGER_ROLE
 from process_simplification.purchasing import allocation, query, receipts
 from process_simplification.api import executive_dashboard as dashboard
 
@@ -67,7 +69,7 @@ class TestReviewFollowups(TestCase):
 				return ["A", "B"]
 			seen.update(kwargs)
 			return [frappe._dict(name=f"NOTICE-{n}") for n in range(3)]
-		with patch.object(frappe, "get_all", side_effect=get_all), patch.object(receipts, "_can_manage", side_effect=lambda company: company == "A"):
+		with patch.object(frappe, "session", frappe._dict(user="owner")), patch.object(frappe, "get_all", side_effect=get_all), patch.object(receipts, "_can_manage", side_effect=lambda company: company == "A"), patch.object(receipts, "_enabled_system_user", return_value=False):
 			result = receipts.get_notice_page(start=300, page_length=2, search="PA6")
 		self.assertEqual(seen["filters"], [["company", "in", ["A"]]])
 		self.assertEqual(seen["limit_start"], 300)
@@ -80,6 +82,76 @@ class TestReviewFollowups(TestCase):
 			row = allocation._order_followup(doc, pending_only=False)
 		self.assertFalse(row["can_receive"])
 		self.assertFalse(row["can_submit"])
+
+
+class TestReceiptNoticeAccess(TestCase):
+	def setUp(self):
+		self.roles = [PRODUCTION_MANAGER_ROLE]
+		self.event_queries = []
+		self.enterContext(patch.object(frappe, "session", frappe._dict(user="supervisor")))
+		self.enterContext(patch.object(frappe, "get_roles", side_effect=lambda *args: self.roles))
+		self.enterContext(patch.object(receipts, "_user_matches_company", side_effect=lambda user, company: company == "A"))
+		self.enabled = self.enterContext(patch.object(receipts, "_enabled_system_user", return_value=True))
+		self.recipients = self.enterContext(patch.object(receipts, "responsibility_recipients", return_value=["supervisor"]))
+		self.enterContext(patch.object(frappe, "get_all", side_effect=self.get_all))
+
+	def get_all(self, doctype, **kwargs):
+		if doctype == "Company":
+			return ["B", "A"]
+		self.assertEqual(doctype, receipts.EVENT)
+		self.event_queries.append(kwargs)
+		return [frappe._dict(name=f"NOTICE-{index}", company="A") for index in range(3)]
+
+	def test_same_company_receipt_recipient_can_list_before_pagination(self):
+		result = receipts.get_notice_page(page_length=2)
+		self.assertEqual([row.name for row in result["rows"]], ["NOTICE-0", "NOTICE-1"])
+		self.assertEqual(result["next_start"], 2)
+		self.assertEqual(self.event_queries[0]["filters"], [["company", "in", ["A"]]])
+		self.recipients.assert_called_once_with("A", receipts.PURCHASE_RECEIPT_RESPONSIBILITY)
+
+	def test_foreign_company_recipient_cannot_list_or_query_events(self):
+		with patch.object(receipts, "_user_matches_company", return_value=False):
+			self.assertEqual(receipts.get_notice_page()["rows"], [])
+		self.assertEqual(self.event_queries, [])
+		self.recipients.assert_not_called()
+
+	def test_disabled_user_or_user_without_receipt_responsibility_cannot_list(self):
+		for enabled, recipients in ((False, ["supervisor"]), (True, [])):
+			with self.subTest(enabled=enabled, recipients=recipients):
+				self.enabled.return_value = enabled
+				self.recipients.return_value = recipients
+				self.recipients.reset_mock()
+				self.assertEqual(receipts.get_notice_page()["rows"], [])
+				self.assertEqual(self.event_queries, [])
+				if not enabled:
+					self.recipients.assert_not_called()
+
+	def test_owner_company_filter_and_pagination_do_not_require_receipt_responsibility(self):
+		self.recipients.side_effect = AssertionError("Owner must retain existing management access")
+		for role in (OWNER_ROLE, "System Manager"):
+			with self.subTest(role=role):
+				self.roles = [role]
+				self.event_queries.clear()
+				result = receipts.get_notice_page(start=300, page_length=2, search="PA6")
+				self.assertEqual(self.event_queries[0]["filters"], [["company", "in", ["A"]]])
+				self.assertEqual(self.event_queries[0]["limit_start"], 300)
+				self.assertEqual(result["next_start"], 302)
+				self.assertEqual(len(result["rows"]), 2)
+				self.recipients.assert_not_called()
+
+	def test_receipt_recipient_detail_still_hides_retry_and_private_deliveries(self):
+		event = frappe._dict(name="NOTICE", receipt="PR", company="A", snapshot='{"items": []}', deliveries=[{"recipient": "private"}], last_error="private")
+		with patch.object(frappe, "get_doc", return_value=event), patch.object(frappe, "db", SimpleNamespace(get_value=lambda *args: 1)), patch.object(receipts, "_message", return_value=("subject", "description")), patch.object(frappe, "has_permission", return_value=False):
+			result = receipts.get_notice("NOTICE")
+		self.assertFalse(result["can_open_receipt"])
+		self.assertFalse(result["can_retry"])
+		self.assertNotIn("deliveries", result)
+		self.assertNotIn("last_error", result)
+
+	def test_receipt_recipient_still_cannot_retry(self):
+		with patch.object(frappe, "get_doc", return_value=frappe._dict(company="A")), patch.object(frappe, "throw", side_effect=frappe.PermissionError):
+			with self.assertRaises(frappe.PermissionError):
+				receipts.retry_notice("NOTICE")
 
 
 class TestDashboardAmountQueries(TestCase):

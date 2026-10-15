@@ -464,7 +464,15 @@ def get_notice(name):
 def get_notice_page(start=0, page_length=20, search="", from_date=None, to_date=None):
 	# Company authorization precedes LIMIT; other companies cannot displace this
 	# company's records. Event DocType access alone is not the summary boundary.
-	companies = [name for name in frappe.get_all("Company", pluck="name") if _can_manage(name)]
+	user = frappe.session.user
+	companies = [
+		name for name in frappe.get_all("Company", pluck="name")
+		if _can_manage(name) or (
+			_enabled_system_user(user)
+			and _user_matches_company(user, name)
+			and user in responsibility_recipients(name, PURCHASE_RECEIPT_RESPONSIBILITY)
+		)
+	]
 	start, page_length = max(cint(start), 0), min(max(cint(page_length), 1), 50)
 	if not companies:
 		return {"rows": [], "next_start": None, "page_length": page_length}
