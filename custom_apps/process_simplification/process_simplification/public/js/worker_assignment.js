@@ -416,6 +416,7 @@ function openWorkerAssignmentDialog(options = {}) {
 		let selectionRevision = 0;
 		let selectionClosed = false;
 		let selectionLoading = false;
+		let submitting = false;
 		let loadedJobCard = defaultJobCard;
 		let selectionLock;
 		const currentSelection = (revision, jobCard) => !selectionClosed
@@ -429,20 +430,19 @@ function openWorkerAssignmentDialog(options = {}) {
 			area.find(".grid-description").text(selectionLoading ? __("正在读取派工信息…") : field.df.description);
 			if (locked) {
 				if (!selectionLock) {
-					selectionLock = { inert: Boolean(area.prop("inert")), primary: primary.prop("disabled"), buttons: [] };
+					selectionLock = { inert: Boolean(area.prop("inert")), buttons: [] };
 					area.find(".grid-add-row, .grid-add-multiple-rows, .grid-duplicate-rows").each((_, button) => {
 						selectionLock.buttons.push([button, button.disabled]);
 						button.disabled = true;
 					});
 				}
 				area.prop("inert", true);
-				primary.prop("disabled", true);
 			} else if (selectionLock) {
 				area.prop("inert", selectionLock.inert);
 				selectionLock.buttons.forEach(([button, disabled]) => { button.disabled = disabled; });
-				primary.prop("disabled", selectionLock.primary);
 				selectionLock = null;
 			}
+			primary.prop("disabled", submitting || locked);
 		}
 		function setAllocationRows(row) {
 			dialog.set_value("task_qty", Number(row?.for_quantity || 0));
@@ -611,7 +611,7 @@ function openWorkerAssignmentDialog(options = {}) {
 		if (canSubmit) {
 			dialogOptions.primary_action_label = __("确认派工");
 			dialogOptions.primary_action = async (values) => {
-				if (selectionClosed || selectionLoading || !loadedJobCard || loadedJobCard !== values.job_card) {
+				if (selectionClosed || submitting || selectionLoading || !loadedJobCard || loadedJobCard !== values.job_card) {
 					frappe.msgprint(__("请先选择并读取生产任务单。"));
 					return;
 				}
@@ -632,7 +632,9 @@ function openWorkerAssignmentDialog(options = {}) {
 					frappe.msgprint(planError);
 					return;
 				}
-				dialog.get_primary_btn().prop("disabled", true).text(__("处理中..."));
+				submitting = true;
+				syncSelectionLock();
+				dialog.get_primary_btn().text(__("处理中..."));
 				try {
 					await frappe.call({
 						method: "process_simplification.api.production_reporting.assign_workers",
@@ -649,7 +651,9 @@ function openWorkerAssignmentDialog(options = {}) {
 					frappe.show_alert({ message: __("多人派工方案已保存。"), indicator: "green" });
 					await options.on_success?.();
 				} finally {
-					dialog.get_primary_btn().prop("disabled", false).text(__("确认派工"));
+					submitting = false;
+					syncSelectionLock();
+					dialog.get_primary_btn().text(__("确认派工"));
 				}
 			};
 		}

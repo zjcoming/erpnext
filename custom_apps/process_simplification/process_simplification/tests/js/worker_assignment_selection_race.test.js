@@ -22,8 +22,8 @@ const deferred = () => {
 
 // Execute the actual dialog handler and native add/focus methods. Only DOM row
 // rendering, RPC delivery and timers are controlled; no copy of the race fix.
-function createEnvironment(initialContext) {
-	const timers = [], lookups = new Map(), contexts = new Map(), messages = [], dispatches = [];
+function createEnvironment(initialContext, { holdDispatch = false } = {}) {
+	const timers = [], lookups = new Map(), contexts = new Map(), messages = [], dispatches = [], pendingDispatches = [];
 	class Element {
 		constructor(nodes = [{}]) { this.nodes = nodes; this.handlers = new Map(); }
 		prop(key, value) {
@@ -43,7 +43,11 @@ function createEnvironment(initialContext) {
 		show_alert() {},
 		db: { get_value: (_doctype, name) => { const pending = deferred(); lookups.set(name, pending); return pending.promise; } },
 		call: ({ method, args }) => {
-			if (method.endsWith("assign_workers")) { dispatches.push(args); return Promise.resolve({ message: {} }); }
+			if (method.endsWith("assign_workers")) {
+				dispatches.push(args);
+				if (holdDispatch) { const pending = deferred(); pendingDispatches.push(pending); return pending.promise; }
+				return Promise.resolve({ message: {} });
+			}
 			assert.ok(method.endsWith("get_work_order_assignment_context"));
 			if (initialContext && args.work_order === initialContext.work_order.name) return Promise.resolve({ message: initialContext });
 			const pending = deferred(); contexts.set(args.work_order, pending); return pending.promise;
@@ -95,7 +99,7 @@ function createEnvironment(initialContext) {
 	vm.runInNewContext(appSource, appContext, { filename: "worker_assignment.js" });
 	return {
 		open: () => appContext.window.process_simplification.open_worker_assignment_dialog(initialContext ? { work_order: initialContext.work_order.name } : {}),
-		lookups, contexts, messages, dispatches,
+		lookups, contexts, messages, dispatches, pendingDispatches,
 		focusErrors() {
 			const errors = [];
 			for (const timer of timers.filter((item) => item.active && item.delay === 100)) {
@@ -198,4 +202,24 @@ test("an existing work-order context remains immediately editable", async () => 
 	assert.equal(dialog.values.job_card, "JC122"); assert.equal(dialog.primary.prop("disabled"), false);
 	assert.equal(dialog.fields_dict.allocations.clickAdd(), true);
 	assert.deepEqual(environment.focusErrors(), []);
+});
+
+test("failed dispatch overlapping clear and reselect cannot cache a temporary primary lock", async () => {
+	const environment = createEnvironment(undefined, { holdDispatch: true }), dialog = await environment.open();
+	const firstSelection = select(dialog, "JC122");
+	await deliverContext(environment, "JC122", "WO110", 1); await firstSelection;
+	const submitting = dialog.options.primary_action({ job_card: "JC122", task_qty: 1,
+		allocations: [{ employee: "EMP", assigned_qty: 1 }] });
+	const failedSubmit = assert.rejects(submitting, /POST failed/);
+	assert.equal(environment.pendingDispatches.length, 1);
+	await select(dialog, "");
+	const reselected = select(dialog, "JC122");
+	environment.pendingDispatches[0].reject(new Error("POST failed")); await failedSubmit;
+	const disabledWhileContextPending = dialog.primary.prop("disabled");
+	await deliverContext(environment, "JC122", "WO110", 1); await reselected;
+	assert.equal(dialog.values.task_qty, 1);
+	assert.equal(dialog.fields_dict.allocations.$wrapper.prop("inert"), false);
+	assert.equal(dialog.fields_dict.allocations.add.disabled, false);
+	assert.equal(dialog.primary.prop("disabled"), false, "the temporary POST lock must not survive a completed selection");
+	assert.equal(disabledWhileContextPending, true, "POST finally must keep the pending selection locked");
 });
