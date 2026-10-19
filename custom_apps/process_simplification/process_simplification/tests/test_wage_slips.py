@@ -1,3 +1,4 @@
+import re
 from datetime import date
 from pathlib import Path
 from unittest import TestCase
@@ -131,6 +132,32 @@ class TestWageSlips(TestCase):
 		self.get_list.return_value = []
 		with self.assertRaisesRegex(frappe.ValidationError, "请先生成月度汇总"):
 			wage_slips.get_print_html("Factory", "2026-08-01")
+
+	def test_adjusted_draft_prints_saved_base_supplement_deduction_net_and_carry(self):
+		self.get_list.return_value = [self.row(
+			docstatus=0, piecework_amount=40, time_amount=0,
+			supplement_amount=20, deduction_amount=60,
+			pending_deduction_amount=40, total_amount=0,
+		)]
+		html = wage_slips.get_print_html("Factory", "2026-08-01")["html"]
+		body = re.search(r"<tbody><tr>(.*?)</tr></tbody>", html, re.S).group(1)
+		amounts = [re.sub(r"<[^>]*>", "", cell) for cell in re.findall(r"<td>(.*?)</td>", body)]
+		self.assertEqual(amounts, ["40.00", "20.00", "60.00", "0.00", "40.00"])
+		for label in ("预计基础工资", "预计补发", "预计本月扣回", "预计工资合计", "预计待扣余额"):
+			self.assertIn(label, html)
+		self.assertIn("不代表已付款", html)
+		self.assertNotIn("adjustments", self.get_list.call_args.kwargs["fields"])
+
+	def test_confirmed_adjustment_prints_its_snapshot_without_recalculating_or_marking_paid(self):
+		self.get_list.return_value = [self.row(
+			piecework_amount=40, time_amount=0, supplement_amount=20,
+			deduction_amount=60, pending_deduction_amount=40, total_amount=7.25,
+		)]
+		html = wage_slips.get_print_html("Factory", "2026-08-01")["html"]
+		self.assertIn("7.25", html)
+		self.assertNotIn("预计", html)
+		self.assertIn("不代表已付款", html)
+		self.assertEqual(self.get_list.call_count, 1)
 
 	def test_names_are_escaped_drafts_are_explicit_and_details_are_absent(self):
 		self.company.return_value.company_name = '<img src=x onerror="alert(1)">'

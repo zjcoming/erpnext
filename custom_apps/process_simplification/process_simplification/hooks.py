@@ -31,7 +31,7 @@ app_include_css = [
 	"/assets/process_simplification/css/workbench_ui.css?v=3",
 ]
 app_include_js = [
-	"/assets/process_simplification/js/wage_slips.js?v=2",
+	"/assets/process_simplification/js/wage_slips.js?v=4",
 	"/assets/process_simplification/js/sidebar_setup_compat.js?v=1",
 	"/assets/process_simplification/js/role_landing.js?v=1",
 	"/assets/process_simplification/js/item_identity.js?v=5",
@@ -196,6 +196,7 @@ permission_query_conditions = {
 	"Job Card Work Report": "process_simplification.production_reporting.permissions.report_query",
 	"Operation Wage Rate": "process_simplification.production_reporting.permissions.wage_rate_query",
 	"Monthly Worker Wage Summary": "process_simplification.production_reporting.permissions.summary_query",
+	"Worker Wage Adjustment": "process_simplification.production_reporting.permissions.wage_adjustment_query",
 	"Production Exception Request": "process_simplification.production_exceptions.permissions.request_query",
 }
 
@@ -209,6 +210,7 @@ has_permission = {
 	"Job Card Work Report": "process_simplification.production_reporting.permissions.report_permission",
 	"Operation Wage Rate": "process_simplification.production_reporting.permissions.wage_rate_permission",
 	"Monthly Worker Wage Summary": "process_simplification.production_reporting.permissions.summary_permission",
+	"Worker Wage Adjustment": "process_simplification.production_reporting.permissions.wage_adjustment_permission",
 	"Production Exception Request": "process_simplification.production_exceptions.permissions.request_permission",
 }
 

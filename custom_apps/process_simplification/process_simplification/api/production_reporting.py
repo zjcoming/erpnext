@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import frappe
 
-from process_simplification.production_reporting import service, summary
+from process_simplification.production_reporting import service, summary, wage_adjustments
 from process_simplification.request_transaction import retry_request_transaction
 
 
@@ -233,3 +233,24 @@ def get_wage_management_context():
 @retry_request_transaction
 def confirm_monthly_summary(summary_name):
 	return summary.confirm_monthly_summary(summary_name)
+
+
+@frappe.whitelist(methods=["POST"])
+@retry_request_transaction
+def record_wage_adjustment(
+	company, employee, month_start, adjustment_type, amount, reason, source_report=None, request_id=None
+):
+	return wage_adjustments.record_wage_adjustment(
+		company, employee, month_start, adjustment_type, amount, reason, source_report, request_id
+	)
+
+
+@frappe.whitelist(methods=["GET"])
+def get_wage_adjustment_balance(name):
+	return wage_adjustments.get_wage_adjustment_balance(name)
+
+
+@frappe.whitelist(methods=["POST"])
+@retry_request_transaction
+def cancel_wage_adjustment(name):
+	return wage_adjustments.cancel_wage_adjustment(name)

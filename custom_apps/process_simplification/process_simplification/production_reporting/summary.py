@@ -6,12 +6,14 @@ import frappe
 from frappe import _
 from frappe.utils import flt, get_first_day, get_last_day, getdate, now_datetime, nowdate
 
+from process_simplification.production_reporting import wage_adjustments
 from process_simplification.production_reporting.domain import money, require_wage_manager
 
 
 def get_wage_management_context():
 	companies = require_wage_manager()
 	return {
+		"can_record_adjustments": wage_adjustments.can_record_adjustments(),
 		"companies": (
 			frappe.get_all("Company", pluck="name", order_by="name", limit=0)
 			if companies is None
@@ -166,6 +168,8 @@ def validate_summary_document(doc):
 	if not getattr(doc.flags, "worker_reporting_action", False):
 		frappe.throw(_("Monthly wage summaries can only be changed through wage-summary actions."))
 	require_wage_manager(doc.company)
+	if frappe.db.get_value("Employee", doc.employee, "company") != doc.company:
+		frappe.throw(_("The employee must belong to the selected company."))
 	month_start = get_first_day(doc.month_start)
 	month_end = get_last_day(month_start)
 	doc.month_start = month_start
@@ -191,6 +195,7 @@ def validate_summary_document(doc):
 	doc.piecework_amount = money(piecework_amount)
 	doc.time_amount = money(time_amount)
 	doc.total_amount = money(piecework_amount + time_amount)
+	wage_adjustments.validate_summary_plan(doc)
 	doc.employee_user = next(iter(source_users)) if len(source_users) == 1 else None
 
 
@@ -219,10 +224,20 @@ def build_monthly_summaries(company: str, month_start, employee: str | None = No
 		)
 	)
 
+	adjustment_employees = wage_adjustments.adjustment_employees(company, month_start)
+	if not employee:
+		existing_draft_employees = frappe.get_all(
+			"Monthly Worker Wage Summary",
+			filters={"company": company, "month_start": month_start, "docstatus": 0},
+			pluck="employee",
+			limit=0,
+		)
+		employees = sorted(set(employees) | adjustment_employees | set(existing_draft_employees))
 	result = []
 	for employee_name in sorted(employees):
-		if not frappe.db.get_value("Employee", employee_name, "name", for_update=True):
-			frappe.throw(_("Employee {0} does not exist.").format(employee_name))
+		wage_adjustments._lock_employee(company, employee_name)
+		wage_adjustments._lock_employee_summaries(company, employee_name)
+		require_wage_manager(company, for_update=True)
 		key = _summary_key(company, employee_name, month_start)
 		existing = frappe.db.get_value(
 			"Monthly Worker Wage Summary",
@@ -247,12 +262,14 @@ def build_monthly_summaries(company: str, month_start, employee: str | None = No
 			)
 			if not row.monthly_summary
 		]
-		if not employee_rows:
-			continue
 		doc = (
 			frappe.get_doc("Monthly Worker Wage Summary", existing.name, for_update=True)
 			if existing
 			else frappe.new_doc("Monthly Worker Wage Summary")
+		)
+		had_adjustments = bool(doc.get("adjustments")) or any(
+			flt(doc.get(field))
+			for field in ("supplement_amount", "deduction_amount", "pending_deduction_amount")
 		)
 		if not existing:
 			doc.company = company
@@ -275,6 +292,19 @@ def build_monthly_summaries(company: str, month_start, employee: str | None = No
 					"amount": row.wage_amount,
 				},
 			)
+		doc.piecework_amount = money(
+			sum(flt(row.wage_amount) for row in employee_rows if row.wage_type == "Piecework")
+		)
+		doc.time_amount = money(
+			sum(flt(row.wage_amount) for row in employee_rows if row.wage_type != "Piecework")
+		)
+		plan = wage_adjustments.set_summary_plan(doc)
+		if not employee_rows and not plan["has_pending_records"]:
+			if not existing or not had_adjustments:
+				continue
+			# Preserve the draft audit history, but remove plans for cancelled records.
+			# A later confirm has no such flag and refuses this empty inactive draft.
+			doc.flags.clear_empty_wage_adjustment_draft = True
 		doc.flags.worker_reporting_action = True
 		if doc.is_new():
 			doc.insert(ignore_permissions=True)
@@ -293,7 +323,8 @@ def _lock_summary_context(name: str):
 	)
 	if not initial:
 		frappe.throw(_("Monthly wage summary does not exist."))
-	frappe.db.get_value("Employee", initial.employee, "name", for_update=True)
+	wage_adjustments._lock_employee(initial.company, initial.employee)
+	wage_adjustments._lock_employee_summaries(initial.company, initial.employee)
 	doc = frappe.get_doc("Monthly Worker Wage Summary", name, for_update=True)
 	current_identity = (doc.company, doc.employee, getdate(doc.month_start))
 	initial_identity = (initial.company, initial.employee, getdate(initial.month_start))
@@ -343,6 +374,8 @@ def confirm_monthly_summary(name: str):
 	if getdate(doc.month_end) >= getdate(nowdate()):
 		frappe.throw(_("A monthly wage summary can only be confirmed after the natural month ends."))
 	_assert_complete_source_set(doc)
+	wage_adjustments.assert_confirmation_order(doc)
+	wage_adjustments.validate_summary_plan(doc)
 	doc.flags.worker_reporting_action = True
 	doc.flags.ignore_permissions = True
 	doc.submit()
@@ -355,6 +388,8 @@ def before_submit_summary(doc):
 	if getdate(doc.month_end) >= getdate(nowdate()):
 		frappe.throw(_("A monthly wage summary can only be confirmed after the natural month ends."))
 	_assert_complete_source_set(doc)
+	wage_adjustments.assert_confirmation_order(doc)
+	wage_adjustments.validate_summary_plan(doc)
 
 
 def on_submit_summary(doc):

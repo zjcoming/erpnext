@@ -243,9 +243,100 @@ async function openWageSlipDialog({ selected = [], preferredMonth = "" } = {}) {
 	return dialog;
 }
 
+async function openWageAdjustmentDialog({ company, employee, month_start, onSaved } = {}) {
+	const api = "process_simplification.api.production_reporting.";
+	const context = await frappe.call({ method: `${api}get_wage_management_context` });
+	if (context.message?.can_record_adjustments !== true) {
+		frappe.msgprint(__("当前账号没有登记工资补扣的权限，请由老板操作。"));
+		return;
+	}
+	const companies = context.message?.companies || [];
+	if (!companies.length) {
+		frappe.msgprint(__("没有可用公司，无法登记工资补扣。"));
+		return;
+	}
+	const requestId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+	let selectedCompany = companies.includes(company) ? company : companies[0];
+	let saving = false;
+	let dialog;
+	dialog = new frappe.ui.Dialog({
+		title: __("工资补扣"),
+		fields: [
+			{
+				fieldname: "company", fieldtype: "Select", label: __("公司"),
+				options: companies, default: selectedCompany, reqd: 1,
+				onchange: () => {
+					if (!dialog || dialog.get_value("company") === selectedCompany) return;
+					selectedCompany = dialog.get_value("company");
+					dialog.set_value("employee", "");
+					dialog.set_value("source_report", "");
+				},
+			},
+			{
+				fieldname: "employee", fieldtype: "Link", options: "Employee", label: __("工人"),
+				default: employee, reqd: 1,
+				get_query: () => ({ query: `${api}search_wage_employees`, filters: { company: dialog ? dialog.get_value("company") : selectedCompany } }),
+				onchange: () => { if (dialog) dialog.set_value("source_report", ""); },
+			},
+			{
+				fieldname: "month_start", fieldtype: "Date", label: __("开始结算月份"),
+				default: month_start || `${frappe.datetime.get_today().slice(0, 7)}-01`, reqd: 1,
+				description: __("请选择开始结算月份的1日。"),
+			},
+			{
+				fieldname: "adjustment_type", fieldtype: "Select", label: __("补扣类型"), reqd: 1,
+				options: [{ value: "Supplement", label: __("补发") }, { value: "Deduction", label: __("扣回") }],
+				default: "Supplement",
+			},
+			{ fieldname: "amount", fieldtype: "Currency", label: __("金额"), reqd: 1 },
+			{ fieldname: "reason", fieldtype: "Small Text", label: __("原因"), reqd: 1 },
+			{
+				fieldname: "source_report", fieldtype: "Link", options: "Job Card Work Report", label: __("原报工（可选）"),
+				get_query: () => ({ filters: {
+					company: dialog.get_value("company"), employee: dialog.get_value("employee"), status: "Approved",
+				} }),
+			},
+			{ fieldtype: "HTML", options: `<p class="text-muted">${__("原报工数量和工时不变。草稿仅预计，确认月度汇总后才应用；本月工资最多扣至0，未扣完的金额留待后续月份。此记录不代表付款。")}</p>` },
+		],
+		primary_action_label: __("登记工资补扣"),
+		primary_action: async (values) => {
+			if (saving) return;
+			if (!(Number(values.amount) > 0) || !Number.isFinite(Number(values.amount))) {
+				frappe.msgprint(__("请输入大于0的金额。"));
+				return;
+			}
+			saving = true;
+			dialog.get_primary_btn().prop("disabled", true);
+			try {
+				const response = await frappe.call({
+					method: `${api}record_wage_adjustment`, type: "POST",
+					args: {
+						company: values.company, employee: values.employee, month_start: values.month_start,
+						adjustment_type: values.adjustment_type, amount: values.amount, reason: values.reason,
+						source_report: values.source_report || null, request_id: requestId,
+					},
+				});
+				if (!response.message?.name) throw new Error("工资补扣未返回记录编号。");
+				dialog.hide();
+				frappe.msgprint({
+					title: __("工资补扣已登记"),
+					message: `${frappe.utils.get_form_link("Worker Wage Adjustment", response.message.name, true)}<p>${__("请重新生成月度草稿，查看预计补扣金额。")}</p>`,
+				});
+				await onSaved?.(response.message);
+			} finally {
+				saving = false;
+				dialog.get_primary_btn().prop("disabled", false);
+			}
+		},
+	});
+	dialog.show();
+	return dialog;
+}
+
 if (typeof frappe !== "undefined") {
 	frappe.provide("process_simplification");
 	process_simplification.openWageSlipDialog = openWageSlipDialog;
+	process_simplification.openWageAdjustmentDialog = openWageAdjustmentDialog;
 }
 if (typeof module !== "undefined")
-	module.exports = { wageSlipMonth, wageSlipSelection, printWageSlips, openWageSlipDialog };
+	module.exports = { wageSlipMonth, wageSlipSelection, printWageSlips, openWageSlipDialog, openWageAdjustmentDialog };

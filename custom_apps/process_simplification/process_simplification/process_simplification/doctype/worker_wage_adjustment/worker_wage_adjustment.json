@@ -1,0 +1,131 @@
+{
+ "doctype": "DocType",
+ "name": "Worker Wage Adjustment",
+ "module": "Process Simplification",
+ "engine": "InnoDB",
+ "autoname": "naming_series:",
+ "is_submittable": 1,
+ "allow_rename": 0,
+ "field_order": [
+  "naming_series",
+  "company",
+  "employee",
+  "employee_name",
+  "month_start",
+  "adjustment_type",
+  "amount",
+  "reason",
+  "source_report",
+  "request_id"
+ ],
+ "fields": [
+  {
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "编号规则",
+   "options": "WWA-.YYYY.-.#####",
+   "default": "WWA-.YYYY.-.#####",
+   "reqd": 1
+  },
+  {
+   "fieldname": "company",
+   "fieldtype": "Link",
+   "label": "公司",
+   "options": "Company",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "employee",
+   "fieldtype": "Link",
+   "label": "员工",
+   "options": "Employee",
+   "read_only": 1,
+   "reqd": 1,
+   "ignore_user_permissions": 1,
+   "in_list_view": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "employee_name",
+   "fieldtype": "Data",
+   "label": "员工姓名",
+   "read_only": 1
+  },
+  {
+   "fieldname": "month_start",
+   "fieldtype": "Date",
+   "label": "首次结算月份",
+   "read_only": 1,
+   "reqd": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "adjustment_type",
+   "fieldtype": "Select",
+   "label": "补扣类型",
+   "options": "Supplement\nDeduction",
+   "read_only": 1,
+   "reqd": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "amount",
+   "fieldtype": "Currency",
+   "label": "原始金额",
+   "read_only": 1,
+   "reqd": 1,
+   "in_list_view": 1,
+   "precision": "2"
+  },
+  {
+   "fieldname": "reason",
+   "fieldtype": "Small Text",
+   "label": "原因",
+   "read_only": 1,
+   "reqd": 1
+  },
+  {
+   "fieldname": "source_report",
+   "fieldtype": "Link",
+   "label": "关联已审核报工",
+   "options": "Job Card Work Report",
+   "read_only": 1
+  },
+  {
+   "fieldname": "request_id",
+   "fieldtype": "Data",
+   "label": "请求标识",
+   "read_only": 1,
+   "reqd": 1,
+   "unique": 1,
+   "hidden": 1,
+   "no_copy": 1
+  }
+ ],
+ "permissions": [
+  {
+   "role": "Process Simplification Owner",
+   "read": 1
+  },
+  {
+   "role": "Production Wage Manager",
+   "read": 1
+  },
+  {
+   "role": "System Manager",
+   "read": 1
+  }
+ ],
+ "track_changes": 1,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "title_field": "employee_name",
+ "actions": [],
+ "states": [],
+ "creation": "2026-10-17 00:00:00.000000",
+ "modified": "2026-10-17 00:00:00.000000",
+ "modified_by": "Administrator",
+ "owner": "Administrator",
+ "index_web_pages_for_search": 0
+}

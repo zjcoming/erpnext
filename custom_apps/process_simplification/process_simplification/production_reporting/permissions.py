@@ -192,3 +192,16 @@ def wage_rate_permission(doc, ptype: str | None = None, user: str | None = None,
 	if not doc or not getattr(doc, "company", None):
 		return bool(companies)
 	return doc.company in companies
+
+
+def wage_adjustment_query(user: str | None = None) -> str:
+	user = user or frappe.session.user
+	if not _is_wage_manager(user):
+		return "1 = 0"
+	companies = _wage_scope(user)
+	return "" if companies is None else _company_condition("Worker Wage Adjustment", companies)
+
+
+def wage_adjustment_permission(doc, ptype: str | None = None, user: str | None = None, debug=False) -> bool:
+	user = user or frappe.session.user
+	return _is_read_permission(ptype) and _is_wage_manager(user) and _company_allowed(doc, _wage_scope(user))

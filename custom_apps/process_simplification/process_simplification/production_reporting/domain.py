@@ -589,6 +589,13 @@ WAGE_TYPES = ("Piecework", "Time")
 
 def _upgrade_legacy_wage_rate_fields(doc) -> None:
 	"""Map the original single-method fields into the new dual-method rule."""
+	old = None if doc.is_new() else doc.get_doc_before_save()
+	if old and any(
+		old.get(fieldname) != doc.get(fieldname)
+		for fieldname in ("enable_piecework", "piecework_rate", "enable_time", "hourly_rate")
+	):
+		# An explicit edit, including zero, must not be overwritten by the legacy rate.
+		return
 	if flt(doc.get("piecework_rate")) > 0 or flt(doc.get("hourly_rate")) > 0:
 		return
 	legacy_type = str(doc.get("wage_type") or "").strip()
@@ -604,7 +611,15 @@ def _upgrade_legacy_wage_rate_fields(doc) -> None:
 def wage_rate_options(rule) -> list[frappe._dict]:
 	"""Return enabled report choices in deterministic default order."""
 	options = []
-	if cint(rule.get("enable_piecework")) and flt(rule.get("piecework_rate")) > 0:
+	piecework_rate = flt(rule.get("piecework_rate"))
+	zero_piecework = (
+		bool(rule.get("name"))
+		and cint(rule.get("revision")) > 0
+		and rule.get("piecework_rate") not in (None, "")
+		and piecework_rate == 0
+		and not cint(rule.get("enable_time"))
+	)
+	if cint(rule.get("enable_piecework")) and (piecework_rate > 0 or zero_piecework):
 		options.append(
 			frappe._dict(
 				name=rule.name,
@@ -719,8 +734,10 @@ def validate_wage_rate(doc):
 	_upgrade_legacy_wage_rate_fields(doc)
 	if not cint(doc.enable_piecework) and not cint(doc.enable_time):
 		frappe.throw(_("Enable at least one wage type: Piecework or Time."))
-	if cint(doc.enable_piecework) and flt(doc.piecework_rate) <= 0:
-		frappe.throw(_("Piecework rate must be greater than zero when Piecework is enabled."))
+	if cint(doc.enable_piecework) and flt(doc.piecework_rate) < 0:
+		frappe.throw(_("Piecework rate cannot be negative when Piecework is enabled."))
+	if cint(doc.enable_piecework) and flt(doc.piecework_rate) == 0 and cint(doc.enable_time):
+		frappe.throw(_("Zero piecework rate requires Time to be disabled."))
 	if cint(doc.enable_time) and flt(doc.hourly_rate) <= 0:
 		frappe.throw(_("Hourly rate must be greater than zero when Time is enabled."))
 	# Preserve the original fields as a compatibility view of the default method.

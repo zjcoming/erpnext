@@ -21,3 +21,38 @@ The dispatch plan cannot change after any worker has started or submitted work.,
 This worker's assigned quantity is fully reported.,本人的派工数量已经报完。
 This worker assignment currently allows at most {0}.,本次最多只能申报本人剩余派工数量 {0}。
 A multi-worker dispatch plan must be adjusted as a complete quantity-balanced plan.,多人派工必须整体调整，并保持派工总数等于任务量。
+Worker Wage Adjustment,工资补扣
+Monthly Worker Wage Adjustment Detail,月度工资补扣明细
+Supplement,补发
+Deduction,扣回
+"Wage adjustment amounts must be finite, positive amounts with at most two decimal places.",补扣金额必须为大于0的有效金额，最多保留两位小数。
+Invalid wage amount.,工资金额无效，请检查金额，最多保留两位小数。
+Only the company owner can record wage adjustments.,只有老板或系统管理员可以登记工资补扣。
+The employee must belong to the selected company.,所选工人必须属于所选公司。
+Confirmed wage applications exceed the original adjustment.,已确认的应用金额超过原补扣金额，请联系管理员核对。
+"Company, employee and the first settlement month are required.",请选择公司、工人和开始结算月份。
+Wage adjustment type must be Supplement or Deduction.,补扣类型只能选择补发或扣回。
+A wage adjustment reason is required.,请填写工资补扣原因。
+Invalid source work report.,关联报工记录无效，请重新选择。
+A valid wage adjustment request ID is required.,本次登记缺少有效请求标识，请重新打开「工资补扣」后操作。
+The wage adjustment request ID was already used with different values.,同一次登记请求的内容已改变，请先核对已有补扣记录；如需另行登记，请重新打开「工资补扣」。
+Record the adjustment in an unconfirmed month after the latest confirmed month.,补扣开始月份必须晚于该工人最近已确认的工资月份，请选择尚未确认的月份。
+Wage adjustment does not exist.,工资补扣记录不存在，请刷新后核对。
+Wage adjustment identity changed; reload and retry.,补扣记录的公司或工人已变化，请刷新记录后重试。
+Only a recorded wage adjustment can be cancelled.,只能撤销已登记且尚未用于已确认工资汇总的补扣记录。
+A wage adjustment used by a confirmed summary cannot be cancelled.,这笔补扣已用于已确认的月度工资汇总，不能撤销；如需更正，请另行登记补扣。
+Use the controlled wage adjustment action.,请使用「工资补扣」或「撤销未结算补扣」按钮操作，不要直接保存、提交或取消单据。
+The source report must be Approved and belong to this employee and company.,原报工必须已审核通过，并属于所选工人和公司。
+Recorded wage adjustment facts are immutable.,已登记的补扣内容不能修改；未结算的可撤销后重新登记，已结算的请另行登记补扣更正。
+Base wages cannot be negative.,基础工资不能为负数；扣回最多将本月工资扣至0，未扣完的金额留待后续月份。
+Monthly wage adjustments must be unique.,同一张月度工资汇总不能重复应用同一笔工资补扣。
+Wage adjustment balances or plans changed; rebuild this monthly draft before confirming.,补扣余额或本月计划已变化，请重新生成本月工资草稿，核对后再确认。
+A monthly wage summary needs work reports or an outstanding wage adjustment.,本月没有报工，也没有待结算的工资补扣，无需确认工资汇总。
+A later wage month is already confirmed; this older draft cannot consume adjustments.,后续月份的工资已确认，不能再用这张旧月份草稿结算补扣。
+Confirm earlier monthly drafts before applying carried wage adjustments to this month.,请先确认较早月份的工资草稿，再结算本月的跨月补扣。
+Rebuild and confirm the earlier report month before consuming carried wage adjustments.,较早月份还有未结算的报工，请先完成该月作业及报工审核，再重新生成并确认该月工资。
+Only a production wage-management role can perform this action.,当前账号没有工资管理权限。
+Production wage managers require an explicit Company User Permission.,工资管理账号尚未配置公司范围，请联系老板或系统管理员。
+You are not permitted to manage production wages for company {0}.,当前账号没有公司「{0}」的工资管理权限。
+Piecework rate cannot be negative when Piecework is enabled.,启用计件时，计件单价不能为负数。
+Zero piecework rate requires Time to be disabled.,零元计件必须关闭计时计价。

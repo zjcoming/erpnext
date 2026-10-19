@@ -200,12 +200,25 @@ def manual_time_entry_enabled() -> bool:
 	return True if value in (None, "") else bool(cint(value))
 
 
+def _zero_piecework_snapshot(doc) -> bool:
+	# Zero is intentional only for a server-created, single-method work session.
+	return bool(
+		doc.get("wage_rate")
+		and cint(doc.get("wage_rate_revision")) > 0
+		and doc.get("wage_type") == "Piecework"
+		and all(
+			doc.get(fieldname) not in (None, "") and flt(doc.get(fieldname)) == 0
+			for fieldname in ("rate", "piecework_rate_snapshot", "hourly_rate_snapshot")
+		)
+	)
+
+
 def _work_report_wage_options(doc) -> list[frappe._dict]:
 	"""Return the wage choices frozen when this work session started."""
 	options = []
 	piecework_rate = flt(doc.get("piecework_rate_snapshot"))
 	hourly_rate = flt(doc.get("hourly_rate_snapshot"))
-	if piecework_rate > 0:
+	if piecework_rate > 0 or _zero_piecework_snapshot(doc):
 		options.append(frappe._dict(wage_type="Piecework", rate=piecework_rate))
 	if hourly_rate > 0:
 		options.append(frappe._dict(wage_type="Time", rate=hourly_rate))
@@ -474,7 +487,7 @@ def validate_report_document(doc):
 	):
 		if doc.get(fieldname) != assignment.get(fieldname):
 			frappe.throw(_("Work report identity does not match its worker assignment."))
-	if not doc.request_key or not doc.wage_rate or flt(doc.rate) <= 0:
+	if not doc.request_key or not doc.wage_rate or flt(doc.rate) < 0:
 		frappe.throw(_("Work session is missing its immutable request or wage-rate snapshot."))
 	_validate_work_report_wage_selection(doc)
 	_validate_time_segments(doc)
@@ -1237,6 +1250,8 @@ def get_worker_dashboard():
 				"name",
 				"actual_start_time",
 				"wage_type",
+				"wage_rate",
+				"wage_rate_revision",
 				"manual_time_entry",
 				"piecework_rate_snapshot",
 				"hourly_rate_snapshot",
@@ -1368,7 +1383,10 @@ def get_worker_dashboard():
 			assignment.block_message = _("A report is waiting for supervisor review.")
 		elif assignment.reportable_qty <= 0:
 			assignment.can_start = False
-			if jc and reportable_qty(jc) > 0:
+			if assignment.assignment_remaining_qty <= 0:
+				assignment.block_code = "NO_REMAINING_QTY"
+				assignment.block_message = _("This worker's assigned quantity is fully reported.")
+			elif jc and reportable_qty(jc) > 0:
 				assignment.block_code = "MATERIAL_NOT_TRANSFERRED"
 				assignment.block_message = _(
 					"Materials have not been issued for the remaining production quantity."
@@ -3273,10 +3291,6 @@ def search_wage_employees(company: str, txt: str = "", start: int = 0, page_len:
 		select employee.name, employee.employee_name, employee.user_id
 		from `tabEmployee` employee
 		where employee.company = %(company)s
-		  and exists (
-			select 1 from `tabJob Card Work Report` report
-			where report.employee = employee.name and report.company = %(company)s
-		  )
 		  and (employee.name like %(txt)s or ifnull(employee.employee_name, '') like %(txt)s)
 		order by employee.employee_name, employee.name
 		limit %(start)s, %(page_len)s

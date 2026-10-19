@@ -1,0 +1,50 @@
+{
+ "doctype": "DocType",
+ "name": "Monthly Worker Wage Adjustment Detail",
+ "module": "Process Simplification",
+ "engine": "InnoDB",
+ "istable": 1,
+ "editable_grid": 0,
+ "field_order": [
+  "wage_adjustment",
+  "adjustment_type",
+  "amount"
+ ],
+ "fields": [
+  {
+   "fieldname": "wage_adjustment",
+   "fieldtype": "Link",
+   "label": "工资补扣记录",
+   "options": "Worker Wage Adjustment",
+   "read_only": 1,
+   "reqd": 1,
+   "in_list_view": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "adjustment_type",
+   "fieldtype": "Select",
+   "label": "补扣类型",
+   "options": "Supplement\nDeduction",
+   "read_only": 1,
+   "reqd": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "amount",
+   "fieldtype": "Currency",
+   "label": "本月应用金额",
+   "read_only": 1,
+   "reqd": 1,
+   "in_list_view": 1,
+   "precision": "2"
+  }
+ ],
+ "permissions": [],
+ "actions": [],
+ "creation": "2026-10-17 00:00:00.000000",
+ "modified": "2026-10-17 00:00:00.000000",
+ "modified_by": "Administrator",
+ "owner": "Administrator",
+ "index_web_pages_for_search": 0
+}

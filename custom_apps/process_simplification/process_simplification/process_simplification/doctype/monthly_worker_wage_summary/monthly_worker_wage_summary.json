@@ -5,7 +5,7 @@
  "creation": "2026-08-19 00:00:00.000000",
  "doctype": "DocType",
  "engine": "InnoDB",
- "field_order": ["naming_series", "summary_key", "company", "wage_month", "month_start", "month_end", "employee", "employee_name", "employee_user", "piecework_amount", "time_amount", "total_amount", "details", "confirmed_by", "confirmed_at"],
+ "field_order": ["naming_series", "summary_key", "company", "wage_month", "month_start", "month_end", "employee", "employee_name", "employee_user", "piecework_amount", "time_amount", "supplement_amount", "deduction_amount", "pending_deduction_amount", "total_amount", "details", "adjustments", "confirmed_by", "confirmed_at"],
  "fields": [
   {"fieldname": "naming_series", "fieldtype": "Select", "label": "编号规则", "options": "MWWS-.YYYY.-.#####", "default": "MWWS-.YYYY.-.#####", "reqd": 1},
   {"fieldname": "summary_key", "fieldtype": "Data", "label": "员工月份唯一键", "read_only": 1, "unique": 1, "hidden": 1, "no_copy": 1},
@@ -18,8 +18,12 @@
   {"fieldname": "employee_user", "fieldtype": "Link", "label": "工人账号", "options": "User", "read_only": 1},
   {"fieldname": "piecework_amount", "fieldtype": "Currency", "label": "计件金额", "read_only": 1},
   {"fieldname": "time_amount", "fieldtype": "Currency", "label": "计时金额", "read_only": 1},
+  {"fieldname": "supplement_amount", "fieldtype": "Currency", "label": "补发金额", "read_only": 1, "default": "0", "precision": "2"},
+  {"fieldname": "deduction_amount", "fieldtype": "Currency", "label": "本月扣回", "read_only": 1, "default": "0", "precision": "2"},
+  {"fieldname": "pending_deduction_amount", "fieldtype": "Currency", "label": "剩余待扣", "read_only": 1, "default": "0", "precision": "2"},
   {"fieldname": "total_amount", "fieldtype": "Currency", "label": "工资合计", "read_only": 1, "in_list_view": 1},
-  {"fieldname": "details", "fieldtype": "Table", "label": "报工明细", "options": "Monthly Worker Wage Summary Detail", "read_only": 1, "reqd": 1},
+  {"fieldname": "details", "fieldtype": "Table", "label": "报工明细", "options": "Monthly Worker Wage Summary Detail", "read_only": 1},
+  {"fieldname": "adjustments", "fieldtype": "Table", "label": "工资补扣应用", "options": "Monthly Worker Wage Adjustment Detail", "read_only": 1},
   {"fieldname": "confirmed_by", "fieldtype": "Link", "label": "确认人", "options": "User", "read_only": 1},
   {"fieldname": "confirmed_at", "fieldtype": "Datetime", "label": "确认时间", "read_only": 1}
  ],

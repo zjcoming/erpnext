@@ -1081,6 +1081,67 @@ class TestWorkerReporting(IntegrationTestCase):
 		self.assertEqual(frappe.db.get_value("Job Card Work Report", third_report.name, "status"), "Approved")
 		self.assertEqual(assignment_effective_qty(third_assignment_doc), 1)
 
+	def test_released_personal_quota_is_completed_while_redispatched_worker_can_start(self):
+		from erpnext.accounts.utils import FiscalYearError, get_fiscal_year
+		from process_simplification.production_workflow.service import request_material_issue
+
+		self.enterContext(patch(
+			"process_simplification.notifications.process_notifications_enabled", return_value=False,
+		))
+		self.enterContext(self.change_settings("Stock Settings", {"enable_stock_reservation": 1}))
+		try:
+			get_fiscal_year(add_days(nowdate(), -1), company=self.TEST_COMPANY)
+		except FiscalYearError:
+			# Only this rollback-scoped stock fixture needs the current fiscal year.
+			year = getdate(nowdate()).year
+			frappe.get_doc({
+				"doctype": "Fiscal Year",
+				"year": "WRT-personal-quota-" + random_string(8),
+				"year_start_date": f"{year}-01-01",
+				"year_end_date": f"{year}-12-31",
+				"companies": [{"company": self.TEST_COMPANY}],
+			}).insert(ignore_permissions=True)
+		job_card, first = self._setup_exception_material_flow(qty=2)
+		report = self._submit_as(first, self.worker_user, 1)
+		with self.set_user(self.supervisor):
+			service.approve_work_report(report.name)
+		request = self._request_material_exception(first, 1, action="Release")
+		self._post_material_exception(request)
+		with self.set_user(self.supervisor):
+			result = request_material_issue(job_card.work_order, qty=1)
+		with self.set_user("Administrator"):
+			frappe.get_doc("Stock Entry", result["stock_entry"]).submit()
+		second_user = self._make_worker()
+		second_employee = frappe.db.get_value("Employee", {"user_id": second_user}, "name")
+		with self.set_user(self.supervisor):
+			service.redispatch_remaining(
+				job_card.name,
+				[{"employee": second_employee, "assigned_qty": 1}],
+				reason="Remaining unit released after the first worker completed one.",
+				request_id="personal-quota-" + random_string(12),
+			)
+		job_card.reload()
+		self.assertEqual(job_card.for_quantity - job_card.total_completed_qty, 1)
+		self.assertEqual(frappe.db.get_value("Job Card Worker Assignment", first.name, "assigned_qty"), 2)
+		self.assertEqual(frappe.db.get_value("Job Card Work Report", report.name, "status"), "Approved")
+		with self.set_user(self.worker_user):
+			row = next(r for r in service.get_worker_dashboard()["assignments"] if r.name == first.name)
+			self.assertEqual(row.original_assigned_qty, 2)
+			self.assertEqual(row.completed_qty, 1)
+			self.assertEqual(row.released_qty, 1)
+			self.assertEqual(row.effective_assigned_qty, 1)
+			self.assertEqual(row.assignment_remaining_qty, 0)
+			self.assertEqual(row.reportable_qty, 0)
+			self.assertFalse(row.can_start)
+			self.assertEqual(row.block_code, "NO_REMAINING_QTY")
+		with self.set_user(second_user):
+			row = next(r for r in service.get_worker_dashboard()["assignments"] if r.job_card == job_card.name)
+			self.assertEqual(row.effective_assigned_qty, 1)
+			self.assertEqual(row.assignment_remaining_qty, 1)
+			self.assertEqual(row.reportable_qty, 1)
+			self.assertTrue(row.can_start)
+			self.assertIsNone(row.block_code)
+
 	def _setup_exception_material_flow(self, qty=10):
 		from erpnext.manufacturing.doctype.work_order.work_order import make_stock_entry as make_transfer
 		from erpnext.stock.doctype.stock_entry.stock_entry_utils import make_stock_entry
@@ -2715,6 +2776,149 @@ class TestWorkerReporting(IntegrationTestCase):
 		self.assertEqual(len(job_card.time_logs), 0)
 		self.assertEqual(report.status, "Pending Approval")
 		self.assertEqual(assignment.status, "Active")
+
+	def test_zero_piecework_rule_preserves_zero_report_and_unique_summary_source(self):
+		job_card, assignment = self._setup_flow(qty=1, rate=0)
+		started_at = now_datetime()
+		with self.set_user(self.worker_user):
+			row = next(
+				row for row in service.get_worker_dashboard()["assignments"] if row.name == assignment.name
+			)
+			self.assertTrue(row.can_start)
+			self.assertEqual(row.wage_options, [{"wage_type": "Piecework", "rate": 0.0}])
+			report = service.start_work_session(assignment.name, "zero-piece-start", started_at=started_at)
+			self.assertTrue(report.wage_rate)
+			self.assertEqual(report.wage_rate_revision, 1)
+			self.assertEqual(report.rate, 0)
+			self.assertEqual(report.piecework_rate_snapshot, 0)
+			self.assertEqual(report.hourly_rate_snapshot, 0)
+			with self.assertRaises(frappe.ValidationError):
+				service.finish_work_session(
+					report.name, 1, "zero-piece-disallowed-time", wage_type="Time",
+					reported_minutes=1, ended_at=started_at + timedelta(minutes=1),
+				)
+		with self.set_user(self.wage_manager):
+			rate = frappe.get_doc("Operation Wage Rate", report.wage_rate)
+			self.assertEqual((rate.enable_piecework, rate.enable_time, rate.piecework_rate), (1, 0, 0))
+			rate.piecework_rate = 7
+			rate.save()
+			self.assertEqual(rate.revision, 2)
+		with self.set_user(self.worker_user):
+			row = next(
+				row for row in service.get_worker_dashboard()["assignments"] if row.name == assignment.name
+			)
+			self.assertEqual(row.wage_options, [{"wage_type": "Piecework", "rate": 0.0}])
+			report = service.finish_work_session(
+				report.name, 1, "zero-piece-finish", ended_at=started_at + timedelta(minutes=1)
+			)
+			self.assertEqual(report.wage_amount, 0)
+			self.assertEqual(report.completed_qty, 1)
+			self.assertAlmostEqual(report.actual_minutes, 1, places=3)
+		self._approve(report)
+		job_card.reload()
+		self.assertEqual(job_card.total_completed_qty, 1)
+		self.assertEqual(job_card.docstatus, 1)
+		with self.set_user(self.wage_manager):
+			summary_name = None
+			for _ in range(2):
+				result = summary.build_monthly_summaries(self.TEST_COMPANY, get_first_day(nowdate()), self.worker)
+				self.assertEqual(len(result["summaries"]), 1)
+				if summary_name:
+					self.assertEqual(result["summaries"][0], summary_name)
+				summary_name = result["summaries"][0]
+				doc = frappe.get_doc("Monthly Worker Wage Summary", summary_name)
+				self.assertEqual(len(doc.details), 1)
+				self.assertEqual(doc.details[0].source_report, report.name)
+				self.assertEqual((doc.details[0].completed_qty, doc.details[0].rate, doc.details[0].amount), (1, 0, 0))
+				self.assertEqual((doc.piecework_amount, doc.total_amount), (0, 0))
+
+	def test_zero_piecework_requires_enabled_current_rule_and_rejects_invalid_rates(self):
+		job_card = self._make_job_card(1)
+		with self.assertRaises(frappe.ValidationError):
+			self._assign(job_card)
+		with self.assertRaises(frappe.ValidationError):
+			self._make_rate(job_card, rate=-1)
+		with self.assertRaises(frappe.ValidationError):
+			self._make_rate(job_card, wage_type="Both", rate=0, hourly_rate=30)
+		with self.assertRaises(frappe.ValidationError):
+			self._make_rate(job_card, wage_type="Time", rate=0)
+		for label, valid_from, valid_to, disabled, revision in (
+			("future", add_days(nowdate(), 1), None, False, 1),
+			("expired", add_days(nowdate(), -2), add_days(nowdate(), -1), False, 1),
+			("disabled", nowdate(), None, True, 1),
+			("no_revision", nowdate(), None, False, 0),
+		):
+			with self.subTest(rule=label):
+				frappe.db.savepoint("zero_rule_guard")
+				with self.set_user(self.wage_manager):
+					rate = frappe.get_doc({
+						"doctype": "Operation Wage Rate", "company": job_card.company,
+						"operation": job_card.operation, "enable_piecework": 1, "piecework_rate": 0,
+						"enable_time": 0, "valid_from": valid_from, "valid_to": valid_to, "enabled": 1,
+					}).insert()
+					if disabled:
+						rate.enabled = 0
+						rate.save()
+				if not revision:
+					# Fault fixture only: ordinary rules always receive a positive revision.
+					frappe.db.set_value("Operation Wage Rate", rate.name, "revision", 0)
+				self.assertEqual(service.get_wage_rates(job_card.company, job_card.operation, nowdate()), [])
+				with self.assertRaises(frappe.ValidationError):
+					self._assign(job_card)
+				frappe.db.rollback(save_point="zero_rule_guard")
+		for missing in ("wage_rate", "wage_rate_revision", "piecework_rate_snapshot", "rate"):
+			values = dict(wage_type="Piecework", rate=0, piecework_rate_snapshot=0,
+				hourly_rate_snapshot=0, wage_rate="explicit-zero-rule", wage_rate_revision=1)
+			values.pop(missing)
+			self.assertEqual(service._work_report_wage_options(frappe._dict(values)), [])
+
+	def test_positive_piecework_rule_can_be_explicitly_edited_to_zero(self):
+		_job_card, assignment = self._setup_flow(qty=2, rate=3)
+		started_at = now_datetime()
+		with self.set_user(self.worker_user):
+			positive = service.start_work_session(assignment.name, "before-zero-edit", started_at=started_at)
+		with self.set_user(self.wage_manager):
+			rate = frappe.get_doc("Operation Wage Rate", positive.wage_rate)
+			rate.piecework_rate = 0
+			rate.save()
+			rate.reload()
+			self.assertEqual((rate.piecework_rate, rate.rate, rate.revision), (0, 0, 2))
+		with self.set_user(self.worker_user):
+			positive = service.finish_work_session(
+				positive.name, 1, "positive-before-zero-finish", ended_at=started_at + timedelta(minutes=1)
+			)
+		self.assertEqual((positive.rate, positive.wage_amount), (3, 3))
+		self._approve(positive)
+		zero = self._submit(assignment, 1, request_id="edited-zero-piecework")
+		self.assertEqual((zero.rate, zero.wage_amount), (0, 0))
+		self._approve(zero)
+
+	def test_legacy_time_only_zero_option_snapshots_never_enable_free_piecework(self):
+		_job_card, assignment = self._setup_flow(qty=1, wage_type="Time", rate=30)
+		started_at = now_datetime()
+		with self.set_user(self.worker_user):
+			report = service.start_work_session(assignment.name, "legacy-time-start", started_at=started_at)
+		# Preserve the supported old single-method shape; do not infer Piecework from numeric zero.
+		frappe.db.set_value("Job Card Work Report", report.name,
+			{"piecework_rate_snapshot": 0, "hourly_rate_snapshot": 0, "time_manual_entry_snapshot": 0})
+		report.reload()
+		self.assertEqual(service._work_report_wage_options(report), [dict(wage_type="Time", rate=30)])
+		with self.set_user(self.worker_user):
+			row = next(
+				row for row in service.get_worker_dashboard()["assignments"] if row.name == assignment.name
+			)
+			self.assertEqual(row.wage_options, [{"wage_type": "Time", "rate": 30.0}])
+			with self.assertRaises(frappe.ValidationError):
+				service.finish_work_session(
+					report.name, 1, "legacy-time-disallowed-piece", wage_type="Piecework",
+					ended_at=started_at + timedelta(minutes=1),
+				)
+			report = service.finish_work_session(
+				report.name, 1, "legacy-time-finish", wage_type="Time", reported_minutes=1,
+				ended_at=started_at + timedelta(minutes=1),
+			)
+		self.assertEqual(report.wage_amount, 0.5)
+		self._approve(report)
 
 	def test_wage_rate_period_is_unique_and_immutable(self):
 		job_card, _ = self._setup_flow(qty=100)

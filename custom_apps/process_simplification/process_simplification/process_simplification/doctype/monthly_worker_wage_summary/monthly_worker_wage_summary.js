@@ -12,8 +12,25 @@ frappe.ui.form.on("Monthly Worker Wage Summary", {
 		frm.dashboard.clear_comment();
 		frm.dashboard.set_headline(__("该单据是生产报工工资汇总，不代表已付款，也不生成会计凭证。"), "blue");
 		frm.dashboard.add_comment(`${frappe.utils.escape_html(frm.doc.employee_name || frm.doc.employee || "")} · ${frappe.utils.escape_html(frm.doc.wage_month || "")} · ${format_currency(frm.doc.total_amount || 0)}`, "green", true);
+		const amountPrefix = frm.doc.docstatus === 0 ? __("预计") : "";
+		frm.dashboard.add_comment([
+			[__("基础工资"), Number(frm.doc.piecework_amount || 0) + Number(frm.doc.time_amount || 0)],
+			[__("补发"), frm.doc.supplement_amount],
+			[__("本月扣回"), frm.doc.deduction_amount],
+			[__("工资合计"), frm.doc.total_amount],
+			[__("待扣余额"), frm.doc.pending_deduction_amount],
+		].map(([label, amount]) => `${amountPrefix}${label} ${format_currency(amount || 0)}`).join(" · "), "blue", true);
 		frm.add_custom_button(__("计价规则"), () => frappe.set_route("List", "Operation Wage Rate"));
 		if (!frm.is_new() && frm.doc.docstatus < 2) {
+			if (frappe.user.has_role("Process Simplification Owner") || frappe.user.has_role("System Manager")) {
+				frm.add_custom_button(__("工资补扣"), () => {
+					process_simplification.openWageAdjustmentDialog({
+						company: frm.doc.company, employee: frm.doc.employee,
+						month_start: frm.doc.docstatus === 0 ? frm.doc.month_start : undefined,
+						onSaved: () => frm.reload_doc(),
+					});
+				});
+			}
 			frm.add_custom_button(__("打印工资条"), () => {
 				process_simplification.openWageSlipDialog({ selected: [frm.doc] });
 			});
