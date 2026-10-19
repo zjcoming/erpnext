@@ -30,13 +30,13 @@ function warehouseDocumentHtml(row, queue, esc, number, translate = (value) => v
 		' 项物料</summary><ul class="warehouse-items">' + items.slice(3).join("") + '</ul></details>' : "";
 	const title = row.party || row.work_order || row.purpose || row.name;
 	const actionLabels = { purchase: "打开采购单，核对收货", receipt: "打开收货单核对", issue: "打开领料单核对", manufacture: "打开入库单核对", delivery: "打开发货单核对" };
-	const action = row.can_write ? (row.is_return ? "打开退货单核对" : actionLabels[queue] || "打开单据核对") : "查看单据";
+	const action = row.can_write ? (row.is_return ? (row.doctype === "Stock Entry" && queue === "issue" ? "打开退料单核对" : "打开退货单核对") : actionLabels[queue] || "打开单据核对") : "查看单据";
 	const actionHint = queue === "purchase" ? (row.can_write ? "从采购订单创建收货单，核对实收数量和仓库后提交收货单。" : "查看收货进度和关联收货单。") :
 		"进入单据后核对实际数量、仓库" + (row.can_write ? "，确认提交后才记账。" : "及处理记录。");
 	const openAction = '<div class="warehouse-document-action"><a class="btn btn-primary" href="' + href + '">' + action + '</a><small>' + actionHint + '</small></div>';
 	return '<article class="warehouse-document"><div class="warehouse-document-heading"><div><h3>' +
 		esc(title) + '</h3><a href="' + href + '">' + esc(row.name) + '</a></div><span class="warehouse-stage">' +
-		(row.is_return ? "退货草稿" : queue === "purchase" ? "待收货" : "待核对提交") +
+		(row.is_return ? (row.doctype === "Stock Entry" && queue === "issue" ? "退料草稿" : "退货草稿") : queue === "purchase" ? "待收货" : "待核对提交") +
 		'</span></div><p class="warehouse-document-meta">' + esc(row.company) + " · " + esc(row.date || "") +
 		(row.due_date ? ' · <span class="' + (row.overdue ? "warehouse-overdue" : "") + '">' +
 			(row.overdue ? "已过预计到货日 " : "预计到货 ") + esc(row.due_date) + '</span>' : "") +

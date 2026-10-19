@@ -90,6 +90,7 @@ frappe.pages["purchase-supplier-allocation"].on_page_load = function (wrapper) {
 	const href = (doctype, name) => `/desk/${doctype}/${encodeURIComponent(name)}`;
 	const requestHref = (name) => `/desk/purchase-supplier-allocation?material_request=${encodeURIComponent(name)}`;
 	let model, selections, rows, requestKey, referenceOptions = {}, generation = 0;
+	const supplierControls = new WeakMap();
 	const listState = { tab: "requests", view: "pending", search: "", overdue_only: false, start: 0, history: [], company: "" };
 	const key = () => window.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 	const call = async (method, args = {}, freeze = false) => (await frappe.call({ method: api + method, args, type: "POST", freeze })).message;
@@ -150,7 +151,7 @@ frappe.pages["purchase-supplier-allocation"].on_page_load = function (wrapper) {
 		rows[item.name].forEach((row, index) => {
 			const block = $('<div class="purchase-allocation-row">').appendTo(host);
 			const fields = $('<div class="purchase-fields">').appendTo(block);
-			field(fields, "供应商", "Link", row.supplier, (v) => { row.supplier = v; progress(item, card); }, "Supplier");
+			supplierControls.set(row, field(fields, "供应商", "Link", row.supplier, (v) => { row.supplier = v; progress(item, card); }, "Supplier"));
 			field(fields, "采购数量", "Float", row.qty, (v) => { row.qty = v; progress(item, card); });
 			field(fields, "采购单位", "Select", row.uom, (v) => { row.uom = v; progress(item, card); }, [...new Set([item.stock_uom, ...item.uoms.map((r) => r.uom)])].join("\n"));
 			field(fields, `单价（${row.currency || model.currency}）`, "Currency", row.rate, (v) => { row.rate = v; });
@@ -237,7 +238,15 @@ frappe.pages["purchase-supplier-allocation"].on_page_load = function (wrapper) {
 	async function preview() {
 		const quantities = Object.fromEntries(Object.entries(selections).filter(([, qty]) => qty > 0));
 		if (!Object.keys(quantities).length) return frappe.msgprint("请至少选择一项本次采购的物料。");
-		const data = { company: model.company, quantities, rows: Object.keys(quantities).flatMap((name) => rows[name]) };
+		const allocationRows = Object.keys(quantities).flatMap((name) => rows[name]);
+		if (allocationRows.some((row) => supplierControls.get(row)?.inside_change_event)) {
+			return frappe.msgprint("供应商正在校验，请稍候再预览。");
+		}
+		const previewRows = allocationRows.map((row) => ({ ...row,
+			supplier: supplierControls.has(row) ? supplierControls.get(row).get_value() || "" : row.supplier || "",
+		}));
+		if (previewRows.some((row) => !String(row.supplier).trim())) return frappe.msgprint("请先为已选物料选择供应商。");
+		const data = { company: model.company, quantities, rows: previewRows };
 		const source = model;
 		const previewKey = requestKey;
 		const result = await call("preview_allocation", { material_request: source.material_request, data }, true);
