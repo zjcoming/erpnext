@@ -13,10 +13,19 @@
     "erpnext/stock/doctype/stock_entry_type/stock_entry_type.py": {
       "original": "110b4c9fa19d44e6db7989dfbcbe62efbcea5c0e0a658652ce8505bb5794bc37",
       "patched": "836402d533cdc9113847ed5c07fc88274780ad0f3ebed27ca46c60571acf5e6e"
+    },
+    "erpnext/selling/doctype/sales_order/sales_order.py": {
+      "original": "d2975827071e92da645f01d3dca9fb106a8dd82c37892d8167652f7aa464fd42",
+      "patched": "a5c60711cd031a986badd80234d7f65de376b9a84ae1888bca73963d0e528ee2"
+    },
+    "erpnext/manufacturing/doctype/production_plan/production_plan.py": {
+      "original": "957e4ab95b2b24642e8e1545890c25cf45e8d0adde6e1d2c0c5dc3bc14edabc0",
+      "patched": "5ea57a4d4e3658c24ae130be005faa11d63dc9bb60c903ee389fb923b5e2759b"
     }
   },
   "upstream_fixes": {
     "58467": "https://github.com/frappe/erpnext/pull/58467",
-    "59945": "https://github.com/frappe/erpnext/pull/59945"
+    "59945": "https://github.com/frappe/erpnext/pull/59945",
+    "59455": "https://github.com/frappe/erpnext/pull/59455"
   }
 }

@@ -93,3 +93,13 @@ export PS_SESSION_TEST_SITE=test-session.localhost
 生产函数与对应上游补丁一致；清单记录原始及修改后的 SHA-256。旧镜像已有批次补货补丁，因此属于部分应用状态，不能直接运行完整安装器。完整镜像从固定上游重建；demo 派生镜像只能在核对基准镜像、旧清单和全部文件后，明确替换已核验文件，并更新镜像内清单及其 release.env 指纹。不能通过跳过部分应用检查更新站点。
 
 `test_erpnext_patch_application.py` 验证只读预检、完整应用、幂等校验、未知源码和部分应用拒绝。原生生命周期与库存回归分别位于 `erpnext/tests/test_pending_qty_regression.py` 和 `erpnext/tests/test_pending_material_share_regression.py`，应在隔离测试站点执行；源码及测试通过不等于 demo 已部署或工厂已验收。
+
+## ERPNext 销售订单成品产量汇总修复（2026-10-18）
+
+同一清单追加第四个源码 `erpnext/selling/doctype/sales_order/sales_order.py`。原生生产计划会将同一销售订单行关联到成品和各层半成品工单；原汇总遗漏了根工单筛选，使半成品产量也计入销售行的 `produced_qty`。补丁只排除已填写 `production_plan_sub_assembly_item` 的工单，与原生调用端的根工单条件一致。仍汇总所有已提交根工单，不按工单状态额外过滤，保留分批入库及取消入库后的原生重算。
+
+这是固定基线上的本地修复；截至本次核对，官方 version-16 同一函数仍未排除半成品。它不改库存、工资、销售数量、生产计划关联或原有并发事务语义，也不自动重算既有错误投影。安装安全测试沿用 `test_erpnext_patch_application.py`，生命周期回归位于 `process_simplification.tests.test_sales_order_produced_qty`。测试结果和 demo 发布另行记录。
+
+## ERPNext 已关闭生产计划状态保护（2026-10-18）
+
+同一清单追加第五个源码 `erpnext/manufacturing/doctype/production_plan/production_plan.py`，回移官方 [PR #59455](https://github.com/frappe/erpnext/pull/59455) 的三行保护：自动更新状态时保留 `Closed`，显式重新打开仍走原生逻辑。此修复不调整销售行的计划数量、不解除新生产计划的数量门槛，也不改写历史数据。安装安全测试沿用上述脚本；隔离生命周期测试与 demo 发布分别记录。

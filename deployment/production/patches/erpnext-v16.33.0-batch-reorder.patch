@@ -135,3 +135,32 @@ index 496d725f1f..f8ab585049 100644
  def create_material_request(material_requests):
  	"""Create indent on reaching reorder level"""
  	mr_list = []
+--- a/erpnext/selling/doctype/sales_order/sales_order.py
++++ b/erpnext/selling/doctype/sales_order/sales_order.py
+@@ -2011,7 +2011,12 @@
+ 	linked_wo_with_so_item = frappe.db.get_all(
+ 		"Work Order",
+ 		["produced_qty"],
+-		{"sales_order_item": sales_order_item, "sales_order": sales_order, "docstatus": 1},
++		{
++			"sales_order_item": sales_order_item,
++			"sales_order": sales_order,
++			"docstatus": 1,
++			"production_plan_sub_assembly_item": ["is", "not set"],
++		},
+ 	)
+ 
+ 	total_produced_qty = 0
+diff --git a/erpnext/manufacturing/doctype/production_plan/production_plan.py b/erpnext/manufacturing/doctype/production_plan/production_plan.py
+--- a/erpnext/manufacturing/doctype/production_plan/production_plan.py
++++ b/erpnext/manufacturing/doctype/production_plan/production_plan.py
+@@ -688,6 +688,9 @@
+ 
+ 	@frappe.whitelist()
+ 	def set_status(self, close=None, update_bin=False):
++		if close is None and self.status == "Closed":
++			return
++
+ 		self.status = {0: "Draft", 1: "Submitted", 2: "Cancelled"}.get(self.docstatus)
+ 
+ 		if close:

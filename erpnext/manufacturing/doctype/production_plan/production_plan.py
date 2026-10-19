@@ -688,6 +688,9 @@ class ProductionPlan(Document):
 
 	@frappe.whitelist()
 	def set_status(self, close=None, update_bin=False):
+		if close is None and self.status == "Closed":
+			return
+
 		self.status = {0: "Draft", 1: "Submitted", 2: "Cancelled"}.get(self.docstatus)
 
 		if close:

@@ -2011,7 +2011,12 @@ def update_produced_qty_in_so_item(sales_order, sales_order_item):
 	linked_wo_with_so_item = frappe.db.get_all(
 		"Work Order",
 		["produced_qty"],
-		{"sales_order_item": sales_order_item, "sales_order": sales_order, "docstatus": 1},
+		{
+			"sales_order_item": sales_order_item,
+			"sales_order": sales_order,
+			"docstatus": 1,
+			"production_plan_sub_assembly_item": ["is", "not set"],
+		},
 	)
 
 	total_produced_qty = 0
