@@ -20,6 +20,7 @@ from frappe.utils import (
 )
 
 from process_simplification.management_access import WORKER_INCOMPATIBLE_ROLES
+from process_simplification.production_reporting import payroll_quantity
 from process_simplification.production_reporting.constants import (
 	ASSIGNMENT_STATUSES,
 	REPORT_STATUSES,
@@ -466,6 +467,7 @@ def validate_assignment_deletion(doc):
 def validate_report_document(doc):
 	if not getattr(doc.flags, "worker_reporting_action", False):
 		frappe.throw(_("Work reports can only be changed through reporting actions."))
+	payroll_quantity.validate_report_fields(doc)
 	if doc.status not in REPORT_STATUSES:
 		frappe.throw(_("Invalid work report status."))
 	assignment = frappe.db.get_value(
@@ -1430,10 +1432,12 @@ def get_worker_dashboard():
 			"rejection_reason",
 			"submitted_at",
 			"reviewed_at",
+			*payroll_quantity.PAYROLL_FIELDS,
 		],
 		order_by="actual_start_time desc, creation desc",
 		limit=100,
 	)
+	payroll_quantity.annotate_reports(reports)
 	return {
 		"employee": employee,
 		"assignments": assignments,
@@ -1505,6 +1509,7 @@ def get_worker_report_history(
 		page=page,
 		page_length=page_length,
 	)
+	payroll_quantity.annotate_reports(rows)
 	return {"rows": rows, "pagination": pagination}
 
 
@@ -2114,6 +2119,7 @@ def _review_report_fields():
 		"job_card_time_log",
 		"monthly_summary",
 		"modified",
+		*payroll_quantity.PAYROLL_FIELDS,
 	]
 
 
@@ -2347,6 +2353,8 @@ def get_review_dashboard(
 	_set_employee_names(reports, employee_identity)
 	_set_employee_names(assignments, employee_identity)
 	_set_employee_names(processed, employee_identity)
+	payroll_quantity.annotate_reports(reports, reviewer=True)
+	payroll_quantity.annotate_reports(processed, reviewer=True)
 	wage_scope = (
 		wage_manager_companies(throw_if_empty=False)
 		if user_roles().intersection(WAGE_ROLES)
@@ -2419,6 +2427,7 @@ def get_review_history(
 		page_length=page_length,
 	)
 	_set_employee_names(rows)
+	payroll_quantity.annotate_reports(rows, reviewer=True)
 	return {"rows": rows, "pagination": pagination}
 
 

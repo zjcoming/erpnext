@@ -1,5 +1,13 @@
 frappe.ui.form.on("Monthly Worker Wage Summary", {
 	refresh(frm) {
+		frm.fields_dict.details.grid.update_docfield_property(
+			"payroll_qty",
+			"formatter",
+			(value, df, options, row) =>
+				Number(row?.payroll_qty_corrected)
+					? frappe.form.formatters.Float(value, df, options, row)
+					: ""
+		);
 		// This document deliberately has only Draft and Confirmed states. Even an
 		// Administrator must use the controlled confirm API and must never see the
 		// standard Submit/Cancel lifecycle actions.

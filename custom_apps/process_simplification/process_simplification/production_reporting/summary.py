@@ -6,7 +6,7 @@ import frappe
 from frappe import _
 from frappe.utils import flt, get_first_day, get_last_day, getdate, now_datetime, nowdate
 
-from process_simplification.production_reporting import wage_adjustments
+from process_simplification.production_reporting import payroll_quantity, wage_adjustments
 from process_simplification.production_reporting.domain import money, require_wage_manager
 
 
@@ -67,6 +67,7 @@ def _report_fields():
 		"wage_amount",
 		"status",
 		"monthly_summary",
+		*payroll_quantity.PAYROLL_FIELDS,
 	]
 
 
@@ -150,13 +151,15 @@ def _validate_detail_source(doc, row, month_start, month_end):
 		"labor_date": source.labor_date,
 		"wage_type": source.wage_type,
 		"completed_qty": source.completed_qty,
+		"payroll_qty_corrected": source.payroll_qty_corrected or 0,
+		"payroll_qty": source.payroll_qty if source.payroll_qty_corrected else 0,
 		"reported_minutes": source.reported_minutes,
 		"rate": source.rate,
-		"amount": source.wage_amount,
+		"amount": payroll_quantity.payroll_amount(source),
 	}
 	for fieldname, expected in comparisons.items():
 		actual = row.get(fieldname)
-		if fieldname in {"completed_qty", "reported_minutes", "rate", "amount"}:
+		if fieldname in {"completed_qty", "reported_minutes", "rate", "amount", "payroll_qty_corrected", "payroll_qty"}:
 			if flt(actual, 6) != flt(expected, 6):
 				frappe.throw(_("Monthly summary details must match immutable report snapshots."))
 		elif actual != expected:
@@ -189,7 +192,7 @@ def validate_summary_document(doc):
 		if source.employee_user:
 			source_users.add(source.employee_user)
 		if source.wage_type == "Piecework":
-			piecework_amount += flt(source.wage_amount)
+			piecework_amount += payroll_quantity.payroll_amount(source)
 		else:
 			time_amount += flt(source.wage_amount)
 	doc.piecework_amount = money(piecework_amount)
@@ -287,13 +290,15 @@ def build_monthly_summaries(company: str, month_start, employee: str | None = No
 					"labor_date": row.labor_date,
 					"wage_type": row.wage_type,
 					"completed_qty": row.completed_qty,
+					"payroll_qty_corrected": row.payroll_qty_corrected or 0,
+					"payroll_qty": row.payroll_qty if row.payroll_qty_corrected else 0,
 					"reported_minutes": row.reported_minutes,
 					"rate": row.rate,
-					"amount": row.wage_amount,
+					"amount": payroll_quantity.payroll_amount(row),
 				},
 			)
 		doc.piecework_amount = money(
-			sum(flt(row.wage_amount) for row in employee_rows if row.wage_type == "Piecework")
+			sum(payroll_quantity.payroll_amount(row) for row in employee_rows if row.wage_type == "Piecework")
 		)
 		doc.time_amount = money(
 			sum(flt(row.wage_amount) for row in employee_rows if row.wage_type != "Piecework")

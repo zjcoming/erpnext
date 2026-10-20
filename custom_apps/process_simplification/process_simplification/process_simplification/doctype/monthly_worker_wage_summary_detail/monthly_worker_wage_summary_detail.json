@@ -4,7 +4,7 @@
  "doctype": "DocType",
  "editable_grid": 0,
  "engine": "InnoDB",
- "field_order": ["source_report", "job_card", "operation", "operation_id", "labor_date", "wage_type", "completed_qty", "reported_minutes", "rate", "amount"],
+ "field_order": ["source_report", "job_card", "operation", "operation_id", "labor_date", "wage_type", "completed_qty", "payroll_qty_corrected", "payroll_qty", "reported_minutes", "rate", "amount"],
  "fields": [
   {"fieldname": "source_report", "fieldtype": "Link", "label": "报工记录", "options": "Job Card Work Report", "read_only": 1, "reqd": 1, "in_list_view": 1},
   {"fieldname": "job_card", "fieldtype": "Link", "label": "工序任务（Job Card）", "options": "Job Card", "read_only": 1, "in_list_view": 1},
@@ -12,7 +12,9 @@
   {"fieldname": "operation_id", "fieldtype": "Data", "label": "工序内部标识", "read_only": 1, "hidden": 1},
   {"fieldname": "labor_date", "fieldtype": "Date", "label": "生产日期", "read_only": 1, "in_list_view": 1},
   {"fieldname": "wage_type", "fieldtype": "Select", "label": "计价方式", "options": "Piecework\nTime", "read_only": 1, "in_list_view": 1},
-  {"fieldname": "completed_qty", "fieldtype": "Float", "label": "数量", "read_only": 1, "in_list_view": 1},
+  {"fieldname": "completed_qty", "fieldtype": "Float", "label": "原报工数量", "read_only": 1, "in_list_view": 1},
+  {"fieldname": "payroll_qty_corrected", "fieldtype": "Check", "label": "已核定计薪数量", "default": "0", "read_only": 1},
+  {"fieldname": "payroll_qty", "fieldtype": "Float", "precision": "6", "label": "核定计薪数量", "read_only": 1, "depends_on": "payroll_qty_corrected", "in_list_view": 1},
   {"fieldname": "reported_minutes", "fieldtype": "Float", "precision": "6", "label": "分钟", "read_only": 1, "in_list_view": 1},
   {"fieldname": "rate", "fieldtype": "Currency", "label": "单价", "read_only": 1},
   {"fieldname": "amount", "fieldtype": "Currency", "label": "金额", "read_only": 1, "in_list_view": 1}

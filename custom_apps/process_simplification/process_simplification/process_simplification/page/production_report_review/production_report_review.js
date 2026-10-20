@@ -90,18 +90,79 @@ function reviewDetailsHtml(row = {}, helpers) {
 		${value("实际开始", esc(dateTime(row.actual_start_time)))}
 		${value("实际结束", esc(dateTime(row.actual_end_time)))}
 		${value("实际分钟", number(row.actual_minutes))}
-		${value("申报数量", number(row.completed_qty))}
+		${value(row.payroll_qty_corrected ? "原报工数量" : "申报数量", number(row.completed_qty))}
+		${row.payroll_qty_corrected ? value("核定计薪数量", number(row.payroll_qty)) : ""}
 			${value("计价方式", esc(wageType))}
 			${value("计薪分钟", number(row.reported_minutes))}
 			${row.wage_type === "Time" ? value("计薪工时来源", esc(row.manual_time_entry ? t("工人手工填写") : t("计时器有效分钟"))) : ""}
 		${value("单价快照", number(row.rate))}
-		${value("计薪金额", number(row.wage_amount))}
+		${value("计薪金额", number(row.payroll_amount ?? row.wage_amount))}
+		${row.payroll_qty_corrected ? value("原报工金额", number(row.wage_amount)) : ""}
 		${value("提交时间", esc(dateTime(row.submitted_at)))}
 		${value("审核人", esc(row.reviewed_by || "-"))}
 		${value("审核时间", esc(dateTime(row.reviewed_at)))}
 		${row.rejection_reason ? `<div class="report-detail-item report-detail-wide"><span>${esc(t("驳回原因"))}</span><strong>${esc(row.rejection_reason)}</strong></div>` : ""}
+		${row.payroll_qty_corrected ? `${value("核定人", esc(row.payroll_corrected_by || "-"))}${value("核定时间", esc(dateTime(row.payroll_corrected_at)))}<div class="report-detail-item report-detail-wide"><span>${esc(t("核定原因"))}</span><strong>${esc(row.payroll_correction_reason || "-")}</strong><small>${esc(t("原生产记录保留，仅调整计薪数量。"))}</small></div>` : ""}
+		${row.status === "Approved" && row.wage_type === "Piecework" && !reviewCanCorrectPayrollQuantity(row) && row.payroll_correction_block_message ? `<div class="report-detail-item report-detail-wide"><span>${esc(t("计薪核定"))}</span><strong>${esc(row.payroll_correction_block_message)}</strong></div>` : ""}
 		${row.monthly_summary ? value("月度工资汇总", reviewDocumentLink("Monthly Worker Wage Summary", row.monthly_summary, row.monthly_summary, helpers)) : ""}
 	</div>`;
+}
+
+function reviewCanCorrectPayrollQuantity(row = {}) {
+	return row.status === "Approved" && row.wage_type === "Piecework" && row.can_correct_payroll_qty === true;
+}
+
+function openReviewPayrollQuantityDialog(row, { onSaved, helpers } = {}) {
+	if (!reviewCanCorrectPayrollQuantity(row)) return null;
+	const t = helpers?.translate || __;
+	const esc = helpers?.escapeHtml || ((value) => frappe.utils.escape_html(String(value ?? "")));
+	const number = helpers?.formatNumber || ((value) => String(value ?? ""));
+	const requestId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+	let saving = false;
+	const dialog = new frappe.ui.Dialog({
+		title: t("核定计薪数量"),
+		fields: [
+			{ fieldtype: "HTML", options: `<p>${esc(t("原报工"))}：${esc(number(row.completed_qty))} · ${esc(t("原单价"))}：${esc(number(row.rate))}</p><p class="text-muted">${esc(t("仅调整本次计件工资；原报工数量、生产进度和库存记录保留。已有工资草稿会同步更新。"))}</p>` },
+			{ fieldname: "payroll_qty", fieldtype: "Float", precision: 6, label: t("核定计薪数量"), default: row.payroll_qty_corrected ? row.payroll_qty : row.completed_qty, reqd: 1, description: t("可以填写0；工资按原单价计算。") },
+			{ fieldname: "reason", fieldtype: "Small Text", label: t("核定原因"), reqd: 1 },
+		],
+		primary_action_label: t("保存核定"),
+		primary_action: async (values) => {
+			if (saving) return;
+			const quantity = Number(values.payroll_qty);
+			if (values.payroll_qty === null || values.payroll_qty === undefined || String(values.payroll_qty).trim() === "" || !Number.isFinite(quantity) || quantity < 0) {
+				frappe.msgprint(t("请填写大于或等于0的有效计薪数量。"));
+				return;
+			}
+			const reason = String(values.reason || "").trim();
+			if (!reason) {
+				frappe.msgprint(t("请填写核定原因。"));
+				return;
+			}
+			saving = true;
+			dialog.get_primary_btn().prop("disabled", true);
+			try {
+				const response = await frappe.call({
+					method: "process_simplification.api.production_reporting.set_report_payroll_quantity",
+					type: "POST",
+					args: { report: row.name, payroll_qty: quantity, reason, expected_modified: row.modified, request_id: requestId },
+				});
+				const confirmed = response?.message?.report;
+				if (confirmed?.name !== row.name || ![true, 1].includes(confirmed.payroll_qty_corrected) || confirmed.payroll_qty !== quantity) {
+					frappe.msgprint(t("未收到有效的核定结果，请保留当前输入重试，或刷新后核对记录。"));
+					return;
+				}
+				dialog.hide();
+				frappe.show_alert({ message: t("计薪数量已核定，原生产记录保留。"), indicator: "green" });
+				await onSaved?.(response.message);
+			} finally {
+				saving = false;
+				dialog.get_primary_btn().prop("disabled", false);
+			}
+		},
+	});
+	dialog.show();
+	return dialog;
 }
 
 function normalizeFrappeDateTime(value) {
@@ -145,6 +206,8 @@ const productionReportReviewApi = {
 	reviewEmployeeLabel,
 	reviewPaginationHtml,
 	reviewDetailsHtml,
+	reviewCanCorrectPayrollQuantity,
+	openReviewPayrollQuantityDialog,
 	normalizeFrappeDateTime,
 	reviewMonthRange,
 	runReviewToolbarLoad,
@@ -301,7 +364,7 @@ if (typeof frappe !== "undefined") {
 					? `<div class="review-history-list">${rows
 							.map((row) => {
 								const meta = reviewStatusMeta(row.status, __);
-								return `<article class="review-history-row report-details-row" data-report="${esc(row.name)}" tabindex="0"><div class="review-history-main"><strong>${esc(employeeLabel(row))} · ${esc(row.operation || "-")}</strong><span>${esc(dateTime(row.reviewed_at))}</span></div><div class="review-history-status"><span class="indicator-pill ${meta.indicator}">${esc(meta.label)}</span>${row.rejection_reason ? `<small>${esc(row.rejection_reason)}</small>` : ""}</div><div class="review-history-metric"><span>${__("数量")}</span><strong>${number(row.completed_qty)}</strong></div><div class="review-history-docs"><span>${documentLink("Job Card", row.job_card, row.job_card)}</span><span>${documentLink("Work Order", row.work_order, row.work_order)}</span></div><button class="btn btn-default btn-sm report-view-details" data-report="${esc(row.name)}">${__("查看明细")}</button></article>`;
+								return `<article class="review-history-row report-details-row" data-report="${esc(row.name)}" tabindex="0"><div class="review-history-main"><strong>${esc(employeeLabel(row))} · ${esc(row.operation || "-")}</strong><span>${esc(dateTime(row.reviewed_at))}</span></div><div class="review-history-status"><span class="indicator-pill ${meta.indicator}">${esc(meta.label)}</span>${row.rejection_reason ? `<small>${esc(row.rejection_reason)}</small>` : ""}</div><div class="review-history-metric"><span>${row.payroll_qty_corrected ? __("原报工数量") : __("数量")}</span><strong>${number(row.completed_qty)}</strong>${row.payroll_qty_corrected ? `<small>${__("核定计薪")} ${number(row.payroll_qty)}</small>` : ""}</div><div class="review-history-docs"><span>${documentLink("Job Card", row.job_card, row.job_card)}</span><span>${documentLink("Work Order", row.work_order, row.work_order)}</span></div><button class="btn btn-default btn-sm report-view-details" data-report="${esc(row.name)}">${__("查看明细")}</button></article>`;
 							})
 							.join("")}</div>`
 					: `<div class="text-muted worker-reporting-empty">${__("没有符合条件的报工审核记录。")}</div>`
@@ -391,6 +454,13 @@ if (typeof frappe !== "undefined") {
 				title: __("报工审核明细"),
 				size: "large",
 				fields: [{ fieldtype: "HTML", options: reviewDetailsHtml(row, helpers()) }],
+				...(reviewCanCorrectPayrollQuantity(row) ? {
+					primary_action_label: __("核定计薪数量"),
+					primary_action: () => {
+						dialog.hide();
+						openReviewPayrollQuantityDialog(row, { helpers: helpers(), onSaved: () => load() });
+					},
+				} : {}),
 			});
 			dialog.$wrapper.on("click", ".report-document-link", routeToDocument);
 			dialog.show();

@@ -46,11 +46,13 @@ function workerReportHistoryCardHtml(row = {}, helpers = {}) {
 			<button class="btn btn-link worker-history-document" data-doctype="Work Order" data-name="${escapeHtml(row.work_order || "")}">${translate("生产工单")}：${escapeHtml(row.work_order || "-")}</button>
 		</div>
 		<div class="worker-history-facts">
-			<span><small>${translate("完成数量")}</small><strong>${formatNumber(row.completed_qty)}</strong></span>
+			<span><small>${translate(row.payroll_qty_corrected ? "原报工数量" : "完成数量")}</small><strong>${formatNumber(row.completed_qty)}</strong></span>
+			${row.payroll_qty_corrected ? `<span><small>${translate("核定计薪数量")}</small><strong>${formatNumber(row.payroll_qty)}</strong></span>` : ""}
 			<span><small>${translate("实际分钟")}</small><strong>${formatNumber(row.actual_minutes)}</strong></span>
 			<span><small>${translate("计薪分钟")}</small><strong>${formatNumber(row.reported_minutes)}</strong></span>
-			<span><small>${escapeHtml(amountLabel)}</small><strong>${formatNumber(row.wage_amount)}</strong></span>
+			<span><small>${escapeHtml(amountLabel)}</small><strong>${formatNumber(row.payroll_amount ?? row.wage_amount)}</strong></span>
 		</div>
+		${row.payroll_qty_corrected ? `<div class="worker-history-audit"><strong>${translate("核定原因")}：${escapeHtml(row.payroll_correction_reason || "-")}</strong><span>${translate("核定人")}：${escapeHtml(row.payroll_corrected_by || "-")} · ${translate("核定时间")}：${escapeHtml(formatDateTime(row.payroll_corrected_at))}</span><small>${translate("原生产记录保留，仅调整计薪数量。")}</small></div>` : ""}
 		<div class="worker-history-audit"><span>${escapeHtml(reviewText)}</span>${row.submitted_at ? `<small>${translate("提交时间")}：${escapeHtml(formatDateTime(row.submitted_at))}</small>` : ""}${row.rejection_reason ? `<strong class="text-danger">${translate("驳回原因")}：${escapeHtml(row.rejection_reason)}</strong>` : ""}</div>
 	</article>`;
 }

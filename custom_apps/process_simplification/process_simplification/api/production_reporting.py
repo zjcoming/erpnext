@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import frappe
 
-from process_simplification.production_reporting import service, summary, wage_adjustments
+from process_simplification.production_reporting import payroll_quantity, service, summary, wage_adjustments
 from process_simplification.request_transaction import retry_request_transaction
 
 
@@ -162,6 +162,13 @@ def approve_work_report(report):
 @frappe.whitelist(methods=["POST"])
 def reject_work_report(report, reason):
 	return service.reject_work_report(report, reason)
+
+
+@frappe.whitelist(methods=["POST"])
+def set_report_payroll_quantity(report, payroll_qty, reason, expected_modified, request_id):
+	return payroll_quantity.set_report_payroll_quantity(
+		report, payroll_qty, reason, expected_modified, request_id
+	)
 
 
 @frappe.whitelist()
